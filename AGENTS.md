@@ -10,7 +10,7 @@ Source of truth: this file + `docs/`. The old project `/root/apps/tasktree` is r
 - One source of truth for config: `octo-core::config`. No env-var mode switching, no `cfg(test)` behaviour branches in production paths.
 - Every child process is owned by `ProcessRegistry`, spawned with `kill_on_drop`, cancellable, reaped. No fire-and-forget processes.
 - Prompts go to CLIs via stdin, never argv.
-- Never pass `--dangerously-skip-permissions` or equivalents.
+- Auto-approval flags only when the thread's approval mode is `auto`, explicitly chosen by the user; default is `confirm`.
 - Server binds `127.0.0.1` by default.
 - `cargo fmt`, `cargo clippy -- -D warnings`, `cargo test`, `npm test`, `npm run build` must pass before commit.
 

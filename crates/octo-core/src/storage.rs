@@ -6,7 +6,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
-const MIGRATIONS: &[&str] = &["CREATE TABLE threads(
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE threads(
         id TEXT PRIMARY KEY, title TEXT NOT NULL, provider TEXT NOT NULL,
         space TEXT NOT NULL CHECK(space IN('private','public')),
         external_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -15,7 +16,10 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE threads(
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
         role TEXT NOT NULL CHECK(role IN('user','assistant','error')),
         content TEXT NOT NULL, created_at INTEGER NOT NULL);
-     CREATE INDEX messages_thread ON messages(thread_id);"];
+     CREATE INDEX messages_thread ON messages(thread_id);",
+    "ALTER TABLE threads ADD COLUMN approval TEXT NOT NULL DEFAULT 'confirm'
+        CHECK(approval IN('auto','confirm'));",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +41,33 @@ impl Space {
             Space::Private
         } else {
             Space::Public
+        }
+    }
+}
+
+/// `auto`: the agent approves every tool action itself.
+/// `confirm`: every tool action needs user confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Approval {
+    Auto,
+    #[default]
+    Confirm,
+}
+
+impl Approval {
+    fn as_str(self) -> &'static str {
+        match self {
+            Approval::Auto => "auto",
+            Approval::Confirm => "confirm",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        if s == "auto" {
+            Approval::Auto
+        } else {
+            Approval::Confirm
         }
     }
 }
@@ -74,6 +105,7 @@ pub struct Thread {
     pub title: String,
     pub provider: ProviderKind,
     pub space: Space,
+    pub approval: Approval,
     #[serde(skip)]
     #[ts(skip)]
     pub external_session_id: Option<String>,
@@ -109,7 +141,8 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-const THREAD_COLS: &str = "id,title,provider,space,external_session_id,created_at,updated_at";
+const THREAD_COLS: &str =
+    "id,title,provider,space,external_session_id,created_at,updated_at,approval";
 
 fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
     let provider: String = r.get(2)?;
@@ -122,6 +155,7 @@ fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
         external_session_id: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
+        approval: Approval::parse(&r.get::<_, String>(7)?),
     })
 }
 
@@ -157,20 +191,26 @@ impl Storage {
             .pragma_query_value(None, "user_version", |r| r.get(0))
     }
 
-    pub fn create_thread(&self, provider: ProviderKind, space: Space) -> rusqlite::Result<Thread> {
+    pub fn create_thread(
+        &self,
+        provider: ProviderKind,
+        space: Space,
+        approval: Approval,
+    ) -> rusqlite::Result<Thread> {
         let now = now_ms();
         let t = Thread {
             id: new_id(),
             title: String::new(),
             provider,
             space,
+            approval,
             external_session_id: None,
             created_at: now,
             updated_at: now,
         };
         self.conn().execute(
-            "INSERT INTO threads(id,title,provider,space,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-            params![t.id, t.title, provider.as_str(), space.as_str(), now, now],
+            "INSERT INTO threads(id,title,provider,space,approval,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            params![t.id, t.title, provider.as_str(), space.as_str(), approval.as_str(), now, now],
         )?;
         Ok(t)
     }
@@ -198,6 +238,13 @@ impl Storage {
             .conn()
             .execute("DELETE FROM threads WHERE id=?", [id])?
             > 0)
+    }
+
+    pub fn set_approval(&self, id: &str, approval: Approval) -> rusqlite::Result<bool> {
+        Ok(self.conn().execute(
+            "UPDATE threads SET approval=? WHERE id=?",
+            params![approval.as_str(), id],
+        )? > 0)
     }
 
     pub fn set_title_if_empty(&self, id: &str, title: &str) -> rusqlite::Result<()> {

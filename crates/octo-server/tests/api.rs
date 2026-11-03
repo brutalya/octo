@@ -231,3 +231,54 @@ async fn serves_web_dir_with_index_fallback() {
     let r = call(&app, "GET", "/api/threads", None).await;
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn approval_defaults_to_confirm_and_can_be_patched() {
+    let (app, _d) = app();
+    let id = new_thread(&app, "claude", "public").await;
+    let t = json_of(call(&app, "GET", "/api/threads", None).await).await;
+    assert_eq!(t[0]["approval"], "confirm");
+
+    let r = call(
+        &app,
+        "POST",
+        "/api/threads",
+        Some(json!({"provider": "claude", "space": "public", "approval": "auto"})),
+    )
+    .await;
+    assert_eq!(json_of(r).await["approval"], "auto");
+
+    let r = call(
+        &app,
+        "PATCH",
+        &format!("/api/threads/{id}"),
+        Some(json!({"approval": "auto"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_of(r).await["approval"], "auto");
+    let t = json_of(call(&app, "GET", "/api/threads", None).await).await;
+    assert!(
+        t.as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["id"] == id.as_str() && x["approval"] == "auto")
+    );
+
+    let r = call(
+        &app,
+        "PATCH",
+        &format!("/api/threads/{id}"),
+        Some(json!({"approval": "bogus"})),
+    )
+    .await;
+    assert!(r.status().is_client_error());
+    let r = call(
+        &app,
+        "PATCH",
+        "/api/threads/nope",
+        Some(json!({"approval": "auto"})),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}

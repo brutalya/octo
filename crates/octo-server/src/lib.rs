@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use octo_core::provider::ProviderKind;
-use octo_core::storage::Space;
+use octo_core::storage::{Approval, Space};
 use octo_core::{CoreError, Hub};
 use serde::Deserialize;
 use serde_json::json;
@@ -45,6 +45,13 @@ type ApiResult<T> = Result<T, ApiError>;
 struct NewThread {
     provider: ProviderKind,
     space: Space,
+    #[serde(default)]
+    approval: Approval,
+}
+
+#[derive(Deserialize)]
+struct PatchThread {
+    approval: Approval,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +63,10 @@ pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
     let api = Router::new()
         .route("/providers", get(providers))
         .route("/threads", get(list_threads).post(create_thread))
-        .route("/threads/{id}", axum::routing::delete(delete_thread))
+        .route(
+            "/threads/{id}",
+            axum::routing::delete(delete_thread).patch(patch_thread),
+        )
         .route(
             "/threads/{id}/messages",
             get(list_messages).post(send_message),
@@ -85,7 +95,15 @@ async fn create_thread(
     State(h): State<Shared>,
     Json(b): Json<NewThread>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(h.create_thread(b.provider, b.space)?))
+    Ok(Json(h.create_thread(b.provider, b.space, b.approval)?))
+}
+
+async fn patch_thread(
+    State(h): State<Shared>,
+    Path(id): Path<String>,
+    Json(b): Json<PatchThread>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(h.set_approval(&id, b.approval)?))
 }
 
 async fn delete_thread(State(h): State<Shared>, Path(id): Path<String>) -> ApiResult<StatusCode> {

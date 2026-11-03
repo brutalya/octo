@@ -1,3 +1,4 @@
+export type { Approval } from './Approval';
 export type { AgentEvent } from './AgentEvent';
 export type { Message } from './Message';
 export type { ProviderKind } from './ProviderKind';

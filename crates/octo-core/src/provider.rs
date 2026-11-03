@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::storage::Approval;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -84,42 +85,83 @@ pub struct Invocation {
     pub stdin: String,
 }
 
-pub fn build_invocation(
+/// Pure argument builder. Auto-approval flags appear only for `Approval::Auto`.
+pub fn build_args(
     kind: ProviderKind,
-    cfg: &Config,
-    prompt: &str,
+    approval: Approval,
     external_session_id: Option<&str>,
-) -> Invocation {
-    let mut command = Command::new(kind.bin(cfg));
-    command.kill_on_drop(true);
-    let stdin = match kind {
+    new_session_id: &str,
+) -> Vec<String> {
+    match kind {
         ProviderKind::Claude => {
-            command.args([
+            let mode = match approval {
+                Approval::Auto => "bypassPermissions",
+                // Default mode: in -p, tool uses needing permission are denied.
+                Approval::Confirm => "default",
+            };
+            let mut a: Vec<String> = [
                 "-p",
                 "--output-format",
                 "stream-json",
                 "--verbose",
                 "--include-partial-messages",
-            ]);
+                "--permission-mode",
+                mode,
+            ]
+            .map(String::from)
+            .to_vec();
             match external_session_id {
-                Some(id) => command.args(["--resume", id]),
-                None => command.args(["--session-id", &uuid::Uuid::new_v4().to_string()]),
-            };
-            prompt.to_string()
+                Some(id) => a.extend(["--resume".into(), id.into()]),
+                None => a.extend(["--session-id".into(), new_session_id.into()]),
+            }
+            a
         }
         ProviderKind::Antigravity => {
             // `-p` requires a value; the real prompt is sent as NDJSON on stdin.
-            command.args([
+            // `request-review` makes headless agy auto-deny actions that need a prompt.
+            let tool_permission = match approval {
+                Approval::Auto => "always-proceed",
+                Approval::Confirm => "request-review",
+            };
+            let settings = serde_json::json!({"toolPermission": tool_permission});
+            let mut a: Vec<String> = [
                 "-p",
                 "",
                 "--input-format",
                 "stream-json",
                 "--output-format",
                 "stream-json",
-            ]);
+                "--settings",
+            ]
+            .map(String::from)
+            .to_vec();
+            a.push(settings.to_string());
             if let Some(id) = external_session_id {
-                command.args(["--conversation", id]);
+                a.extend(["--conversation".into(), id.into()]);
             }
+            a
+        }
+    }
+}
+
+pub fn build_invocation(
+    kind: ProviderKind,
+    cfg: &Config,
+    prompt: &str,
+    external_session_id: Option<&str>,
+    approval: Approval,
+) -> Invocation {
+    let mut command = Command::new(kind.bin(cfg));
+    command.kill_on_drop(true);
+    command.args(build_args(
+        kind,
+        approval,
+        external_session_id,
+        &uuid::Uuid::new_v4().to_string(),
+    ));
+    let stdin = match kind {
+        ProviderKind::Claude => prompt.to_string(),
+        ProviderKind::Antigravity => {
             let msg = serde_json::json!({"event": "user", "message": {"content": prompt}});
             format!("{msg}\n")
         }

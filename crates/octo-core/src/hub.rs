@@ -5,7 +5,7 @@ use crate::provider::{
     AgentEvent, ProviderKind, ProviderStatus, build_invocation, detect, parse_line,
 };
 use crate::registry::{ProcEvent, ProcessRegistry};
-use crate::storage::{Message, Role, Space, Storage, Thread};
+use crate::storage::{Approval, Message, Role, Space, Storage, Thread};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -45,9 +45,22 @@ impl Hub {
         Ok(self.storage.list_threads()?)
     }
 
-    pub fn create_thread(&self, provider: ProviderKind, space: Space) -> Result<Thread, CoreError> {
+    pub fn create_thread(
+        &self,
+        provider: ProviderKind,
+        space: Space,
+        approval: Approval,
+    ) -> Result<Thread, CoreError> {
         check_provider(space, provider)?;
-        Ok(self.storage.create_thread(provider, space)?)
+        Ok(self.storage.create_thread(provider, space, approval)?)
+    }
+
+    /// Applies from the next run on; a running process keeps its flags.
+    pub fn set_approval(&self, id: &str, approval: Approval) -> Result<Thread, CoreError> {
+        if !self.storage.set_approval(id, approval)? {
+            return Err(CoreError::NotFound);
+        }
+        self.storage.get_thread(id)?.ok_or(CoreError::NotFound)
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<(), CoreError> {
@@ -93,6 +106,7 @@ impl Hub {
             &self.config,
             content,
             thread.external_session_id.as_deref(),
+            thread.approval,
         );
         let mut handle = self.registry.spawn(id, inv.command, inv.stdin)?;
         self.storage.add_message(id, Role::User, content)?;
