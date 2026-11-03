@@ -68,7 +68,6 @@ TS types generated with `ts-rs` into `web/src/api/types/`.
 - Claude session id is taken from the stream (`system/init`) for new and resumed threads; the generated `--session-id` uuid equals it. Stored on first `Session` event, so a failed first run does not poison `--resume`.
 - Policy is enforced both in `create_thread` (POST /threads returns 403 for private + non-local) and in `send_message`.
 - `Thread.external_session_id` is not serialized to the API/TS types.
-- Cancel kills the direct child only (no process group); grandchildren started by Claude tools may survive.
 - On cancel the partial assistant text is persisted; no `done` event is sent.
 - ts-rs output dir is set in `.cargo/config.toml` (`TS_RS_EXPORT_DIR`); types are written to `web/src/api/types/` on `cargo test`.
 - Extra server flags: `--addr`, `--web-dir` (default `web/dist`, ignored if missing), `--claude-bin`, `--agy-bin`.

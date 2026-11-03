@@ -1,7 +1,11 @@
 use crate::error::CoreError;
+use nix::errno::Errno;
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
@@ -22,6 +26,45 @@ pub struct RunHandle {
 }
 
 type Running = Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>;
+
+const TERM_GRACE: Duration = Duration::from_secs(2);
+
+/// Kills the whole process group when dropped (task aborted, runtime shutdown).
+struct GroupGuard(Option<Pid>);
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        if let Some(pg) = self.0 {
+            let _ = killpg(pg, Signal::SIGKILL);
+        }
+    }
+}
+
+fn group_alive(pg: Pid) -> bool {
+    !matches!(killpg(pg, None), Err(Errno::ESRCH))
+}
+
+/// SIGTERM the group, wait up to `TERM_GRACE`, then SIGKILL; always reaps the leader.
+async fn kill_group(child: &mut tokio::process::Child, pg: Option<Pid>) {
+    let Some(pg) = pg else {
+        let _ = child.kill().await;
+        return;
+    };
+    let _ = killpg(pg, Signal::SIGTERM);
+    let deadline = tokio::time::Instant::now() + TERM_GRACE;
+    loop {
+        let reaped = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
+        if reaped && !group_alive(pg) {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let _ = killpg(pg, Signal::SIGKILL);
+    let _ = child.wait().await;
+}
 
 /// Owns every child process: one per key, cancellable, always reaped.
 #[derive(Default, Clone)]
@@ -59,9 +102,11 @@ impl ProcessRegistry {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .kill_on_drop(true)
+            .process_group(0);
         let mut child = cmd.spawn()?;
         let pid = child.id();
+        let pgid = pid.and_then(|p| i32::try_from(p).ok()).map(Pid::from_raw);
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         map.insert(key.to_string(), Some(cancel_tx));
         drop(map);
@@ -74,6 +119,7 @@ impl ProcessRegistry {
         let key = key.to_string();
 
         tokio::spawn(async move {
+            let _guard = GroupGuard(pgid);
             if let Some(mut si) = stdin_pipe {
                 tokio::spawn(async move {
                     let _ = si.write_all(stdin.as_bytes()).await;
@@ -87,7 +133,7 @@ impl ProcessRegistry {
                 buf
             });
             let Some(stdout) = stdout else {
-                let _ = child.kill().await;
+                kill_group(&mut child, pgid).await;
                 registry.map().remove(&key);
                 return;
             };
@@ -96,6 +142,7 @@ impl ProcessRegistry {
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => { cancelled = true; break; }
+                    _ = tx.closed() => { cancelled = true; break; }
                     line = lines.next_line() => match line {
                         Ok(Some(l)) => {
                             if tx.send(ProcEvent::Line(l)).await.is_err() { cancelled = true; break; }
@@ -105,7 +152,7 @@ impl ProcessRegistry {
                 }
             }
             if cancelled {
-                let _ = child.kill().await;
+                kill_group(&mut child, pgid).await;
             } else {
                 let success = child.wait().await.map(|s| s.success()).unwrap_or(false);
                 let stderr = stderr_task.await.unwrap_or_default();
