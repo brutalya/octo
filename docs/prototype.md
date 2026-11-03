@@ -61,3 +61,14 @@ TS types generated with `ts-rs` into `web/src/api/types/`.
 
 ## Done when
 `cargo test` + `npm test` green; manual: create Claude thread, send, see streamed answer, reload page, history persists, follow-up message resumes same session, cancel kills process (no orphan in `ps`).
+
+## Deviations
+- Antigravity (`agy` 1.4.12): `-p` requires a value, so plain stdin does not work. We run `agy -p "" --input-format stream-json --output-format stream-json [--conversation <id>]` and write one NDJSON line `{"event":"user","message":{"content":"<prompt>"}}` to stdin. The prompt is still never in argv. Session id comes from the `init` event (`conversation_id`).
+- agy in print mode reports `permission_mode: always-proceed` (tools are auto-approved); we do not pass any bypass flag, this is its default. Tool steps for agy are not yet recorded in fixtures; any non-text step is reported as `Tool{name: step_type}` when DONE.
+- Claude session id is taken from the stream (`system/init`) for new and resumed threads; the generated `--session-id` uuid equals it. Stored on first `Session` event, so a failed first run does not poison `--resume`.
+- Policy is enforced in `send_message` (as specified), not in `create_thread`; creating a private claude thread succeeds but sending is rejected with 403.
+- `Thread.external_session_id` is not serialized to the API/TS types.
+- Cancel kills the direct child only (no process group); grandchildren started by Claude tools may survive.
+- On cancel the partial assistant text is persisted; no `done` event is sent.
+- ts-rs output dir is set in `.cargo/config.toml` (`TS_RS_EXPORT_DIR`); types are written to `web/src/api/types/` on `cargo test`.
+- Extra server flags: `--addr`, `--web-dir` (default `web/dist`, ignored if missing), `--claude-bin`, `--agy-bin`.
