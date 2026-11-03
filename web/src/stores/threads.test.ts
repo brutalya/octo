@@ -3,7 +3,7 @@ import { useThreadsStore } from './threads';
 import type { Thread } from '../api/types';
 
 const thread: Thread = {
-  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', created_at: 1, updated_at: 1,
+  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
 };
 const json = (v: unknown) =>
   new Response(JSON.stringify(v), { status: 200, headers: { 'content-type': 'application/json' } });

@@ -3,4 +3,4 @@ import type { Approval } from "./Approval";
 import type { ProviderKind } from "./ProviderKind";
 import type { Space } from "./Space";
 
-export type Thread = { id: string, title: string, provider: ProviderKind, space: Space, approval: Approval, created_at: number, updated_at: number, };
+export type Thread = { id: string, title: string, provider: ProviderKind, space: Space, approval: Approval, model: string | null, created_at: number, updated_at: number, };

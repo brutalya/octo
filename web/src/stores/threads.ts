@@ -8,7 +8,7 @@ interface ThreadsState {
   activeId: string | null;
   load: () => Promise<void>;
   loadProviders: () => Promise<void>;
-  create: (provider: ProviderKind, space: Space, approval: Approval) => Promise<void>;
+  create: (provider: ProviderKind, space: Space, approval: Approval, model?: string) => Promise<void>;
   setApproval: (id: string, approval: Approval) => Promise<void>;
   remove: (id: string) => Promise<void>;
   select: (id: string | null) => void;
@@ -23,8 +23,8 @@ export const useThreadsStore = create<ThreadsState>((set, get) => ({
     const all = await api.providers();
     set({ providers: all.filter((p) => p.installed) });
   },
-  create: async (provider, space, approval) => {
-    const t = await api.createThread(provider, space, approval);
+  create: async (provider, space, approval, model) => {
+    const t = await api.createThread(provider, space, approval, model);
     set({ threads: [t, ...get().threads], activeId: t.id });
   },
   setApproval: async (id, approval) => {

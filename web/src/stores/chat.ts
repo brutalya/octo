@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
-import type { Message } from '../api/types';
+import type { Attachment, Message } from '../api/types';
 import { useThreadsStore } from './threads';
 
 interface Streaming {
@@ -12,7 +12,7 @@ interface ChatState {
   messages: Record<string, Message[]>;
   streaming: Record<string, Streaming | undefined>;
   load: (threadId: string) => Promise<void>;
-  send: (threadId: string, content: string) => Promise<void>;
+  send: (threadId: string, content: string, attachments?: Attachment[]) => Promise<void>;
   stop: (threadId: string) => Promise<void>;
 }
 
@@ -20,7 +20,7 @@ const controllers = new Map<string, AbortController>();
 let localId = 0;
 
 function local(threadId: string, role: Message['role'], content: string): Message {
-  return { id: `local-${++localId}`, thread_id: threadId, role, content, created_at: Date.now() };
+  return { id: `local-${++localId}`, thread_id: threadId, role, content, attachments: null, created_at: Date.now() };
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -38,7 +38,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       set((s) => ({ messages: { ...s.messages, [threadId]: msgs } }));
     },
 
-    send: async (threadId, content) => {
+    send: async (threadId, content, attachments) => {
       if (get().streaming[threadId]) return;
       const ctrl = new AbortController();
       controllers.set(threadId, ctrl);
@@ -47,7 +47,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       let text = '';
       let aborted = false;
       try {
-        for await (const e of api.send(threadId, content, ctrl.signal)) {
+        for await (const e of api.send(threadId, content, ctrl.signal, attachments)) {
           if (e.type === 'text_delta') {
             text += e.text;
             setStreaming(threadId, { text, tool: null });

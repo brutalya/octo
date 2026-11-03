@@ -18,7 +18,7 @@ const json = (v: unknown, status = 200) =>
   new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
 
 const thread: Thread = {
-  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', created_at: 1, updated_at: 1,
+  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
 };
 
 beforeEach(() => {
@@ -99,7 +99,7 @@ describe('chat store', () => {
 
   it('stop aborts the request, posts cancel and reloads history', async () => {
     const history: Message[] = [
-      { id: 'm1', thread_id: 't1', role: 'user', content: 'hi', created_at: 1 },
+      { id: 'm1', thread_id: 't1', role: 'user', content: 'hi', attachments: null, created_at: 1 },
     ];
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/messages') && init?.method === 'POST') {
@@ -126,7 +126,7 @@ describe('chat store', () => {
   });
 
   it('load fetches messages for a thread', async () => {
-    const m: Message = { id: 'm', thread_id: 't1', role: 'assistant', content: 'yo', created_at: 2 };
+    const m: Message = { id: 'm', thread_id: 't1', role: 'assistant', content: 'yo', attachments: null, created_at: 2 };
     vi.stubGlobal('fetch', vi.fn(async () => json([m])));
     await useChatStore.getState().load('t1');
     expect(useChatStore.getState().messages['t1']).toEqual([m]);
