@@ -7,9 +7,8 @@ fn db() -> Storage {
 
 #[test]
 fn migrations_set_version_and_are_idempotent() {
-    let dir = std::env::temp_dir().join(format!("octo-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("octo.db");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("octo.db");
     let s = Storage::open(&path).unwrap();
     s.create_thread(ProviderKind::Claude, Space::Public)
         .unwrap();
@@ -17,7 +16,6 @@ fn migrations_set_version_and_are_idempotent() {
     let s = Storage::open(&path).unwrap();
     assert_eq!(s.user_version().unwrap(), 1);
     assert_eq!(s.list_threads().unwrap().len(), 1);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -75,4 +73,18 @@ fn title_and_session() {
     let t = s.get_thread(&t.id).unwrap().unwrap();
     assert_eq!(t.title.chars().count(), 60);
     assert_eq!(t.external_session_id.as_deref(), Some("sid"));
+}
+
+#[test]
+fn touched_thread_always_moves_to_top() {
+    for _ in 0..200 {
+        let s = db();
+        let a = s
+            .create_thread(ProviderKind::Claude, Space::Public)
+            .unwrap();
+        s.create_thread(ProviderKind::Claude, Space::Public)
+            .unwrap();
+        s.add_message(&a.id, Role::User, "hi").unwrap();
+        assert_eq!(s.list_threads().unwrap()[0].id, a.id);
+    }
 }

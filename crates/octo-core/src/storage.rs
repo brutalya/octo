@@ -236,7 +236,7 @@ impl Storage {
             params![m.id, m.thread_id, role.as_str(), m.content, m.created_at],
         )?;
         c.execute(
-            "UPDATE threads SET updated_at=MAX(updated_at+1, ?) WHERE id=?",
+            "UPDATE threads SET updated_at=MAX(?, (SELECT MAX(updated_at)+1 FROM threads)) WHERE id=?",
             params![m.created_at, thread_id],
         )?;
         Ok(m)
