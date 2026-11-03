@@ -66,7 +66,7 @@ TS types generated with `ts-rs` into `web/src/api/types/`.
 - Antigravity (`agy` 1.4.12): `-p` requires a value, so plain stdin does not work. We run `agy -p "" --input-format stream-json --output-format stream-json [--conversation <id>]` and write one NDJSON line `{"event":"user","message":{"content":"<prompt>"}}` to stdin. The prompt is still never in argv. Session id comes from the `init` event (`conversation_id`).
 - agy in print mode reports `permission_mode: always-proceed` (tools are auto-approved); we do not pass any bypass flag, this is its default. Tool steps for agy are not yet recorded in fixtures; any non-text step is reported as `Tool{name: step_type}` when DONE.
 - Claude session id is taken from the stream (`system/init`) for new and resumed threads; the generated `--session-id` uuid equals it. Stored on first `Session` event, so a failed first run does not poison `--resume`.
-- Policy is enforced in `send_message` (as specified), not in `create_thread`; creating a private claude thread succeeds but sending is rejected with 403.
+- Policy is enforced both in `create_thread` (POST /threads returns 403 for private + non-local) and in `send_message`.
 - `Thread.external_session_id` is not serialized to the API/TS types.
 - Cancel kills the direct child only (no process group); grandchildren started by Claude tools may survive.
 - On cancel the partial assistant text is persisted; no `done` event is sent.

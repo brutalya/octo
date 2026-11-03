@@ -40,6 +40,7 @@ impl Hub {
     }
 
     pub fn create_thread(&self, provider: ProviderKind, space: Space) -> Result<Thread, CoreError> {
+        check_provider(space, provider)?;
         Ok(self.storage.create_thread(provider, space)?)
     }
 

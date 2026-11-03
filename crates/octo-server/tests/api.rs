@@ -6,33 +6,24 @@ use octo_core::{Config, Hub};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tower::ServiceExt;
 
-fn app() -> (Router, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("octo-api-{}", uuid()));
+fn app() -> (Router, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let fake = PathBuf::from(format!(
         "{}/../../tests/fixtures/fake_cli.sh",
         env!("CARGO_MANIFEST_DIR")
     ));
     let cfg = Config {
-        data_dir: dir.clone(),
+        data_dir: dir,
         claude_bin: fake.clone(),
         agy_bin: fake,
     };
     (
         octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None),
-        dir,
-    )
-}
-
-fn uuid() -> String {
-    static N: AtomicUsize = AtomicUsize::new(0);
-    format!(
-        "{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::SeqCst)
+        tmp,
     )
 }
 
@@ -81,19 +72,20 @@ async fn providers_listed() {
 }
 
 #[tokio::test]
-async fn private_non_local_rejected_on_send() {
+async fn private_non_local_rejected_on_create() {
     let (app, _d) = app();
-    let id = new_thread(&app, "claude", "private").await;
-    let r = call(
-        &app,
-        "POST",
-        &format!("/api/threads/{id}/messages"),
-        Some(json!({"content": "hi"})),
-    )
-    .await;
-    assert_eq!(r.status(), StatusCode::FORBIDDEN);
-    let m = json_of(call(&app, "GET", &format!("/api/threads/{id}/messages"), None).await).await;
-    assert!(m.as_array().unwrap().is_empty());
+    for provider in ["claude", "antigravity"] {
+        let r = call(
+            &app,
+            "POST",
+            "/api/threads",
+            Some(json!({"provider": provider, "space": "private"})),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+    let t = json_of(call(&app, "GET", "/api/threads", None).await).await;
+    assert!(t.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
