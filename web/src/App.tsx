@@ -1,12 +1,14 @@
 import { useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Feed } from './components/Feed';
+import { FilesPanel } from './components/FilesPanel';
 import { ChatInput } from './components/ChatInput';
 import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
 
 export function App() {
   const activeId = useThreadsStore((s) => s.activeId);
+  const space = useThreadsStore((s) => s.threads.find((t) => t.id === s.activeId)?.space);
   const streaming = useChatStore((s) => (activeId ? s.streaming[activeId] !== undefined : false));
 
   useEffect(() => {
@@ -29,13 +31,15 @@ export function App() {
             <Feed threadId={activeId} />
             <ChatInput
               key={activeId}
+              space={space}
               streaming={streaming}
-              onSend={(text) => void useChatStore.getState().send(activeId, text)}
+              onSend={(text, att) => void useChatStore.getState().send(activeId, text, att)}
               onStop={() => void useChatStore.getState().stop(activeId)}
             />
           </>
         )}
       </main>
+      <FilesPanel />
     </div>
   );
 }

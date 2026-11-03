@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sidebar } from './Sidebar';
@@ -8,10 +8,12 @@ import type { ProviderStatus, Thread } from '../api/types';
 const providers: ProviderStatus[] = [
   { kind: 'claude', installed: true, version: '1', is_local: false },
   { kind: 'antigravity', installed: true, version: '1', is_local: true },
+  { kind: 'ollama', installed: true, version: null, is_local: true },
+  { kind: 'openrouter', installed: true, version: null, is_local: false },
 ];
 
 const t = (id: string, title: string): Thread => ({
-  id, title, provider: 'claude', space: 'public', approval: 'confirm', created_at: 1, updated_at: 1,
+  id, title, provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
 });
 
 beforeEach(() => {
@@ -88,5 +90,56 @@ describe('Sidebar', () => {
     expect(setApproval).toHaveBeenCalledWith('a', 'auto');
     await userEvent.click(auto);
     expect(setApproval).toHaveBeenCalledWith('b', 'confirm');
+  });
+});
+
+describe('Sidebar http providers', () => {
+  const models = [
+    { id: 'llama3:8b', name: 'Llama 3 8B' },
+    { id: 'qwen2:7b', name: 'Qwen 2 7B' },
+  ];
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(models), { status: 200 })));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('private option exists only for local providers', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    expect(screen.getByRole('button', { name: 'ollama private' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'openrouter private' })).toBeDisabled();
+  });
+
+  it('shows a searchable model submenu and creates with the chosen model', async () => {
+    const create = vi.fn(async () => {});
+    useThreadsStore.setState({ create });
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'ollama private' }));
+    expect(create).not.toHaveBeenCalled();
+    expect(await screen.findByRole('option', { name: /Llama 3 8B/ })).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('searchbox'), 'qwen');
+    expect(screen.queryByRole('option', { name: /Llama/ })).toBeNull();
+    await userEvent.click(screen.getByRole('option', { name: /Qwen 2 7B/ }));
+    expect(create).toHaveBeenCalledWith('ollama', 'private', 'confirm', 'qwen2:7b');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('thread label shows provider and short model name', () => {
+    useThreadsStore.setState({
+      threads: [
+        { ...t('a', 'First'), provider: 'ollama', model: 'llama3:latest' },
+        { ...t('b', 'Second'), provider: 'openrouter', model: 'anthropic/claude-3.5-sonnet' },
+      ],
+    });
+    render(<Sidebar />);
+    expect(screen.getByText('ollama · llama3')).toBeInTheDocument();
+    expect(screen.getByText('openrouter · claude-3.5-sonnet')).toBeInTheDocument();
+  });
+
+  it('gear opens the settings modal', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });

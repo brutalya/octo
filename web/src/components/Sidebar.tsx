@@ -1,7 +1,59 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import { Plus, Settings, ShieldCheck, Trash2, Zap } from 'lucide-react';
+import { api } from '../api/client';
+import { SettingsModal } from './SettingsModal';
 import { useThreadsStore } from '../stores/threads';
-import type { Approval, ProviderKind, Space } from '../api/types';
+import type { Approval, ModelInfo, ProviderKind, Space } from '../api/types';
+
+const HTTP_PROVIDERS: ProviderKind[] = ['ollama', 'openrouter'];
+
+export function shortModel(id: string): string {
+  return (id.split('/').pop() ?? id).replace(/:latest$/, '');
+}
+
+function ModelMenu({ kind, onPick }: { kind: ProviderKind; onPick: (id: string) => void }) {
+  const [models, setModels] = useState<ModelInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api.models(kind).then((m) => live && setModels(m)).catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [kind]);
+
+  const q = query.trim().toLowerCase();
+  const shown = (models ?? []).filter((m) => !q || m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
+  return (
+    <div className="border-t border-slate-200 p-1">
+      <input
+        autoFocus
+        type="search"
+        role="searchbox"
+        aria-label="Search models"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        className="mb-1 w-full rounded-md border border-slate-200 bg-transparent px-2 py-1 text-sm text-slate-800 outline-none focus:border-indigo-500"
+      />
+      {error && <div className="px-2 py-1 text-xs text-red-500">{error}</div>}
+      <div role="listbox" className="max-h-60 overflow-y-auto">
+        {shown.map((m) => (
+          <button
+            key={m.id}
+            role="option"
+            aria-selected={false}
+            onClick={() => onPick(m.id)}
+            className="block w-full truncate rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
+          >
+            {m.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function ApprovalIcon({ approval, size }: { approval: Approval; size: number }) {
   return approval === 'auto' ? <Zap size={size} /> : <ShieldCheck size={size} />;
@@ -12,20 +64,36 @@ function NewThreadMenu() {
   const create = useThreadsStore((s) => s.create);
   const [approval, setApproval] = useState<Approval>('confirm');
   const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState<{ kind: ProviderKind; space: Space } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  const close = () => {
+    setOpen(false);
+    setPending(null);
+  };
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
 
   const pick = (kind: ProviderKind, space: Space) => {
-    setOpen(false);
+    if (HTTP_PROVIDERS.includes(kind)) {
+      setPending({ kind, space });
+      return;
+    }
+    close();
     void create(kind, space, approval);
+  };
+
+  const pickModel = (model: string) => {
+    if (!pending) return;
+    close();
+    void create(pending.kind, pending.space, approval, model);
   };
 
   const choice = 'px-2 py-0.5 rounded-md text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 disabled:hover:bg-transparent';
@@ -34,7 +102,7 @@ function NewThreadMenu() {
     <div ref={ref} className="relative">
       <button
         aria-label="New thread"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? close() : setOpen(true))}
         className="p-1.5 rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
       >
         <Plus size={16} />
@@ -72,6 +140,7 @@ function NewThreadMenu() {
               </span>
             </div>
           ))}
+          {pending && <ModelMenu key={`${pending.kind}`} kind={pending.kind} onPick={pickModel} />}
         </div>
       )}
     </div>
@@ -84,6 +153,7 @@ export function Sidebar() {
   const select = useThreadsStore((s) => s.select);
   const remove = useThreadsStore((s) => s.remove);
   const setApproval = useThreadsStore((s) => s.setApproval);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
@@ -100,7 +170,7 @@ export function Sidebar() {
               }`}
             >
               <span className="w-full truncate pr-6 text-sm text-slate-800">{t.title || ' '}</span>
-              <span className="text-xs text-slate-400">{t.provider}</span>
+              <span className="text-xs text-slate-400">{t.model ? `${t.provider} · ${shortModel(t.model)}` : t.provider}</span>
             </button>
             <button
               aria-label={`Thread approval: ${t.approval}`}
@@ -120,6 +190,16 @@ export function Sidebar() {
           </li>
         ))}
       </ul>
+      <div className="p-2">
+        <button
+          aria-label="Settings"
+          onClick={() => setSettingsOpen(true)}
+          className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+        >
+          <Settings size={16} />
+        </button>
+      </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </aside>
   );
 }
