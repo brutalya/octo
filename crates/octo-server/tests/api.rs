@@ -208,3 +208,26 @@ async fn delete_thread_and_unknown() {
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn serves_web_dir_with_index_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("index.html"), "<html>octo</html>").unwrap();
+    let (_, d) = app();
+    let cfg = Config {
+        data_dir: d.path().to_path_buf(),
+        claude_bin: "x".into(),
+        agy_bin: "x".into(),
+    };
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg).unwrap()),
+        Some(tmp.path().to_path_buf()),
+    );
+    for uri in ["/", "/some/client/route"] {
+        let r = call(&app, "GET", uri, None).await;
+        assert_eq!(r.status(), StatusCode::OK, "{uri}");
+        assert_eq!(text(r).await, "<html>octo</html>");
+    }
+    let r = call(&app, "GET", "/api/threads", None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}

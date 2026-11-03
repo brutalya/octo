@@ -10,9 +10,10 @@ struct Args {
     data_dir: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:7878")]
     addr: String,
-    /// Built web UI to serve (skipped if the directory does not exist).
-    #[arg(long, default_value = "web/dist")]
-    web_dir: PathBuf,
+    /// Built web UI to serve. Defaults to ./web/dist, then the repo's web/dist;
+    /// skipped if the directory does not exist.
+    #[arg(long)]
+    web_dir: Option<PathBuf>,
     #[arg(long)]
     claude_bin: Option<PathBuf>,
     #[arg(long)]
@@ -29,7 +30,14 @@ async fn main() -> Result<()> {
     if let Some(p) = args.agy_bin {
         config.agy_bin = p;
     }
-    let web_dir = args.web_dir.is_dir().then_some(args.web_dir);
+    let web_dir = args
+        .web_dir
+        .into_iter()
+        .chain([
+            PathBuf::from("web/dist"),
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist")),
+        ])
+        .find(|p| p.is_dir());
     let app = octo_server::app(Arc::new(Hub::new(config)?), web_dir);
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
     println!("listening on http://{}", listener.local_addr()?);

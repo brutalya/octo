@@ -70,4 +70,4 @@ TS types generated with `ts-rs` into `web/src/api/types/`.
 - `Thread.external_session_id` is not serialized to the API/TS types.
 - On cancel the partial assistant text is persisted; no `done` event is sent.
 - ts-rs output dir is set in `.cargo/config.toml` (`TS_RS_EXPORT_DIR`); types are written to `web/src/api/types/` on `cargo test`.
-- Extra server flags: `--addr`, `--web-dir` (default `web/dist`, ignored if missing), `--claude-bin`, `--agy-bin`.
+- Extra server flags: `--addr`, `--web-dir` (default: `./web/dist`, else the repo's `web/dist`; ignored if missing). `scripts/dev.sh` runs server + vite, `--claude-bin`, `--agy-bin`.
