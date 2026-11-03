@@ -21,7 +21,7 @@ pub struct Hub {
     config: Config,
     storage: Arc<Storage>,
     registry: ProcessRegistry,
-    files: Files,
+    files: Arc<Files>,
     settings: RwLock<Settings>,
     http: reqwest::Client,
     /// One entry per running thread (CLI and HTTP providers alike).
@@ -42,14 +42,14 @@ impl Hub {
             config,
             storage,
             registry: ProcessRegistry::default(),
-            files,
+            files: Arc::new(files),
             settings: RwLock::new(settings),
             http,
             runs: Arc::default(),
         })
     }
 
-    pub fn files(&self) -> &Files {
+    pub fn files(&self) -> &Arc<Files> {
         &self.files
     }
 
@@ -164,18 +164,27 @@ impl Hub {
     }
 
     /// Reads the attached text files (policy first) and inlines them into the prompt.
-    fn prompt_with_attachments(
+    async fn prompt_with_attachments(
         &self,
         thread: &Thread,
         content: &str,
         attachments: &[AttachmentRef],
     ) -> Result<String, CoreError> {
-        let mut files = vec![];
         for a in attachments {
             check_attachment(thread.space, a.space)?;
-            let data = self.files.read(a.space, &a.path)?;
-            files.push((a.path.clone(), decode_text(&a.path, &data)?));
         }
+        let store = self.files.clone();
+        let refs = attachments.to_vec();
+        let files = tokio::task::spawn_blocking(move || {
+            let mut files = vec![];
+            for a in &refs {
+                let data = store.read(a.space, &a.path)?;
+                files.push((a.path.clone(), decode_text(&a.path, &data)?));
+            }
+            Ok::<_, CoreError>(files)
+        })
+        .await
+        .map_err(|_| CoreError::Invalid("file task failed"))??;
         Ok(build_prompt(content, &files))
     }
 
@@ -230,7 +239,9 @@ impl Hub {
         if thread.provider == ProviderKind::OpenRouter && key.is_none() {
             return Err(CoreError::Invalid("OpenRouter API key is not configured"));
         }
-        let prompt = self.prompt_with_attachments(&thread, content, attachments)?;
+        let prompt = self
+            .prompt_with_attachments(&thread, content, attachments)
+            .await?;
 
         let ctl = Arc::new(RunCtl::default());
         {

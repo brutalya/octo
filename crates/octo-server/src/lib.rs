@@ -5,7 +5,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use octo_core::files::FilesError;
+use octo_core::files::{Files, FilesError};
 use octo_core::providers::ProviderKind;
 use octo_core::settings::SettingsPatch;
 use octo_core::storage::{Approval, AttachmentRef, Space};
@@ -229,14 +229,30 @@ async fn patch_settings(
     State(h): State<Shared>,
     Json(b): Json<SettingsPatch>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(h.update_settings(b)?))
+    let view = tokio::task::spawn_blocking(move || h.update_settings(b))
+        .await
+        .map_err(|_| CoreError::Invalid("settings task failed"))??;
+    Ok(Json(view))
+}
+
+/// Runs file I/O (sync fs + crypto) off the async runtime.
+async fn blocking<T, F>(h: &Shared, f: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Files) -> Result<T, FilesError> + Send + 'static,
+{
+    let files = h.files().clone();
+    tokio::task::spawn_blocking(move || f(&files))
+        .await
+        .map_err(|_| ApiError::Core(CoreError::Invalid("file task failed")))?
+        .map_err(ApiError::from)
 }
 
 async fn list_files(
     State(h): State<Shared>,
     Path(space): Path<Space>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(h.files().list(space)?))
+    Ok(Json(blocking(&h, move |f| f.list(space)).await?))
 }
 
 async fn upload_files(
@@ -256,7 +272,7 @@ async fn upload_files(
         } else {
             format!("{}/{name}", q.path)
         };
-        saved.push(h.files().write(space, &target, &data)?);
+        saved.push(blocking(&h, move |f| f.write(space, &target, &data)).await?);
     }
     if saved.is_empty() {
         return Err(CoreError::Invalid("no file in request").into());
@@ -269,7 +285,7 @@ async fn file_content(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    let data = h.files().read(space, &q.path)?;
+    let data = blocking(&h, move |f| f.read(space, &q.path)).await?;
     // Never rendered by the browser: user files share the app's origin.
     Ok((
         [
@@ -286,7 +302,7 @@ async fn make_dir(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<StatusCode> {
-    h.files().mkdir(space, &q.path)?;
+    blocking(&h, move |f| f.mkdir(space, &q.path)).await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -296,7 +312,7 @@ async fn rename_file(
     Query(q): Query<PathQuery>,
     Json(b): Json<RenameBody>,
 ) -> ApiResult<StatusCode> {
-    h.files().rename(space, &q.path, &b.new_path)?;
+    blocking(&h, move |f| f.rename(space, &q.path, &b.new_path)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -305,6 +321,6 @@ async fn delete_file(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<StatusCode> {
-    h.files().delete(space, &q.path)?;
+    blocking(&h, move |f| f.delete(space, &q.path)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -52,4 +52,4 @@ Path validation: relative, no `..`, no absolute, normalized — pure fn with tes
 - A run is released (thread no longer busy) before the SSE stream closes, so a client may send the next message right after `done`.
 - Upstream failures of `GET /providers/:kind/models` are `502`; CLI kinds return `[]`. `openrouter_base` is a `Config` field (tests point it at a fake server), not a user setting.
 - Settings: keys shorter than 12 chars are masked as `...`. `PATCH` validates the whole body before applying; `openrouter_api_key: ""` clears the key.
-- File I/O in handlers is synchronous (small local files, single user); moving it to `spawn_blocking` is a later optimization.
+- File I/O in handlers (and attachment reads) runs in `tokio::task::spawn_blocking`.
