@@ -77,8 +77,6 @@
   --toggle-border: #4a4a58;
 }
 
-/* ============================================================
-   3. TERMINAL THEME (Matrix Green Monospace)
 
 [data-theme="light"] {
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -156,10 +154,6 @@
   --tree-indent-border: #e2e8f0;
   --toggle-border: #cbd5e1;
 }
-
-/* ============================================================
-   2. DARK & OLED THEME (Velvet Charcoal, Vintage Champagne Gold)
-   Exact match with http://localhost:3000/
 
 html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
 body {

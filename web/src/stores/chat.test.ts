@@ -28,7 +28,8 @@ beforeEach(() => {
 
 describe('chat store', () => {
   it('send streams deltas then persists assistant message', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
+    const fetchMock = vi.fn(async (...args: [string, RequestInit?]) => {
+      const url = args[0];
       if (url.endsWith('/messages') ) {
         return sse(
           { type: 'session', id: 's' },
@@ -51,7 +52,7 @@ describe('chat store', () => {
     expect(useChatStore.getState().streaming['t1']).toBeUndefined();
     const call = fetchMock.mock.calls.find(([u]) => u === '/api/threads/t1/messages');
     expect(call).toBeDefined();
-    expect(JSON.parse(String((call?.[1] as RequestInit).body))).toEqual({ content: 'hi' });
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ content: 'hi' });
   });
 
   it('exposes partial text while streaming', async () => {

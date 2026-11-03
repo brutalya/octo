@@ -1,0 +1,35 @@
+import { create } from 'zustand';
+import { api } from '../api/client';
+import type { ProviderKind, ProviderStatus, Space, Thread } from '../api/types';
+
+interface ThreadsState {
+  threads: Thread[];
+  providers: ProviderStatus[];
+  activeId: string | null;
+  load: () => Promise<void>;
+  loadProviders: () => Promise<void>;
+  create: (provider: ProviderKind, space: Space) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+  select: (id: string | null) => void;
+}
+
+export const useThreadsStore = create<ThreadsState>((set, get) => ({
+  threads: [],
+  providers: [],
+  activeId: null,
+  load: async () => set({ threads: await api.threads() }),
+  loadProviders: async () => {
+    const all = await api.providers();
+    set({ providers: all.filter((p) => p.installed) });
+  },
+  create: async (provider, space) => {
+    const t = await api.createThread(provider, space);
+    set({ threads: [t, ...get().threads], activeId: t.id });
+  },
+  remove: async (id) => {
+    await api.deleteThread(id);
+    const { threads, activeId } = get();
+    set({ threads: threads.filter((t) => t.id !== id), activeId: activeId === id ? null : activeId });
+  },
+  select: (id) => set({ activeId: id }),
+}));
