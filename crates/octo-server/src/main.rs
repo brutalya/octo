@@ -1,0 +1,38 @@
+use anyhow::Result;
+use clap::Parser;
+use octo_core::{Config, Hub};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long, default_value = "127.0.0.1:7878")]
+    addr: String,
+    /// Built web UI to serve (skipped if the directory does not exist).
+    #[arg(long, default_value = "web/dist")]
+    web_dir: PathBuf,
+    #[arg(long)]
+    claude_bin: Option<PathBuf>,
+    #[arg(long)]
+    agy_bin: Option<PathBuf>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    let mut config = Config::new(args.data_dir);
+    if let Some(p) = args.claude_bin {
+        config.claude_bin = p;
+    }
+    if let Some(p) = args.agy_bin {
+        config.agy_bin = p;
+    }
+    let web_dir = args.web_dir.is_dir().then_some(args.web_dir);
+    let app = octo_server::app(Arc::new(Hub::new(config)?), web_dir);
+    let listener = tokio::net::TcpListener::bind(&args.addr).await?;
+    println!("listening on http://{}", listener.local_addr()?);
+    axum::serve(listener, app).await?;
+    Ok(())
+}
