@@ -18,7 +18,7 @@ const json = (v: unknown, status = 200) =>
   new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
 
 const thread: Thread = {
-  id: 't1', title: '', provider: 'claude', space: 'public', created_at: 1, updated_at: 1,
+  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', created_at: 1, updated_at: 1,
 };
 
 beforeEach(() => {
@@ -138,12 +138,12 @@ describe('threads store', () => {
     const created: Thread = { ...thread, id: 't2', provider: 'antigravity' };
     const fetchMock = vi.fn(async () => json(created));
     vi.stubGlobal('fetch', fetchMock);
-    await useThreadsStore.getState().create('antigravity', 'public');
+    await useThreadsStore.getState().create('antigravity', 'public', 'confirm');
     const s = useThreadsStore.getState();
     expect(s.threads.map((t) => t.id)).toEqual(['t2', 't1']);
     expect(s.activeId).toBe('t2');
     expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)))
-      .toEqual({ provider: 'antigravity', space: 'public' });
+      .toEqual({ provider: 'antigravity', space: 'public', approval: 'confirm' });
   });
 
   it('remove deletes and clears active', async () => {

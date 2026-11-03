@@ -1,5 +1,5 @@
 import { readAgentEvents } from './sse';
-import type { AgentEvent, Message, ProviderKind, ProviderStatus, Space, Thread } from './types';
+import type { AgentEvent, Approval, Message, ProviderKind, ProviderStatus, Space, Thread } from './types';
 
 const BASE = '/api';
 
@@ -27,8 +27,10 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
 export const api = {
   providers: async (): Promise<ProviderStatus[]> => (await request('/providers')).json(),
   threads: async (): Promise<Thread[]> => (await request('/threads')).json(),
-  createThread: async (provider: ProviderKind, space: Space): Promise<Thread> =>
-    (await request('/threads', jsonInit('POST', { provider, space }))).json(),
+  createThread: async (provider: ProviderKind, space: Space, approval: Approval): Promise<Thread> =>
+    (await request('/threads', jsonInit('POST', { provider, space, approval }))).json(),
+  setApproval: async (id: string, approval: Approval): Promise<Thread> =>
+    (await request(`/threads/${id}`, jsonInit('PATCH', { approval }))).json(),
   deleteThread: async (id: string): Promise<void> => {
     await request(`/threads/${id}`, { method: 'DELETE' });
   },

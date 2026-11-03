@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import { useThreadsStore } from '../stores/threads';
-import type { ProviderKind, Space } from '../api/types';
+import type { Approval, ProviderKind, Space } from '../api/types';
+
+function ApprovalIcon({ approval, size }: { approval: Approval; size: number }) {
+  return approval === 'auto' ? <Zap size={size} /> : <ShieldCheck size={size} />;
+}
 
 function NewThreadMenu() {
   const providers = useThreadsStore((s) => s.providers);
   const create = useThreadsStore((s) => s.create);
+  const [approval, setApproval] = useState<Approval>('confirm');
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -20,7 +25,7 @@ function NewThreadMenu() {
 
   const pick = (kind: ProviderKind, space: Space) => {
     setOpen(false);
-    void create(kind, space);
+    void create(kind, space, approval);
   };
 
   const choice = 'px-2 py-0.5 rounded-md text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 disabled:hover:bg-transparent';
@@ -39,6 +44,16 @@ function NewThreadMenu() {
           role="menu"
           className="absolute right-0 top-full mt-1 z-10 min-w-48 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
         >
+          <div className="flex justify-end px-2 pb-1">
+            <button
+              aria-label={`Approval: ${approval}`}
+              title={`Approval: ${approval}`}
+              onClick={() => setApproval(approval === 'confirm' ? 'auto' : 'confirm')}
+              className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <ApprovalIcon approval={approval} size={14} />
+            </button>
+          </div>
           {providers.map((p) => (
             <div key={p.kind} className="flex items-center justify-between gap-3 px-2 py-1">
               <span className="text-sm text-slate-800">{p.kind}</span>
@@ -68,6 +83,7 @@ export function Sidebar() {
   const activeId = useThreadsStore((s) => s.activeId);
   const select = useThreadsStore((s) => s.select);
   const remove = useThreadsStore((s) => s.remove);
+  const setApproval = useThreadsStore((s) => s.setApproval);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
@@ -85,6 +101,14 @@ export function Sidebar() {
             >
               <span className="w-full truncate pr-6 text-sm text-slate-800">{t.title || ' '}</span>
               <span className="text-xs text-slate-400">{t.provider}</span>
+            </button>
+            <button
+              aria-label={`Thread approval: ${t.approval}`}
+              title={`Approval: ${t.approval}`}
+              onClick={() => void setApproval(t.id, t.approval === 'confirm' ? 'auto' : 'confirm')}
+              className="absolute bottom-1.5 right-2 rounded p-0.5 text-slate-300 hover:text-slate-600"
+            >
+              <ApprovalIcon approval={t.approval} size={11} />
             </button>
             <button
               aria-label="Delete thread"

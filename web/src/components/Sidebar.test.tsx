@@ -11,7 +11,7 @@ const providers: ProviderStatus[] = [
 ];
 
 const t = (id: string, title: string): Thread => ({
-  id, title, provider: 'claude', space: 'public', created_at: 1, updated_at: 1,
+  id, title, provider: 'claude', space: 'public', approval: 'confirm', created_at: 1, updated_at: 1,
 });
 
 beforeEach(() => {
@@ -48,7 +48,7 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
     await userEvent.click(screen.getByRole('button', { name: 'antigravity private' }));
-    expect(create).toHaveBeenCalledWith('antigravity', 'private');
+    expect(create).toHaveBeenCalledWith('antigravity', 'private', 'confirm');
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
@@ -61,5 +61,32 @@ describe('Sidebar', () => {
     expect(select).toHaveBeenCalledWith('b');
     await userEvent.click(screen.getAllByRole('button', { name: 'Delete thread' })[0]);
     expect(remove).toHaveBeenCalledWith('a');
+  });
+
+  it('approval toggle in the dropdown defaults to confirm and is passed on create', async () => {
+    const create = vi.fn(async () => {});
+    useThreadsStore.setState({ create });
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    const toggle = screen.getByRole('button', { name: 'Approval: confirm' });
+    await userEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Approval: auto' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'claude public' }));
+    expect(create).toHaveBeenCalledWith('claude', 'public', 'auto');
+  });
+
+  it('shows a muted approval icon per thread and switches it on click', async () => {
+    const setApproval = vi.fn(async () => {});
+    useThreadsStore.setState({
+      threads: [t('a', 'First'), { ...t('b', 'Second'), approval: 'auto' }],
+      setApproval,
+    });
+    render(<Sidebar />);
+    const confirm = screen.getByRole('button', { name: 'Thread approval: confirm' });
+    const auto = screen.getByRole('button', { name: 'Thread approval: auto' });
+    await userEvent.click(confirm);
+    expect(setApproval).toHaveBeenCalledWith('a', 'auto');
+    await userEvent.click(auto);
+    expect(setApproval).toHaveBeenCalledWith('b', 'confirm');
   });
 });
