@@ -1,20 +1,64 @@
-import { useState, type KeyboardEvent } from 'react';
-import { ArrowUp, Square } from 'lucide-react';
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
+import { useFilesStore } from '../stores/files';
+import { DRAG_TYPE } from './FileTree';
+import type { Attachment, Space } from '../api/types';
 
 interface Props {
+  space?: Space;
   streaming: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
 }
 
-export function ChatInput({ streaming, onSend, onStop }: Props) {
+const EMPTY: never[] = [];
+
+function Picker({ space, picked, onPick }: { space: Space; picked: Attachment[]; onPick: (path: string) => void }) {
+  const entries = useFilesStore((s) => s.entries[space] ?? EMPTY);
+  const files = entries.filter((e) => e.kind === 'file' && !picked.some((a) => a.path === e.path));
+  return (
+    <div
+      role="menu"
+      className="absolute bottom-full left-0 z-10 mb-1 max-h-60 min-w-48 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+    >
+      {files.map((f) => (
+        <button
+          key={f.path}
+          role="menuitem"
+          onClick={() => onPick(f.path)}
+          className="block w-full truncate rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
+        >
+          {f.path}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function ChatInput({ space, streaming, onSend, onStop }: Props) {
   const [value, setValue] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [picking, setPicking] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!picking) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPicking(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [picking]);
+
+  const add = (a: Attachment) =>
+    setAttachments((cur) => (cur.some((x) => x.space === a.space && x.path === a.path) ? cur : [...cur, a]));
 
   const submit = () => {
     const text = value.trim();
     if (!text || streaming) return;
-    onSend(text);
+    onSend(text, attachments);
     setValue('');
+    setAttachments([]);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -24,32 +68,98 @@ export function ChatInput({ streaming, onSend, onStop }: Props) {
     }
   };
 
+  const onDragOver = (e: DragEvent) => {
+    if (e.dataTransfer.types?.includes(DRAG_TYPE)) e.preventDefault();
+  };
+
+  const onDrop = (e: DragEvent) => {
+    const raw = e.dataTransfer.getData(DRAG_TYPE);
+    if (!raw) return;
+    e.preventDefault();
+    try {
+      const a = JSON.parse(raw) as Attachment;
+      if (space && a.space === space && typeof a.path === 'string') add({ space: a.space, path: a.path });
+    } catch {
+      // not ours
+    }
+  };
+
   return (
-    <div className="mx-auto flex w-full max-w-3xl items-end gap-2 px-4 pb-4">
-      <textarea
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={onKeyDown}
-        rows={1}
-        className="max-h-48 min-h-10 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-500"
-      />
-      {streaming ? (
-        <button
-          aria-label="Stop"
-          onClick={onStop}
-          className="rounded-xl bg-slate-100 p-2.5 text-slate-700 hover:bg-slate-200"
-        >
-          <Square size={16} />
-        </button>
-      ) : (
-        <button
-          aria-label="Send"
-          onClick={submit}
-          className="rounded-xl bg-indigo-500 p-2.5 text-slate-50 hover:bg-indigo-600"
-        >
-          <ArrowUp size={16} />
-        </button>
+    <div
+      data-testid="chat-input"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4"
+    >
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {attachments.map((a) => (
+            <span
+              key={`${a.space}:${a.path}`}
+              className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
+            >
+              {a.path}
+              <button
+                aria-label={`Remove ${a.path}`}
+                onClick={() => setAttachments((cur) => cur.filter((x) => x !== a))}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          ))}
+        </div>
       )}
+      <div className="flex items-end gap-2">
+        {space && (
+          <div ref={ref} className="relative">
+            <button
+              aria-label="Attach"
+              onClick={() => {
+                if (!picking) void useFilesStore.getState().load(space).catch(() => {});
+                setPicking((v) => !v);
+              }}
+              className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            >
+              <Paperclip size={16} />
+            </button>
+            {picking && (
+              <Picker
+                space={space}
+                picked={attachments}
+                onPick={(path) => {
+                  add({ space, path });
+                  setPicking(false);
+                }}
+              />
+            )}
+          </div>
+        )}
+        <textarea
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={onKeyDown}
+          rows={1}
+          className="max-h-48 min-h-10 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-500"
+        />
+        {streaming ? (
+          <button
+            aria-label="Stop"
+            onClick={onStop}
+            className="rounded-xl bg-slate-100 p-2.5 text-slate-700 hover:bg-slate-200"
+          >
+            <Square size={16} />
+          </button>
+        ) : (
+          <button
+            aria-label="Send"
+            onClick={submit}
+            className="rounded-xl bg-indigo-500 p-2.5 text-slate-50 hover:bg-indigo-600"
+          >
+            <ArrowUp size={16} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
