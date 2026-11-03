@@ -6,7 +6,9 @@ use crate::provider::{
 };
 use crate::registry::{ProcEvent, ProcessRegistry};
 use crate::storage::{Message, Role, Space, Storage, Thread};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 /// Application facade used by the HTTP server (and later embedded in Tauri).
@@ -14,6 +16,9 @@ pub struct Hub {
     config: Config,
     storage: Arc<Storage>,
     registry: ProcessRegistry,
+    /// Per running thread: set when a cancel was requested, so a run that
+    /// completes concurrently never reports done.
+    cancels: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl Hub {
@@ -24,6 +29,7 @@ impl Hub {
             config,
             storage,
             registry: ProcessRegistry::default(),
+            cancels: Arc::default(),
         })
     }
 
@@ -45,7 +51,7 @@ impl Hub {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<(), CoreError> {
-        self.registry.cancel(id);
+        self.cancel(id);
         if self.storage.delete_thread(id)? {
             Ok(())
         } else {
@@ -59,6 +65,14 @@ impl Hub {
     }
 
     pub fn cancel(&self, id: &str) {
+        if let Some(flag) = self
+            .cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+        {
+            flag.store(true, Ordering::SeqCst);
+        }
         self.registry.cancel(id);
     }
 
@@ -84,6 +98,12 @@ impl Hub {
         self.storage.add_message(id, Role::User, content)?;
         self.storage.set_title_if_empty(id, content)?;
 
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), cancelled.clone());
+        let cancels = self.cancels.clone();
         let (out, rx) = mpsc::channel(64);
         let storage = self.storage.clone();
         let id = id.to_string();
@@ -117,6 +137,12 @@ impl Hub {
                     if finished {
                         break;
                     }
+                    if matches!(e, AgentEvent::Done | AgentEvent::Error { .. })
+                        && cancelled.load(Ordering::SeqCst)
+                    {
+                        // cancel won the race with completion: never report done
+                        break;
+                    }
                     match &e {
                         AgentEvent::Session { id: sid } if !session_saved => {
                             session_saved = storage.set_external_session(&id, sid).is_ok();
@@ -135,6 +161,10 @@ impl Hub {
                     let _ = out.send(e).await;
                 }
             }
+            cancels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
             if !finished {
                 // cancelled: keep what was streamed so far
                 persist(&storage, &id, Role::Assistant, &text);
