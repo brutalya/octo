@@ -95,7 +95,7 @@ pub fn build_args(
     match kind {
         ProviderKind::Claude => {
             let mode = match approval {
-                Approval::Auto => "bypassPermissions",
+                Approval::Auto => "auto",
                 // Default mode: in -p, tool uses needing permission are denied.
                 Approval::Confirm => "default",
             };

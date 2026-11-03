@@ -12,7 +12,7 @@ Hosting the MCP tool, options:
 1. HTTP/SSE MCP endpoint inside octo-server (`/mcp/<run_token>`), passed via `--mcp-config '{"mcpServers":{"octo":{"type":"http","url":"http://127.0.0.1:PORT/mcp/<token>"}}}'`. No extra process, token = per-run, maps the call to thread id. Needs a minimal MCP server (initialize, tools/list, tools/call; ~150 lines JSON-RPC, or the `rmcp` crate). Preferred.
 2. stdio MCP: a tiny `octo-mcp` bin spawned by claude (not by us, so outside ProcessRegistry; violates the rule). Avoid.
 
-Flow: tools/call arrives -> hub registers `PendingApproval{id, thread_id, tool, input}` and emits a new `AgentEvent::ApprovalRequest{id, tool, summary}` on the thread SSE -> UI shows Allow/Deny -> `POST /threads/:id/approvals/:id {allow:bool}` resolves a oneshot -> MCP response returned. Timeout/cancel/disconnect => deny. `auto` mode keeps `bypassPermissions` and skips this.
+Flow: tools/call arrives -> hub registers `PendingApproval{id, thread_id, tool, input}` and emits a new `AgentEvent::ApprovalRequest{id, tool, summary}` on the thread SSE -> UI shows Allow/Deny -> `POST /threads/:id/approvals/:id {allow:bool}` resolves a oneshot -> MCP response returned. Timeout/cancel/disconnect => deny. `auto` mode uses Claude `auto` permission mode (classifier-based auto approval) and skips this.
 
 Alternative: `--input-format stream-json` keeps one long-lived process and a persistent stdin (also enables multi-turn without `--resume` respawn), but permission decisions still go through the prompt tool; control messages (`control_request`/`can_use_tool` in the SDK protocol) are SDK-internal and undocumented for the CLI. Not recommended as the first step.
 
@@ -32,4 +32,4 @@ Alternative: `--input-format stream-json` keeps one long-lived process and a per
 - Claude via HTTP MCP: ~1.5-2 days (MCP endpoint + broker + SSE/REST + UI card + fake-CLI fixture tests with a scripted MCP client).
 - agy via ACP: ~3-4 days (spike 0.5d, new ACP client provider with its own event mapping, session resume via ACP, tests).
 - Fallback-replay for agy: ~0.5 day.
-Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so `auto` fails when the server runs as root.
+Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so octo uses Claude `auto` mode for `auto` approval instead.

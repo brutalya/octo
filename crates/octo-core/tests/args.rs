@@ -8,12 +8,9 @@ fn pair(args: &[String], flag: &str) -> Option<String> {
 }
 
 #[test]
-fn claude_auto_bypasses_permissions() {
+fn claude_auto_uses_auto_permission_mode() {
     let a = build_args(ProviderKind::Claude, Approval::Auto, None, "u1");
-    assert_eq!(
-        pair(&a, "--permission-mode").as_deref(),
-        Some("bypassPermissions")
-    );
+    assert_eq!(pair(&a, "--permission-mode").as_deref(), Some("auto"));
     assert_eq!(pair(&a, "--session-id").as_deref(), Some("u1"));
     assert!(!a.iter().any(|x| x == "--dangerously-skip-permissions"));
 }
