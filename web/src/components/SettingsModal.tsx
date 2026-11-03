@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { api } from '../api/client';
-import type { ProviderKind, Settings, SettingsPatch } from '../api/types';
+import type { ProviderKind, SettingsView, SettingsPatch } from '../api/types';
 
 type Result = { ok: true; count: number } | { ok: false; error: string };
 
@@ -55,7 +55,7 @@ function Section({
 }
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [settings, setSettings] = useState<Settings | null>(null);
+  const [settings, setSettings] = useState<SettingsView | null>(null);
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
 

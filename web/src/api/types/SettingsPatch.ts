@@ -3,4 +3,4 @@
 /**
  * Absent field = unchanged. `openrouter_api_key: ""` clears the key.
  */
-export type SettingsPatch = { ollama_url: string | null, openrouter_api_key: string | null, history_char_budget: number | undefined, };
+export type SettingsPatch = { ollama_url?: string, openrouter_api_key?: string, history_char_budget?: number, };

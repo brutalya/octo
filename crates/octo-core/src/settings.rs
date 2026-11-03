@@ -53,9 +53,11 @@ pub struct SettingsView {
 #[derive(Debug, Default, Deserialize, TS)]
 #[ts(export)]
 pub struct SettingsPatch {
+    #[ts(optional)]
     pub ollama_url: Option<String>,
+    #[ts(optional)]
     pub openrouter_api_key: Option<String>,
-    #[ts(type = "number | undefined")]
+    #[ts(optional, type = "number")]
     pub history_char_budget: Option<usize>,
 }
 

@@ -1,7 +1,7 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, Attachment, FileEntry, Message, ModelInfo, ProviderKind, ProviderStatus,
-  Settings, SettingsPatch, Space, Thread,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, ProviderKind, ProviderStatus,
+  SettingsView, SettingsPatch, Space, Thread,
 } from './types';
 
 const BASE = '/api';
@@ -33,8 +33,8 @@ export const api = {
   createThread: async (provider: ProviderKind, space: Space, approval: Approval, model?: string): Promise<Thread> =>
     (await request('/threads', jsonInit('POST', { provider, space, approval, model }))).json(),
   models: async (kind: ProviderKind): Promise<ModelInfo[]> => (await request(`/providers/${kind}/models`)).json(),
-  settings: async (): Promise<Settings> => (await request('/settings')).json(),
-  patchSettings: async (patch: SettingsPatch): Promise<Settings> =>
+  settings: async (): Promise<SettingsView> => (await request('/settings')).json(),
+  patchSettings: async (patch: SettingsPatch): Promise<SettingsView> =>
     (await request('/settings', jsonInit('PATCH', patch))).json(),
   files: async (space: Space): Promise<FileEntry[]> => (await request(`/files/${space}`)).json(),
   fileText: async (space: Space, path: string): Promise<string> =>
@@ -66,7 +66,7 @@ export const api = {
     id: string,
     content: string,
     signal: AbortSignal,
-    attachments?: Attachment[],
+    attachments?: AttachmentRef[],
   ): AsyncGenerator<AgentEvent> {
     const res = await request(`/threads/${id}/messages`, { ...jsonInit('POST', { content, attachments }), signal });
     if (!res.body) throw new ApiError(res.status, 'empty response body');

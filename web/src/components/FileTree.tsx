@@ -1,34 +1,10 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { ChevronDown, ChevronRight, File as FileIcon, Folder } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
+import { buildTree, type TreeNode } from '../lib/tree';
 import type { FileEntry, Space } from '../api/types';
 
 export const DRAG_TYPE = 'application/x-octo-file';
-
-interface Node {
-  entry: FileEntry;
-  name: string;
-  children: Node[];
-}
-
-function build(entries: FileEntry[]): Node[] {
-  const byPath = new Map<string, Node>();
-  const roots: Node[] = [];
-  const sorted = [...entries].sort((a, b) => a.path.split('/').length - b.path.split('/').length);
-  for (const entry of sorted) {
-    const node: Node = { entry, name: entry.path.split('/').pop() ?? entry.path, children: [] };
-    byPath.set(entry.path, node);
-    const i = entry.path.lastIndexOf('/');
-    const parent = i >= 0 ? byPath.get(entry.path.slice(0, i)) : undefined;
-    (parent ? parent.children : roots).push(node);
-  }
-  const order = (ns: Node[]) => {
-    ns.sort((a, b) => (a.entry.kind === b.entry.kind ? a.name.localeCompare(b.name) : a.entry.kind === 'dir' ? -1 : 1));
-    ns.forEach((n) => order(n.children));
-  };
-  order(roots);
-  return roots;
-}
 
 const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
 const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
@@ -86,7 +62,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
     }
   };
 
-  const row = (n: Node, depth: number) => {
+  const row = (n: TreeNode, depth: number) => {
     const { entry } = n;
     const isDir = entry.kind === 'dir';
     const open = expanded.has(entry.path);
@@ -137,7 +113,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
             />
           </li>
         )}
-        {build(entries).map((n) => row(n, 0))}
+        {buildTree(entries).map((n) => row(n, 0))}
       </ul>
       {menu && (
         <div

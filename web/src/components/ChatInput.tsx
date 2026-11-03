@@ -2,18 +2,18 @@ import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 
 import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
-import type { Attachment, Space } from '../api/types';
+import type { AttachmentRef, Space } from '../api/types';
 
 interface Props {
   space?: Space;
   streaming: boolean;
-  onSend: (text: string, attachments: Attachment[]) => void;
+  onSend: (text: string, attachments: AttachmentRef[]) => void;
   onStop: () => void;
 }
 
 const EMPTY: never[] = [];
 
-function Picker({ space, picked, onPick }: { space: Space; picked: Attachment[]; onPick: (path: string) => void }) {
+function Picker({ space, picked, onPick }: { space: Space; picked: AttachmentRef[]; onPick: (path: string) => void }) {
   const entries = useFilesStore((s) => s.entries[space] ?? EMPTY);
   const files = entries.filter((e) => e.kind === 'file' && !picked.some((a) => a.path === e.path));
   return (
@@ -37,7 +37,7 @@ function Picker({ space, picked, onPick }: { space: Space; picked: Attachment[];
 
 export function ChatInput({ space, streaming, onSend, onStop }: Props) {
   const [value, setValue] = useState('');
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [picking, setPicking] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -50,7 +50,7 @@ export function ChatInput({ space, streaming, onSend, onStop }: Props) {
     return () => document.removeEventListener('mousedown', onDown);
   }, [picking]);
 
-  const add = (a: Attachment) =>
+  const add = (a: AttachmentRef) =>
     setAttachments((cur) => (cur.some((x) => x.space === a.space && x.path === a.path) ? cur : [...cur, a]));
 
   const submit = () => {
@@ -77,7 +77,7 @@ export function ChatInput({ space, streaming, onSend, onStop }: Props) {
     if (!raw) return;
     e.preventDefault();
     try {
-      const a = JSON.parse(raw) as Attachment;
+      const a = JSON.parse(raw) as AttachmentRef;
       if (space && a.space === space && typeof a.path === 'string') add({ space: a.space, path: a.path });
     } catch {
       // not ours

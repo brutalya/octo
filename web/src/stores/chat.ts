@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../api/client';
-import type { Attachment, Message } from '../api/types';
+import type { AttachmentRef, Message } from '../api/types';
 import { useThreadsStore } from './threads';
 
 interface Streaming {
@@ -12,7 +12,7 @@ interface ChatState {
   messages: Record<string, Message[]>;
   streaming: Record<string, Streaming | undefined>;
   load: (threadId: string) => Promise<void>;
-  send: (threadId: string, content: string, attachments?: Attachment[]) => Promise<void>;
+  send: (threadId: string, content: string, attachments?: AttachmentRef[]) => Promise<void>;
   stop: (threadId: string) => Promise<void>;
 }
 
@@ -20,7 +20,7 @@ const controllers = new Map<string, AbortController>();
 let localId = 0;
 
 function local(threadId: string, role: Message['role'], content: string): Message {
-  return { id: `local-${++localId}`, thread_id: threadId, role, content, attachments: null, created_at: Date.now() };
+  return { id: `local-${++localId}`, thread_id: threadId, role, content, attachments: [], created_at: Date.now() };
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
