@@ -38,3 +38,18 @@ Path validation: relative, no `..`, no absolute, normalized — pure fn with tes
 - "+" dropdown: providers -> for HTTP providers a model submenu (searchable list). Private option shown only for local providers.
 - Settings: gear at bottom of sidebar -> modal with one section per provider (Ollama URL + check button showing models count; OpenRouter key + check). Nothing else.
 - Thread list label: provider + model short name, muted.
+
+## Deviations
+- `ProviderKind` serializes as `"openrouter"` (not serde's default `open_router`), matching the DB value and the TS type.
+- `GET /files/:space` returns a flat list ordered component-wise (a dir is followed by its children), not a nested tree; the client builds the tree. Entries carry `modified` (unix ms). The private `index.bin` additionally stores `kind` and `modified`.
+- Private blobs are bound to their id as AEAD associated data (and `index.bin` to a fixed tag), so blobs cannot be swapped between files undetected. Key/dirs: `<data>/keys/private.key` is created on first private access, not at startup.
+- Upload (`POST /files/:space?path=dir/`): each multipart file part is stored at `dir/<filename>`; the filename may itself contain `/` subpaths (validated). An existing file is overwritten; rename onto an existing path is 409; deleting a non-empty dir is 409. Parent dirs are created implicitly. The 50 MB limit is the request body limit (413).
+- Public store never follows or lists symlinks; any symlink component in a requested path is rejected.
+- Downloads are served as `application/octet-stream` with `nosniff` and `CSP: sandbox` so user files cannot run script in the app origin.
+- Attachments are inlined only into the turn that carries them; earlier turns are re-sent as their plain message text (token economy). The stored message keeps `attachments` refs, the `content` stays the user's text.
+- CLI providers: `--model` is passed when the thread has a model; `--add-dir <data>/public` only for public threads (both CLIs accept it; verified via `--help`, not run against the real services). Private threads never use CLI providers.
+- OpenRouter streams that close without `[DONE]` are completed with `done`; an interrupted connection yields `error`. Ollama `done:true` lines may carry text, which is emitted first.
+- A run is released (thread no longer busy) before the SSE stream closes, so a client may send the next message right after `done`.
+- Upstream failures of `GET /providers/:kind/models` are `502`; CLI kinds return `[]`. `openrouter_base` is a `Config` field (tests point it at a fake server), not a user setting.
+- Settings: keys shorter than 12 chars are masked as `...`. `PATCH` validates the whole body before applying; `openrouter_api_key: ""` clears the key.
+- File I/O in handlers is synchronous (small local files, single user); moving it to `spawn_blocking` is a later optimization.

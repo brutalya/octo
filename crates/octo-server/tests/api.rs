@@ -20,6 +20,7 @@ fn app() -> (Router, tempfile::TempDir) {
         data_dir: dir,
         claude_bin: fake.clone(),
         agy_bin: fake,
+        openrouter_base: String::new(),
     };
     (
         octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None),
@@ -64,7 +65,7 @@ async fn providers_listed() {
     let (app, _d) = app();
     let v = json_of(call(&app, "GET", "/api/providers", None).await).await;
     let v = v.as_array().unwrap();
-    assert_eq!(v.len(), 2);
+    assert_eq!(v.len(), 4);
     assert_eq!(v[0]["kind"], "claude");
     assert_eq!(v[0]["installed"], true);
     assert_eq!(v[0]["version"], "9.9.9 (fake)");
@@ -218,6 +219,7 @@ async fn serves_web_dir_with_index_fallback() {
         data_dir: d.path().to_path_buf(),
         claude_bin: "x".into(),
         agy_bin: "x".into(),
+        openrouter_base: String::new(),
     };
     let app = octo_server::app(
         Arc::new(Hub::new(cfg).unwrap()),

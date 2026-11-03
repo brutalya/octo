@@ -1,4 +1,4 @@
-use octo_core::provider::ProviderKind;
+use octo_core::providers::ProviderKind;
 use octo_core::storage::{Approval, Role, Space, Storage};
 
 fn db() -> Storage {
@@ -10,11 +10,11 @@ fn migrations_set_version_and_are_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("octo.db");
     let s = Storage::open(&path).unwrap();
-    s.create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+    s.create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
         .unwrap();
     drop(s);
     let s = Storage::open(&path).unwrap();
-    assert_eq!(s.user_version().unwrap(), 2);
+    assert_eq!(s.user_version().unwrap(), 3);
     assert_eq!(s.list_threads().unwrap().len(), 1);
 }
 
@@ -22,10 +22,15 @@ fn migrations_set_version_and_are_idempotent() {
 fn thread_crud_and_ordering() {
     let s = db();
     let a = s
-        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
         .unwrap();
     let b = s
-        .create_thread(ProviderKind::Antigravity, Space::Private, Approval::Confirm)
+        .create_thread(
+            ProviderKind::Antigravity,
+            Space::Private,
+            Approval::Confirm,
+            None,
+        )
         .unwrap();
     assert_eq!(b.space, Space::Private);
     assert_eq!(s.list_threads().unwrap()[0].id, b.id);
@@ -44,7 +49,7 @@ fn thread_crud_and_ordering() {
 fn messages_ordered_and_cascade() {
     let s = db();
     let t = s
-        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
         .unwrap();
     s.add_message(&t.id, Role::User, "1").unwrap();
     s.add_message(&t.id, Role::Assistant, "2").unwrap();
@@ -64,7 +69,7 @@ fn messages_ordered_and_cascade() {
 fn title_and_session() {
     let s = db();
     let t = s
-        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
         .unwrap();
     assert_eq!(t.title, "");
     s.set_title_if_empty(&t.id, &"x".repeat(100)).unwrap();
@@ -80,9 +85,9 @@ fn touched_thread_always_moves_to_top() {
     for _ in 0..200 {
         let s = db();
         let a = s
-            .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+            .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
             .unwrap();
-        s.create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm)
+        s.create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
             .unwrap();
         s.add_message(&a.id, Role::User, "hi").unwrap();
         assert_eq!(s.list_threads().unwrap()[0].id, a.id);
@@ -93,7 +98,7 @@ fn touched_thread_always_moves_to_top() {
 fn approval_roundtrip_and_check_constraint() {
     let s = db();
     let t = s
-        .create_thread(ProviderKind::Claude, Space::Public, Approval::Auto)
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Auto, None)
         .unwrap();
     assert_eq!(
         s.get_thread(&t.id).unwrap().unwrap().approval,
@@ -130,9 +135,77 @@ fn migration_2_keeps_old_threads_as_confirm() {
         .unwrap();
     }
     let s = Storage::open(&path).unwrap();
-    assert_eq!(s.user_version().unwrap(), 2);
+    assert_eq!(s.user_version().unwrap(), 3);
     assert_eq!(
         s.get_thread("x").unwrap().unwrap().approval,
         Approval::Confirm
     );
+}
+
+#[test]
+fn thread_model_roundtrip() {
+    let s = db();
+    let t = s
+        .create_thread(
+            ProviderKind::Ollama,
+            Space::Private,
+            Approval::Confirm,
+            Some("llama3:8b"),
+        )
+        .unwrap();
+    assert_eq!(
+        s.get_thread(&t.id).unwrap().unwrap().model.as_deref(),
+        Some("llama3:8b")
+    );
+    let c = s
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
+        .unwrap();
+    assert_eq!(s.get_thread(&c.id).unwrap().unwrap().model, None);
+}
+
+#[test]
+fn message_attachments_roundtrip() {
+    use octo_core::storage::AttachmentRef;
+    let s = db();
+    let t = s
+        .create_thread(
+            ProviderKind::Ollama,
+            Space::Private,
+            Approval::Confirm,
+            Some("m"),
+        )
+        .unwrap();
+    let refs = vec![AttachmentRef {
+        space: Space::Private,
+        path: "a/b.txt".into(),
+    }];
+    s.add_message_with(&t.id, Role::User, "see", &refs).unwrap();
+    s.add_message(&t.id, Role::Assistant, "ok").unwrap();
+    let m = s.list_messages(&t.id).unwrap();
+    assert_eq!(m[0].attachments, refs);
+    assert!(m[1].attachments.is_empty());
+}
+
+#[test]
+fn migrates_a_version_2_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("octo.db");
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE threads(id TEXT PRIMARY KEY, title TEXT NOT NULL, provider TEXT NOT NULL,
+               space TEXT NOT NULL, external_session_id TEXT, created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL, approval TEXT NOT NULL DEFAULT 'confirm');
+             CREATE TABLE messages(id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
+               content TEXT NOT NULL, created_at INTEGER NOT NULL);
+             INSERT INTO threads VALUES('t','x','claude','public',NULL,1,1,'confirm');
+             INSERT INTO messages VALUES('m','t','user','hi',1);
+             PRAGMA user_version=2;",
+        )
+        .unwrap();
+    }
+    let s = Storage::open(&path).unwrap();
+    assert_eq!(s.user_version().unwrap(), 3);
+    assert_eq!(s.get_thread("t").unwrap().unwrap().model, None);
+    assert!(s.list_messages("t").unwrap()[0].attachments.is_empty());
 }

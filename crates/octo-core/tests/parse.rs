@@ -1,4 +1,4 @@
-use octo_core::provider::{AgentEvent, ProviderKind, parse_line};
+use octo_core::providers::{AgentEvent, ProviderKind, parse_line};
 use std::fs;
 
 fn events(kind: ProviderKind, name: &str) -> Vec<AgentEvent> {

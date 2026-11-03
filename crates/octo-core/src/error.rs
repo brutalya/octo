@@ -1,4 +1,6 @@
+use crate::files::FilesError;
 use crate::policy::PolicyError;
+use crate::settings::SettingsError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -8,8 +10,16 @@ pub enum CoreError {
     Busy,
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    UnsupportedMedia(String),
+    #[error("{0}")]
+    Upstream(String),
     #[error(transparent)]
     Policy(#[from] PolicyError),
+    #[error(transparent)]
+    Files(#[from] FilesError),
+    #[error(transparent)]
+    Settings(#[from] SettingsError),
     #[error("storage: {0}")]
     Storage(#[from] rusqlite::Error),
     #[error("io: {0}")]

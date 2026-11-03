@@ -1,4 +1,4 @@
-use crate::provider::ProviderKind;
+use crate::providers::ProviderKind;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -19,6 +19,8 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX messages_thread ON messages(thread_id);",
     "ALTER TABLE threads ADD COLUMN approval TEXT NOT NULL DEFAULT 'confirm'
         CHECK(approval IN('auto','confirm'));",
+    "ALTER TABLE threads ADD COLUMN model TEXT;
+     ALTER TABLE messages ADD COLUMN attachments TEXT;",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -72,6 +74,14 @@ impl Approval {
     }
 }
 
+/// Reference to a file in a space, attached to a user message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AttachmentRef {
+    pub space: Space,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -106,6 +116,7 @@ pub struct Thread {
     pub provider: ProviderKind,
     pub space: Space,
     pub approval: Approval,
+    pub model: Option<String>,
     #[serde(skip)]
     #[ts(skip)]
     pub external_session_id: Option<String>,
@@ -122,6 +133,7 @@ pub struct Message {
     pub thread_id: String,
     pub role: Role,
     pub content: String,
+    pub attachments: Vec<AttachmentRef>,
     #[ts(type = "number")]
     pub created_at: i64,
 }
@@ -142,7 +154,7 @@ fn new_id() -> String {
 }
 
 const THREAD_COLS: &str =
-    "id,title,provider,space,external_session_id,created_at,updated_at,approval";
+    "id,title,provider,space,external_session_id,created_at,updated_at,approval,model";
 
 fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
     let provider: String = r.get(2)?;
@@ -156,6 +168,7 @@ fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
         approval: Approval::parse(&r.get::<_, String>(7)?),
+        model: r.get(8)?,
     })
 }
 
@@ -196,6 +209,7 @@ impl Storage {
         provider: ProviderKind,
         space: Space,
         approval: Approval,
+        model: Option<&str>,
     ) -> rusqlite::Result<Thread> {
         let now = now_ms();
         let t = Thread {
@@ -204,13 +218,14 @@ impl Storage {
             provider,
             space,
             approval,
+            model: model.map(str::to_string),
             external_session_id: None,
             created_at: now,
             updated_at: now,
         };
         self.conn().execute(
-            "INSERT INTO threads(id,title,provider,space,approval,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-            params![t.id, t.title, provider.as_str(), space.as_str(), approval.as_str(), now, now],
+            "INSERT INTO threads(id,title,provider,space,approval,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            params![t.id, t.title, provider.as_str(), space.as_str(), approval.as_str(), t.model, now, now],
         )?;
         Ok(t)
     }
@@ -270,17 +285,30 @@ impl Storage {
         role: Role,
         content: &str,
     ) -> rusqlite::Result<Message> {
+        self.add_message_with(thread_id, role, content, &[])
+    }
+
+    pub fn add_message_with(
+        &self,
+        thread_id: &str,
+        role: Role,
+        content: &str,
+        attachments: &[AttachmentRef],
+    ) -> rusqlite::Result<Message> {
         let m = Message {
             id: new_id(),
             thread_id: thread_id.into(),
             role,
             content: content.into(),
+            attachments: attachments.to_vec(),
             created_at: now_ms(),
         };
+        let json = (!attachments.is_empty())
+            .then(|| serde_json::to_string(attachments).unwrap_or_default());
         let c = self.conn();
         c.execute(
-            "INSERT INTO messages(id,thread_id,role,content,created_at) VALUES(?,?,?,?,?)",
-            params![m.id, m.thread_id, role.as_str(), m.content, m.created_at],
+            "INSERT INTO messages(id,thread_id,role,content,attachments,created_at) VALUES(?,?,?,?,?,?)",
+            params![m.id, m.thread_id, role.as_str(), m.content, json, m.created_at],
         )?;
         c.execute(
             "UPDATE threads SET updated_at=MAX(?, (SELECT MAX(updated_at)+1 FROM threads)) WHERE id=?",
@@ -292,7 +320,7 @@ impl Storage {
     pub fn list_messages(&self, thread_id: &str) -> rusqlite::Result<Vec<Message>> {
         let c = self.conn();
         let mut st = c.prepare(
-            "SELECT id,thread_id,role,content,created_at FROM messages
+            "SELECT id,thread_id,role,content,created_at,attachments FROM messages
              WHERE thread_id=? ORDER BY created_at, rowid",
         )?;
         st.query_map([thread_id], |r| {
@@ -303,6 +331,10 @@ impl Storage {
                 role: Role::parse(&role),
                 content: r.get(3)?,
                 created_at: r.get(4)?,
+                attachments: r
+                    .get::<_, Option<String>>(5)?
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
             })
         })?
         .collect()

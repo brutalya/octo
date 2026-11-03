@@ -1,9 +1,14 @@
+pub mod attachments;
 pub mod config;
+pub mod crypto;
 pub mod error;
+pub mod files;
 pub mod hub;
 pub mod policy;
-pub mod provider;
+pub mod providers;
 pub mod registry;
+pub mod run;
+pub mod settings;
 pub mod storage;
 
 pub use config::Config;
