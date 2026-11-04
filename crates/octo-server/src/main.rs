@@ -57,7 +57,10 @@ async fn main() -> Result<()> {
         ])
         .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
-    let app = octo_server::app_with_token(Arc::new(Hub::new(config)?), web_dir, args.token);
+    let data_dir = config.data_dir.clone();
+    let hub = Arc::new(Hub::new(config)?);
+    let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
+    let app = octo_server::app_with_node(hub, node, web_dir, args.token);
     let app = if args.relay {
         app.merge(octo_net::relay::router(octo_net::relay::Relay::new(
             Default::default(),

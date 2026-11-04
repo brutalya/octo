@@ -6,6 +6,7 @@ pub mod files;
 mod fsutil;
 pub mod hub;
 pub mod import;
+pub mod nodes;
 pub mod policy;
 mod procgroup;
 pub mod providers;

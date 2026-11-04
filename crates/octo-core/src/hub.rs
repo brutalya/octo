@@ -27,6 +27,7 @@ pub struct Hub {
     registry: ProcessRegistry,
     files: Arc<Files>,
     settings: RwLock<Settings>,
+    net: tokio::sync::watch::Sender<crate::settings::NetSettings>,
     http: reqwest::Client,
     /// One entry per running thread (CLI and HTTP providers alike).
     runs: Arc<Mutex<HashMap<String, Arc<RunCtl>>>>,
@@ -49,6 +50,7 @@ impl Hub {
             storage,
             registry: ProcessRegistry::default(),
             files: Arc::new(files),
+            net: tokio::sync::watch::channel(settings.net()).0,
             settings: RwLock::new(settings),
             http,
             runs: Arc::default(),
@@ -67,6 +69,11 @@ impl Hub {
             .clone()
     }
 
+    /// Notifies when relay URL or node name change.
+    pub fn watch_net(&self) -> tokio::sync::watch::Receiver<crate::settings::NetSettings> {
+        self.net.subscribe()
+    }
+
     pub fn settings(&self) -> SettingsView {
         self.settings_snapshot().view()
     }
@@ -77,6 +84,7 @@ impl Hub {
         next.apply(patch)?;
         next.save(&self.config.settings_path())?;
         *s = next;
+        self.net.send_replace(s.net());
         Ok(s.view())
     }
 

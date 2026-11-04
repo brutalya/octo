@@ -3,4 +3,12 @@
 /**
  * Absent field = unchanged. `openrouter_api_key: ""` clears the key.
  */
-export type SettingsPatch = { ollama_url?: string, openrouter_api_key?: string, history_char_budget?: number, };
+export type SettingsPatch = { ollama_url?: string, openrouter_api_key?: string, history_char_budget?: number, 
+/**
+ * `ws://host:port/relay`; `""` clears.
+ */
+relay_url?: string, 
+/**
+ * Display name of this node (max 64 chars); `""` resets to the default.
+ */
+node_name?: string, };

@@ -1,3 +1,6 @@
+pub mod node;
+mod tunnel;
+
 use axum::Json;
 pub use axum::Router;
 use axum::extract::multipart::MultipartError;
@@ -6,7 +9,8 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
+use node::{Node, NodeError};
 use octo_core::files::{Files, FilesError};
 use octo_core::providers::ProviderKind;
 use octo_core::settings::SettingsPatch;
@@ -74,7 +78,8 @@ impl IntoResponse for ApiError {
             CoreError::Upstream(_) => StatusCode::BAD_GATEWAY,
             CoreError::Policy(_) => StatusCode::FORBIDDEN,
             CoreError::Settings(octo_core::settings::SettingsError::BadUrl)
-            | CoreError::Settings(octo_core::settings::SettingsError::BadBudget) => {
+            | CoreError::Settings(octo_core::settings::SettingsError::BadBudget)
+            | CoreError::Settings(octo_core::settings::SettingsError::BadRelayUrl) => {
                 StatusCode::BAD_REQUEST
             }
             CoreError::Files(e) => match e {
@@ -151,7 +156,54 @@ pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
 
 /// Same as [`app`]; when `token` is set, `/api/*` requires `Authorization: Bearer <token>`.
 pub fn app_with_token(hub: Shared, web_dir: Option<PathBuf>, token: Option<String>) -> Router {
-    let api = Router::new()
+    build(hub, None, web_dir, token)
+}
+
+/// Same as [`app_with_token`], plus the node endpoints (`/api/nodes`, `/api/pairing/*`).
+/// Requests tunneled from member nodes are dispatched into the local API only (no token, no
+/// node/pairing endpoints, so they cannot hop further).
+pub fn app_with_node(
+    hub: Shared,
+    node: Arc<Node>,
+    web_dir: Option<PathBuf>,
+    token: Option<String>,
+) -> Router {
+    build(hub, Some(node), web_dir, token)
+}
+
+fn build(
+    hub: Shared,
+    node: Option<Arc<Node>>,
+    web_dir: Option<PathBuf>,
+    token: Option<String>,
+) -> Router {
+    let local = local_api(hub);
+    let api = match node {
+        Some(n) => {
+            n.set_router(Router::new().nest("/api", local.clone()));
+            local.merge(node_routes(n))
+        }
+        None => local,
+    };
+    let api = match token {
+        Some(t) => api.layer(middleware::from_fn_with_state(
+            Arc::<str>::from(t),
+            require_token,
+        )),
+        None => api,
+    };
+    let router = Router::new().nest("/api", api);
+    match web_dir {
+        Some(dir) => {
+            let index = ServeFile::new(dir.join("index.html"));
+            router.fallback_service(ServeDir::new(dir).fallback(index))
+        }
+        None => router,
+    }
+}
+
+fn local_api(hub: Shared) -> Router {
+    Router::new()
         .route("/providers", get(providers))
         .route("/threads", get(list_threads).post(create_thread))
         .route(
@@ -177,22 +229,7 @@ pub fn app_with_token(hub: Shared, web_dir: Option<PathBuf>, token: Option<Strin
         )
         .route("/files/{space}/content", get(file_content))
         .route("/files/{space}/dir", post(make_dir))
-        .with_state(hub);
-    let api = match token {
-        Some(t) => api.layer(middleware::from_fn_with_state(
-            Arc::<str>::from(t),
-            require_token,
-        )),
-        None => api,
-    };
-    let router = Router::new().nest("/api", api);
-    match web_dir {
-        Some(dir) => {
-            let index = ServeFile::new(dir.join("index.html"));
-            router.fallback_service(ServeDir::new(dir).fallback(index))
-        }
-        None => router,
-    }
+        .with_state(hub)
 }
 
 async fn require_token(State(token): State<Arc<str>>, req: Request, next: Next) -> Response {
@@ -416,5 +453,74 @@ async fn delete_file(
     Query(q): Query<PathQuery>,
 ) -> ApiResult<StatusCode> {
     blocking(&h, move |f| f.delete(space, &q.path)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+impl IntoResponse for NodeError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            NodeError::NoRelay | NodeError::BadCode | NodeError::BadPath => StatusCode::BAD_REQUEST,
+            NodeError::Busy => StatusCode::CONFLICT,
+            NodeError::NoPending | NodeError::UnknownNode => StatusCode::NOT_FOUND,
+            NodeError::Unreachable | NodeError::Net(_) => StatusCode::BAD_GATEWAY,
+        };
+        (status, Json(json!({"error": self.to_string()}))).into_response()
+    }
+}
+
+fn node_routes(node: Arc<Node>) -> Router {
+    Router::new()
+        .route("/nodes", get(list_nodes))
+        .route("/nodes/{id}/{*rest}", any(forward_to_node))
+        .route("/pairing/invite", post(pairing_invite))
+        .route("/pairing/join", post(pairing_join))
+        .route("/pairing/pending", get(pairing_pending))
+        .route("/pairing/confirm", post(pairing_confirm))
+        .route("/pairing/reject", post(pairing_reject))
+        .with_state(node)
+}
+
+async fn list_nodes(State(n): State<Arc<Node>>) -> impl IntoResponse {
+    Json(n.list().await)
+}
+
+async fn forward_to_node(
+    State(n): State<Arc<Node>>,
+    Path((id, rest)): Path<(String, String)>,
+    req: Request,
+) -> Result<Response, NodeError> {
+    Ok(n.forward(&id, &rest, req).await?.into_response())
+}
+
+async fn pairing_invite(State(n): State<Arc<Node>>) -> Result<impl IntoResponse, NodeError> {
+    Ok(Json(n.invite().await?))
+}
+
+#[derive(Deserialize)]
+struct JoinBody {
+    code: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn pairing_join(
+    State(n): State<Arc<Node>>,
+    Json(b): Json<JoinBody>,
+) -> Result<StatusCode, NodeError> {
+    n.join(&b.code, &b.name)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn pairing_pending(State(n): State<Arc<Node>>) -> Result<impl IntoResponse, NodeError> {
+    n.pending().map(Json).ok_or(NodeError::NoPending)
+}
+
+async fn pairing_confirm(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
+    n.decide(true)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn pairing_reject(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
+    n.decide(false)?;
     Ok(StatusCode::NO_CONTENT)
 }

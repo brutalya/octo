@@ -12,6 +12,8 @@ pub struct Settings {
     pub ollama_url: String,
     pub openrouter_api_key: Option<String>,
     pub history_char_budget: usize,
+    pub relay_url: Option<String>,
+    pub node_name: Option<String>,
 }
 
 impl Default for Settings {
@@ -20,6 +22,8 @@ impl Default for Settings {
             ollama_url: DEFAULT_OLLAMA_URL.into(),
             openrouter_api_key: None,
             history_char_budget: DEFAULT_HISTORY_BUDGET,
+            relay_url: None,
+            node_name: None,
         }
     }
 }
@@ -34,6 +38,8 @@ impl std::fmt::Debug for Settings {
                 &self.openrouter_api_key.as_ref().map(|_| "<set>"),
             )
             .field("history_char_budget", &self.history_char_budget)
+            .field("relay_url", &self.relay_url)
+            .field("node_name", &self.node_name)
             .finish()
     }
 }
@@ -46,6 +52,15 @@ pub struct SettingsView {
     pub openrouter_api_key: Option<String>,
     #[ts(type = "number")]
     pub history_char_budget: usize,
+    pub relay_url: Option<String>,
+    pub node_name: Option<String>,
+}
+
+/// The part of the settings the network node cares about.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NetSettings {
+    pub relay_url: Option<String>,
+    pub node_name: Option<String>,
 }
 
 /// Absent field = unchanged. `openrouter_api_key: ""` clears the key.
@@ -58,6 +73,12 @@ pub struct SettingsPatch {
     pub openrouter_api_key: Option<String>,
     #[ts(optional, type = "number")]
     pub history_char_budget: Option<usize>,
+    /// `ws://host:port/relay`; `""` clears.
+    #[ts(optional)]
+    pub relay_url: Option<String>,
+    /// Display name of this node (max 64 chars); `""` resets to the default.
+    #[ts(optional)]
+    pub node_name: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +87,8 @@ pub enum SettingsError {
     BadUrl,
     #[error("history_char_budget must be positive")]
     BadBudget,
+    #[error("relay_url must start with ws:// or wss://")]
+    BadRelayUrl,
     #[error("settings file: {0}")]
     Io(#[from] std::io::Error),
     #[error("settings file is not valid JSON")]
@@ -88,6 +111,15 @@ impl Settings {
             ollama_url: self.ollama_url.clone(),
             openrouter_api_key: self.openrouter_api_key.as_deref().map(mask_key),
             history_char_budget: self.history_char_budget,
+            relay_url: self.relay_url.clone(),
+            node_name: self.node_name.clone(),
+        }
+    }
+
+    pub fn net(&self) -> NetSettings {
+        NetSettings {
+            relay_url: self.relay_url.clone(),
+            node_name: self.node_name.clone(),
         }
     }
 
@@ -105,6 +137,26 @@ impl Settings {
         };
         if p.history_char_budget == Some(0) {
             return Err(SettingsError::BadBudget);
+        }
+        let relay = match p.relay_url {
+            Some(u) => {
+                let u = u.trim().to_string();
+                if u.is_empty() {
+                    Some(None)
+                } else if (u.starts_with("ws://") || u.starts_with("wss://")) && u.len() > 6 {
+                    Some(Some(u))
+                } else {
+                    return Err(SettingsError::BadRelayUrl);
+                }
+            }
+            None => None,
+        };
+        if let Some(r) = relay {
+            self.relay_url = r;
+        }
+        if let Some(n) = p.node_name {
+            let n: String = n.trim().chars().take(64).collect();
+            self.node_name = (!n.is_empty()).then_some(n);
         }
         if let Some(u) = url {
             self.ollama_url = u;

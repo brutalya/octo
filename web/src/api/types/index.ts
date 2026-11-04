@@ -14,3 +14,6 @@ export type { SettingsPatch } from './SettingsPatch';
 export type { SettingsView } from './SettingsView';
 export type { Origin } from './Origin';
 export type { SessionSummary } from './SessionSummary';
+export type { NodeInfo } from './NodeInfo';
+export type { PairingInvite } from './PairingInvite';
+export type { PairingPending } from './PairingPending';

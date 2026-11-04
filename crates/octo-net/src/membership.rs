@@ -98,6 +98,7 @@ struct Stored {
     members: Vec<Member>,
 }
 
+#[derive(Clone)]
 pub struct Membership {
     path: Option<PathBuf>,
     key: NetworkKey,

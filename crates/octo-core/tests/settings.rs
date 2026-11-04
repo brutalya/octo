@@ -93,3 +93,36 @@ fn patch_validates() {
     s.apply(p).unwrap();
     assert_eq!(s.ollama_url, "http://box:11434");
 }
+
+#[test]
+fn relay_url_and_node_name_patch() {
+    let mut s = Settings::default();
+    assert_eq!(s.relay_url, None);
+    s.apply(SettingsPatch {
+        relay_url: Some(" ws://h:1/relay ".into()),
+        node_name: Some(" laptop ".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(s.relay_url.as_deref(), Some("ws://h:1/relay"));
+    assert_eq!(s.node_name.as_deref(), Some("laptop"));
+    assert!(
+        s.apply(SettingsPatch {
+            relay_url: Some("http://x".into()),
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert_eq!(
+        s.relay_url.as_deref(),
+        Some("ws://h:1/relay"),
+        "invalid patch changes nothing"
+    );
+    s.apply(SettingsPatch {
+        relay_url: Some("".into()),
+        node_name: Some("".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!((s.relay_url, s.node_name), (None, None));
+}
