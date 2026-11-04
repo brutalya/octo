@@ -14,6 +14,9 @@ struct Args {
     /// skipped if the directory does not exist.
     #[arg(long)]
     web_dir: Option<PathBuf>,
+    /// Require `Authorization: Bearer <token>` on /api/*. Open when omitted.
+    #[arg(long)]
+    token: Option<String>,
     #[arg(long)]
     claude_bin: Option<PathBuf>,
     #[arg(long)]
@@ -51,7 +54,7 @@ async fn main() -> Result<()> {
         ])
         .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
-    let app = octo_server::app(Arc::new(Hub::new(config)?), web_dir);
+    let app = octo_server::app_with_token(Arc::new(Hub::new(config)?), web_dir, args.token);
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
     println!("Octo: http://{}", listener.local_addr()?);
     if !web_built {

@@ -13,6 +13,12 @@ export class ApiError extends Error {
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
+  const token = (window as { __OCTO_TOKEN__?: string }).__OCTO_TOKEN__;
+  if (token) {
+    const headers = new Headers(init?.headers);
+    headers.set('authorization', `Bearer ${token}`);
+    init = { ...init, headers };
+  }
   const res = await fetch(BASE + path, init);
   if (!res.ok) {
     const text = await res.text().catch(() => '');

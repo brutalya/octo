@@ -295,6 +295,20 @@ impl Hub {
         self.registry.cancel(id);
     }
 
+    /// Cancels every running thread; their processes are killed and reaped.
+    pub fn shutdown(&self) {
+        let ids: Vec<String> = self
+            .runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            self.cancel(&id);
+        }
+    }
+
     /// Reads the attached text files (policy first) and inlines them into the prompt.
     async fn prompt_with_attachments(
         &self,

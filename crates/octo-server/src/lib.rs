@@ -1,10 +1,12 @@
+use axum::Json;
+pub use axum::Router;
 use axum::extract::multipart::MultipartError;
-use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
 use octo_core::files::{Files, FilesError};
 use octo_core::providers::ProviderKind;
 use octo_core::settings::SettingsPatch;
@@ -20,6 +22,17 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower_http::services::{ServeDir, ServeFile};
 
 type Shared = Arc<Hub>;
+
+/// Serves `app` on `listener` until `shutdown` resolves, then drains connections.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+}
 
 enum ApiError {
     Core(CoreError),
@@ -133,6 +146,11 @@ struct RenameBody {
 const UPLOAD_LIMIT: usize = 50 * 1024 * 1024 + 64 * 1024;
 
 pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
+    app_with_token(hub, web_dir, None)
+}
+
+/// Same as [`app`]; when `token` is set, `/api/*` requires `Authorization: Bearer <token>`.
+pub fn app_with_token(hub: Shared, web_dir: Option<PathBuf>, token: Option<String>) -> Router {
     let api = Router::new()
         .route("/providers", get(providers))
         .route("/threads", get(list_threads).post(create_thread))
@@ -160,6 +178,13 @@ pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
         .route("/files/{space}/content", get(file_content))
         .route("/files/{space}/dir", post(make_dir))
         .with_state(hub);
+    let api = match token {
+        Some(t) => api.layer(middleware::from_fn_with_state(
+            Arc::<str>::from(t),
+            require_token,
+        )),
+        None => api,
+    };
     let router = Router::new().nest("/api", api);
     match web_dir {
         Some(dir) => {
@@ -168,6 +193,28 @@ pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
         }
         None => router,
     }
+}
+
+async fn require_token(State(token): State<Arc<str>>, req: Request, next: Next) -> Response {
+    let ok = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|given| ct_eq(given.as_bytes(), token.as_bytes()));
+    if ok {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response()
+    }
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 async fn providers(State(h): State<Shared>) -> impl IntoResponse {
