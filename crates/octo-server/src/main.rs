@@ -27,6 +27,9 @@ struct Args {
     /// Antigravity CLI dir (default: ~/.gemini/antigravity-cli).
     #[arg(long)]
     agy_dir: Option<PathBuf>,
+    /// Also act as a relay: WebSocket at /relay (E2EE frames between paired nodes; sees no plaintext).
+    #[arg(long)]
+    relay: bool,
 }
 
 #[tokio::main]
@@ -55,6 +58,13 @@ async fn main() -> Result<()> {
         .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
     let app = octo_server::app_with_token(Arc::new(Hub::new(config)?), web_dir, args.token);
+    let app = if args.relay {
+        app.merge(octo_net::relay::router(octo_net::relay::Relay::new(
+            Default::default(),
+        )?))
+    } else {
+        app
+    };
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
     println!("Octo: http://{}", listener.local_addr()?);
     if !web_built {
