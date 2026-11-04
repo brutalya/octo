@@ -1,7 +1,7 @@
 import { readAgentEvents } from './sse';
 import type {
   AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, ProviderKind, ProviderStatus,
-  SessionSummary, SettingsView, SettingsPatch, Space, Thread,
+  SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
 const LOCAL = '/api';
@@ -67,8 +67,14 @@ export const api = {
       throw e;
     }
   },
-  pairingConfirm: async (): Promise<void> => {
-    await request('/pairing/confirm', { method: 'POST' }, true);
+  pairingConfirm: async (trustPrivate = false): Promise<void> => {
+    await request('/pairing/confirm', jsonInit('POST', { trust_private: trustPrivate }), true);
+  },
+  setNodeTrust: async (id: string, trust: TrustLevel): Promise<void> => {
+    await request(`/nodes/${encodeURIComponent(id)}/trust`, jsonInit('PATCH', { trust }), true);
+  },
+  removeNode: async (id: string): Promise<void> => {
+    await request(`/nodes/${encodeURIComponent(id)}`, { method: 'DELETE' }, true);
   },
   pairingReject: async (): Promise<void> => {
     await request('/pairing/reject', { method: 'POST' }, true);

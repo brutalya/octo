@@ -5,8 +5,9 @@ import { Devices } from './Devices';
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
 const nodes = [
-  { node_id: 'me', name: 'Home', is_self: true, online: true },
-  { node_id: 'vps', name: 'Vps', is_self: false, online: true },
+  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null },
+  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public' },
+  { node_id: 'pc', name: 'Pc', is_self: false, online: true, trust: 'full' },
 ];
 let f: ReturnType<typeof vi.fn>;
 let pending: Response | null;
@@ -22,7 +23,7 @@ beforeEach(() => {
     if (url === '/api/pairing/invite') return json({ code: 'ws://r/relay#TOK', expires_at: Math.floor(Date.now() / 1000) + 300 });
     if (url === '/api/pairing/pending') return pending ?? json({}, 404);
     if (url === '/api/pairing/join' && init?.method === 'POST') return json({}, 202);
-    if (url.startsWith('/api/pairing/')) return json({});
+    if (url.startsWith('/api/pairing/') || url.startsWith('/api/nodes/')) return json({}, 204);
     return json({}, 404);
   });
   vi.stubGlobal('fetch', f);
@@ -99,5 +100,60 @@ describe('Devices', () => {
     expect(await screen.findByText('111222', {}, { timeout: 4000 })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     expect(calls('POST', '/api/pairing/confirm')).toHaveLength(1);
+  });
+
+  it('confirm carries the trust private toggle (default off)', async () => {
+    pending = json({ sas: '123456', peer_name: 'Phone' });
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Add device' }));
+    await screen.findByText('123456', {}, { timeout: 4000 });
+    const toggle = screen.getByRole('checkbox', { name: 'Trust private' });
+    expect(toggle).not.toBeChecked();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    const c = calls('POST', '/api/pairing/confirm')[0];
+    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: true });
+  });
+
+  it('confirm without toggling sends trust_private false', async () => {
+    pending = json({ sas: '123456', peer_name: 'Phone' });
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Add device' }));
+    await screen.findByText('123456', {}, { timeout: 4000 });
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    const c = calls('POST', '/api/pairing/confirm')[0];
+    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: false });
+  });
+
+  it('joiner does not get the toggle', async () => {
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Join' }));
+    await userEvent.type(screen.getByLabelText('Code'), 'ws://r/relay#TOK');
+    pending = json({ sas: '111222', peer_name: 'hostid' });
+    await userEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await screen.findByText('111222', {}, { timeout: 4000 });
+    expect(screen.queryByRole('checkbox', { name: 'Trust private' })).toBeNull();
+  });
+
+  it('per-member trust toggle, lock icon and remove', async () => {
+    render(<Devices />);
+    await screen.findByText('Vps');
+    // Lock only next to the full-trust member.
+    expect(screen.getAllByTestId('trust-lock')).toHaveLength(1);
+    const vps = screen.getByRole('checkbox', { name: 'Trust private Vps' });
+    const pc = screen.getByRole('checkbox', { name: 'Trust private Pc' });
+    expect(vps).not.toBeChecked();
+    expect(pc).toBeChecked();
+    await userEvent.click(vps);
+    const up = calls('PATCH', '/api/nodes/vps/trust')[0];
+    expect(JSON.parse((up[1] as RequestInit).body as string)).toEqual({ trust: 'full' });
+    await userEvent.click(pc);
+    const down = calls('PATCH', '/api/nodes/pc/trust')[0];
+    expect(JSON.parse((down[1] as RequestInit).body as string)).toEqual({ trust: 'public' });
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Vps' }));
+    expect(calls('DELETE', '/api/nodes/vps')).toHaveLength(1);
   });
 });

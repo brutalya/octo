@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Check, Plus, X } from 'lucide-react';
+import { Check, Lock, Plus, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { NodeInfo, PairingPending, SettingsView } from '../api/types';
 
@@ -26,6 +26,7 @@ export function Devices() {
   const [mode, setMode] = useState<Mode>({ kind: 'idle' });
   const [pending, setPending] = useState<PairingPending | null>(null);
   const [left, setLeft] = useState(0);
+  const [trustPrivate, setTrustPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
@@ -103,12 +104,23 @@ export function Devices() {
 
   const answer = async (ok: boolean) => {
     try {
-      await (ok ? api.pairingConfirm() : api.pairingReject());
+      await (ok ? api.pairingConfirm(trustPrivate) : api.pairingReject());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
     setPending(null);
+    setTrustPrivate(false);
     setMode({ kind: 'idle' });
+    reload();
+  };
+
+  const act = async (f: () => Promise<void>) => {
+    try {
+      await f();
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
     reload();
   };
 
@@ -134,12 +146,34 @@ export function Devices() {
           <li key={n.node_id} className="flex items-center gap-2 py-0.5 text-sm text-slate-700">
             <span className={`h-1.5 w-1.5 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
             {n.name}
+            {n.trust === 'full' && <Lock data-testid="trust-lock" size={12} className="text-slate-500" />}
+            <input
+              type="checkbox"
+              aria-label={`Trust private ${n.name}`}
+              checked={n.trust === 'full'}
+              onChange={(e) => void act(() => api.setNodeTrust(n.node_id, e.target.checked ? 'full' : 'public'))}
+              className="ml-auto"
+            />
+            <button aria-label={`Remove ${n.name}`} onClick={() => void act(() => api.removeNode(n.node_id))} className={btn}>
+              <X size={12} />
+            </button>
           </li>
         ))}
       </ul>
       {pending ? (
         <div className="flex items-center gap-2">
           <span className="font-mono text-lg tracking-widest text-slate-800">{pending.sas}</span>
+          {mode.kind === 'invite' && (
+            <label className="flex items-center gap-1 text-xs text-slate-600">
+              <input
+                type="checkbox"
+                aria-label="Trust private"
+                checked={trustPrivate}
+                onChange={(e) => setTrustPrivate(e.target.checked)}
+              />
+              <Lock size={12} />
+            </label>
+          )}
           <button aria-label="Confirm" onClick={() => void answer(true)} className={btn}>
             <Check size={14} />
           </button>
