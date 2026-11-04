@@ -3,7 +3,7 @@ use common::*;
 
 use octo_net::identity::NodeKey;
 use octo_net::relay::{MAX_PAYLOAD, RelayLimits};
-use octo_net::relay_client::{ERR_PEER_UNAVAILABLE, ERR_RATE_LIMITED, Event, RelayHandle};
+use octo_net::relay_client::{ERR_PEER_UNAVAILABLE, Event, RelayHandle};
 use octo_net::session::{Handled, Sessions};
 use std::time::Duration;
 
@@ -105,29 +105,71 @@ async fn oversize_payload_rejected_client_side() {
 }
 
 #[tokio::test]
-async fn per_connection_rate_limit() {
+async fn burst_over_limit_is_delayed_not_dropped() {
     let limits = RelayLimits {
-        msgs_per_sec: 1.0,
-        msg_burst: 5.0,
+        msgs_per_sec: 400.0,
+        msg_burst: 10.0,
         ..RelayLimits::default()
     };
     let (addr, _s) = spawn_relay(limits).await;
     let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
-    let mut a = online(addr, &ka, NET1).await;
-    let b = online(addr, &kb, NET1).await;
-    for _ in 0..30 {
-        a.send(kb.node_id(), vec![1; 10]).await.unwrap();
+    let a = online(addr, &ka, NET1).await;
+    let mut b = online(addr, &kb, NET1).await;
+    const N: u32 = 600;
+    let t0 = std::time::Instant::now();
+    let tx = tokio::spawn(async move {
+        for i in 0..N {
+            a.send(kb.node_id(), i.to_be_bytes().to_vec())
+                .await
+                .unwrap();
+        }
+        a
+    });
+    for i in 0..N {
+        match next(&mut b).await {
+            Event::Frame { payload, .. } => assert_eq!(payload, i.to_be_bytes(), "frame {i}"),
+            e => panic!("{e:?}"),
+        }
     }
-    let mut limited = false;
-    for _ in 0..40 {
-        if matches!(next(&mut a).await, Event::RelayError(ERR_RATE_LIMITED)) {
-            limited = true;
+    // 600 frames at 400/s with burst 10 cannot finish instantly.
+    assert!(t0.elapsed() >= Duration::from_secs(1), "{:?}", t0.elapsed());
+    let mut a = tx.await.unwrap();
+    // The sender never saw a rate-limit error.
+    let r = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            if let Some(Event::RelayError(c)) = a.recv().await {
+                return c;
+            }
+        }
+    })
+    .await;
+    assert!(r.is_err(), "unexpected relay error {r:?}");
+}
+
+#[tokio::test]
+async fn sustained_over_limit_closes_connection() {
+    let limits = RelayLimits {
+        msgs_per_sec: 20.0,
+        msg_burst: 2.0,
+        abuse_after: Duration::from_millis(500),
+        ..RelayLimits::default()
+    };
+    let (addr, _s) = spawn_relay(limits).await;
+    let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
+    let a = online(addr, &ka, NET1).await;
+    let _b = online(addr, &kb, NET1).await;
+    for _ in 0..2000 {
+        if a.send(kb.node_id(), vec![1; 10]).await.is_err() {
             break;
         }
     }
-    assert!(limited);
-    // The other connection is unaffected.
-    b.send(ka.node_id(), b"fine".to_vec()).await.unwrap();
+    for _ in 0..100 {
+        if !a.is_online() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("abusive connection not closed");
 }
 
 #[tokio::test]

@@ -39,6 +39,7 @@ pub(crate) const T_ERROR: u8 = 0x12;
 pub(crate) const T_READY: u8 = 0x13;
 
 pub const ERR_PEER_UNAVAILABLE: u8 = 1;
+/// No longer sent as an in-band error; reserved (the relay closes abusive connections).
 pub const ERR_RATE_LIMITED: u8 = 2;
 pub const ERR_BUSY: u8 = 3;
 
@@ -81,6 +82,8 @@ pub struct RelayLimits {
     pub max_connections: usize,
     /// Per-connection outbound queue (messages).
     pub queue: usize,
+    /// A connection that stays over its limit this long (continuously) is closed.
+    pub abuse_after: Duration,
 }
 
 impl Default for RelayLimits {
@@ -93,6 +96,7 @@ impl Default for RelayLimits {
             handshake_timeout: Duration::from_secs(10),
             max_connections: 1024,
             queue: 256,
+            abuse_after: Duration::from_secs(30),
         }
     }
 }
@@ -122,6 +126,21 @@ impl TokenBucket {
             true
         } else {
             false
+        }
+    }
+}
+
+impl TokenBucket {
+    /// Takes `cost` tokens unconditionally (the balance may go negative) and returns how long
+    /// the caller must wait before the debt is repaid. Zero when tokens were available.
+    pub fn reserve(&mut self, cost: f64, now: Instant) -> Duration {
+        let dt = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        self.tokens = (self.tokens + dt * self.rate).min(self.capacity) - cost;
+        if self.tokens >= 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::from_secs_f64(-self.tokens / self.rate)
         }
     }
 }
@@ -248,6 +267,26 @@ async fn send_sealed(ws: &mut WebSocket, link: &mut Link, pt: &[u8]) -> bool {
     }
 }
 
+/// Sleeps for `wait` while still delivering this connection's outbound queue.
+async fn pause(
+    rx: &mut mpsc::Receiver<Vec<u8>>,
+    ws: &mut WebSocket,
+    link: &mut Link,
+    wait: Duration,
+) -> bool {
+    let sleep = tokio::time::sleep(wait);
+    tokio::pin!(sleep);
+    loop {
+        tokio::select! {
+            () = &mut sleep => return true,
+            out = rx.recv() => {
+                let Some(m) = out else { return false };
+                if !send_sealed(ws, link, &m).await { return false }
+            }
+        }
+    }
+}
+
 async fn run_connection(
     relay: &Relay,
     ws: &mut WebSocket,
@@ -260,7 +299,8 @@ async fn run_connection(
     let now = Instant::now();
     let mut msgs = TokenBucket::new(l.msg_burst, l.msgs_per_sec, now);
     let mut bytes = TokenBucket::new(l.byte_burst, l.bytes_per_sec, now);
-    let mut violations = 0u32;
+    // Start of the current uninterrupted over-limit period.
+    let mut over_since: Option<Instant> = None;
     if !send_sealed(ws, link, &[T_READY]).await {
         return;
     }
@@ -276,13 +316,16 @@ async fn run_connection(
                 let Ok(to) = <[u8; 16]>::try_from(to) else { return };
                 let to = NodeId::from_bytes(to);
                 let t = Instant::now();
-                if !(msgs.allow(1.0, t) && bytes.allow(payload.len() as f64, t)) {
-                    violations += 1;
-                    if violations > 200 { return }
-                    if !send_sealed(ws, link, &[T_ERROR, ERR_RATE_LIMITED]).await { return }
-                    continue;
+                // Backpressure: stop reading this connection until the debt is repaid, so the
+                // sender's WebSocket/TCP window fills. Frames are never dropped.
+                let wait = msgs.reserve(1.0, t).max(bytes.reserve(payload.len() as f64, t));
+                if wait.is_zero() {
+                    over_since = None;
+                } else {
+                    let since = *over_since.get_or_insert(t);
+                    if t + wait > since + l.abuse_after { return }
+                    if !pause(rx, ws, link, wait).await { return }
                 }
-                violations = 0;
                 let code = match relay.lookup(&net, &to) {
                     None => Some(ERR_PEER_UNAVAILABLE),
                     Some(tx) => {
