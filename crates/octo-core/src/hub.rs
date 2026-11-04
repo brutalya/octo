@@ -119,6 +119,11 @@ impl Hub {
         Ok(self.storage.list_threads()?)
     }
 
+    /// Space of a thread, `None` if it does not exist.
+    pub fn thread_space(&self, id: &str) -> Result<Option<Space>, CoreError> {
+        Ok(self.storage.get_thread(id)?.map(|t| t.space))
+    }
+
     pub fn create_thread(
         &self,
         provider: ProviderKind,

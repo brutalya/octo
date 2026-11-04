@@ -1,4 +1,5 @@
 pub mod node;
+pub mod policy;
 mod tunnel;
 
 use axum::Json;
@@ -487,6 +488,8 @@ impl IntoResponse for NodeError {
 fn node_routes(node: Arc<Node>) -> Router {
     Router::new()
         .route("/nodes", get(list_nodes))
+        .route("/nodes/{id}", axum::routing::delete(remove_node))
+        .route("/nodes/{id}/trust", axum::routing::patch(set_node_trust))
         .route("/nodes/{id}/{*rest}", any(forward_to_node))
         .route("/pairing/invite", post(pairing_invite))
         .route("/pairing/join", post(pairing_join))
@@ -531,12 +534,49 @@ async fn pairing_pending(State(n): State<Arc<Node>>) -> Result<impl IntoResponse
     n.pending().map(Json).ok_or(NodeError::NoPending)
 }
 
-async fn pairing_confirm(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
-    n.decide(true)?;
+#[derive(Deserialize, Default)]
+struct ConfirmBody {
+    #[serde(default)]
+    trust_private: bool,
+}
+
+async fn pairing_confirm(State(n): State<Arc<Node>>, body: axum::body::Bytes) -> Response {
+    let b: ConfirmBody = if body.is_empty() {
+        ConfirmBody::default()
+    } else if let Ok(b) = serde_json::from_slice(&body) {
+        b
+    } else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match n.decide(true, b.trust_private) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TrustBody {
+    trust: octo_net::membership::Trust,
+}
+
+async fn set_node_trust(
+    State(n): State<Arc<Node>>,
+    Path(id): Path<String>,
+    Json(b): Json<TrustBody>,
+) -> Result<StatusCode, NodeError> {
+    n.set_trust(&id, b.trust).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_node(
+    State(n): State<Arc<Node>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, NodeError> {
+    n.remove(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn pairing_reject(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
-    n.decide(false)?;
+    n.decide(false, false)?;
     Ok(StatusCode::NO_CONTENT)
 }

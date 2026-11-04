@@ -17,3 +17,4 @@ export type { SessionSummary } from './SessionSummary';
 export type { NodeInfo } from './NodeInfo';
 export type { PairingInvite } from './PairingInvite';
 export type { PairingPending } from './PairingPending';
+export type { TrustLevel } from './TrustLevel';

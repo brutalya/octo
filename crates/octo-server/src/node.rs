@@ -1,16 +1,17 @@
 //! The node service: identity, membership, relay link, IK sessions, stream muxes and the
 //! pairing state machine. One actor task owns the relay handle and the sessions; HTTP handlers
 //! talk to it through commands. Tunneled requests are dispatched into the local router in-process.
+use crate::policy::{self, TunnelReq};
 use crate::tunnel::{Framed, ReqHead, RespHead};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use octo_core::Hub;
-use octo_core::nodes::{NodeInfo, PairingInvite, PairingPending};
+use octo_core::nodes::{NodeInfo, PairingInvite, PairingPending, TrustLevel};
 use octo_core::settings::NetSettings;
 use octo_net::NetError;
 use octo_net::identity::{NodeId, NodeKey};
-use octo_net::membership::Membership;
+use octo_net::membership::{Membership, Trust};
 use octo_net::mux::{Mux, Stream};
 use octo_net::pairing::{self, PAIR_TTL, PairHost, PairingCode};
 use octo_net::relay_client::{Event, RelayClientConfig, RelayHandle};
@@ -93,7 +94,7 @@ enum Pair {
     Pending {
         sas: String,
         peer_name: String,
-        decide: Option<oneshot::Sender<bool>>,
+        decide: Option<oneshot::Sender<(bool, Trust)>>,
     },
 }
 
@@ -151,6 +152,13 @@ impl Shared {
             .unwrap_or_else(|e| e.into_inner())
             .get(id)
             .is_some()
+    }
+
+    fn trust_of(&self, id: &NodeId) -> Option<Trust> {
+        self.members
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .trust_of(id)
     }
 
     fn net(&self) -> NetSettings {
@@ -240,6 +248,7 @@ impl Node {
             name: self.sh.name(),
             is_self: true,
             online: true,
+            trust: None,
         }];
         let probes = m.members().iter().map(|mem| {
             let sh = self.sh.clone();
@@ -253,6 +262,10 @@ impl Node {
                 name: mem.name.clone(),
                 is_self: false,
                 online: h.await.unwrap_or(false),
+                trust: Some(match mem.trust {
+                    Trust::Full => TrustLevel::Full,
+                    Trust::Public => TrustLevel::Public,
+                }),
             });
         }
         out
@@ -292,7 +305,7 @@ impl Node {
             .await
             .map_err(|_| NodeError::BadPath)?;
         if peer == self.node_id() {
-            return Ok(dispatch(&self.sh, head, body).await);
+            return Ok(dispatch(&self.sh, Trust::Full, head, body).await);
         }
         if !self.sh.is_member(&peer) {
             return Err(NodeError::UnknownNode);
@@ -344,6 +357,70 @@ impl Node {
             tokio_stream::wrappers::ReceiverStream::new(rx),
         ))
         .map_err(|_| NodeError::Unreachable)
+    }
+
+    // ------------------------------------------------------------ trust
+
+    /// Sends the current private key to `to` over IK.
+    async fn send_private(&self, to: &[NodeId], epoch: u64, key: [u8; 32]) {
+        let msg = pairing::private_key_message(epoch, &key);
+        for id in to {
+            let _ = self.sh.cmd.send(Cmd::Control(*id, msg.clone())).await;
+        }
+    }
+
+    /// Changes a member's trust (local policy). Full -> public rotates the private key and sends
+    /// the new one to the remaining full members; public -> full sends the current key.
+    pub async fn set_trust(&self, id: &str, trust: Trust) -> Result<(), NodeError> {
+        let peer = NodeId::parse(id).map_err(|_| NodeError::UnknownNode)?;
+        let (epoch, key, to) = {
+            let mut g = self.sh.members.write().unwrap_or_else(|e| e.into_inner());
+            let old = g.trust_of(&peer).ok_or(NodeError::UnknownNode)?;
+            if old == trust {
+                return Ok(());
+            }
+            g.set_trust(&peer, trust)?;
+            if trust == Trust::Public {
+                g.rotate_private_key()?;
+            }
+            let to = if trust == Trust::Public {
+                full_members(&g)
+            } else {
+                vec![peer]
+            };
+            (
+                g.private_epoch(),
+                g.private_key().map(|k| *k.as_bytes()),
+                to,
+            )
+        };
+        if let Some(key) = key {
+            self.send_private(&to, epoch, key).await;
+        }
+        Ok(())
+    }
+
+    /// Removes a member and rotates the private key for the remaining full members.
+    pub async fn remove(&self, id: &str) -> Result<(), NodeError> {
+        let peer = NodeId::parse(id).map_err(|_| NodeError::UnknownNode)?;
+        let (epoch, key, to) = {
+            let mut g = self.sh.members.write().unwrap_or_else(|e| e.into_inner());
+            if !g.remove(&peer)? {
+                return Err(NodeError::UnknownNode);
+            }
+            g.rotate_private_key()?;
+            (
+                g.private_epoch(),
+                g.private_key().map(|k| *k.as_bytes()),
+                full_members(&g),
+            )
+        };
+        let _ = self.sh.cmd.send(Cmd::Reset(peer)).await;
+        let _ = self.sh.cmd.send(Cmd::Reconfigure).await;
+        if let Some(key) = key {
+            self.send_private(&to, epoch, key).await;
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ pairing
@@ -424,15 +501,29 @@ impl Node {
         }
     }
 
-    pub fn decide(&self, accept: bool) -> Result<(), NodeError> {
+    /// `trust_private` is the host user's choice for the new device (ignored on the joiner).
+    pub fn decide(&self, accept: bool, trust_private: bool) -> Result<(), NodeError> {
         let mut p = self.sh.pair();
         let Pair::Pending { decide, .. } = &mut p.st else {
             return Err(NodeError::NoPending);
         };
         let tx = decide.take().ok_or(NodeError::NoPending)?;
         p.st = Pair::Finishing;
-        tx.send(accept).map_err(|_| NodeError::NoPending)
+        let trust = if trust_private {
+            Trust::Full
+        } else {
+            Trust::Public
+        };
+        tx.send((accept, trust)).map_err(|_| NodeError::NoPending)
     }
+}
+
+fn full_members(m: &Membership) -> Vec<NodeId> {
+    m.members()
+        .iter()
+        .filter(|x| x.trust == Trust::Full)
+        .map(|x| x.node_id)
+        .collect()
 }
 
 async fn ping(sh: &Arc<Shared>, peer: NodeId) -> bool {
@@ -461,7 +552,12 @@ async fn ping(sh: &Arc<Shared>, peer: NodeId) -> bool {
 
 // ---------------------------------------------------------------- pairing flows
 
-fn set_pending(sh: &Shared, gen_: u64, sas: &str, peer_name: &str) -> oneshot::Receiver<bool> {
+fn set_pending(
+    sh: &Shared,
+    gen_: u64,
+    sas: &str,
+    peer_name: &str,
+) -> oneshot::Receiver<(bool, Trust)> {
     let (tx, rx) = oneshot::channel();
     let mut p = sh.pair();
     if p.gen_ == gen_ {
@@ -479,14 +575,18 @@ async fn host_flow(sh: &Arc<Shared>, gen_: u64, host: &mut PairHost) {
         return;
     };
     let rx = set_pending(sh, gen_, pending.sas(), pending.peer_name());
-    let accept = matches!(tokio::time::timeout(PAIR_TTL, rx).await, Ok(Ok(true)));
+    let (accept, trust) = match tokio::time::timeout(PAIR_TTL, rx).await {
+        Ok(Ok((a, t))) => (a, t),
+        _ => (false, Trust::Public),
+    };
     let mut m = sh.membership();
     if !accept {
-        let _ = tokio::time::timeout(Duration::from_secs(2), pending.finish(false, &mut m)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), pending.finish(false, trust, &mut m))
+            .await;
         return;
     }
     let before: Vec<NodeId> = m.members().iter().map(|x| x.node_id).collect();
-    let Ok(member) = pending.finish(true, &mut m).await else {
+    let Ok(member) = pending.finish(true, trust, &mut m).await else {
         return;
     };
     *sh.members.write().unwrap_or_else(|e| e.into_inner()) = m;
@@ -502,7 +602,7 @@ async fn join_flow(sh: &Arc<Shared>, gen_: u64, code: PairingCode, name: String)
         return;
     };
     let rx = set_pending(sh, gen_, jp.sas(), &code.token.host.to_string());
-    let accept = matches!(tokio::time::timeout(PAIR_TTL, rx).await, Ok(Ok(true)));
+    let accept = matches!(tokio::time::timeout(PAIR_TTL, rx).await, Ok(Ok((true, _))));
     let mut m = sh.membership();
     if jp.finish(accept, &mut m).await.is_ok() {
         *sh.members.write().unwrap_or_else(|e| e.into_inner()) = m;
@@ -536,10 +636,34 @@ fn path_allowed(uri: &str) -> bool {
 }
 
 /// Runs a request against the local router (no TCP, no bearer token).
-async fn dispatch(sh: &Shared, head: ReqHead, body: Bytes) -> Response<Body> {
+async fn dispatch(sh: &Shared, trust: Trust, head: ReqHead, body: Bytes) -> Response<Body> {
     if !path_allowed(&head.uri) {
         return reply(StatusCode::FORBIDDEN, "not available through the tunnel");
     }
+    let thread_space = match policy::thread_id(&head.uri) {
+        Some(id) => {
+            let hub = sh.hub.clone();
+            let id = id.to_owned();
+            tokio::task::spawn_blocking(move || hub.thread_space(&id))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten()
+        }
+        None => None,
+    };
+    let req = TunnelReq {
+        method: &head.method,
+        path: &head.uri,
+        thread_space,
+        body_private: policy::body_touches_private(&body),
+    };
+    if !policy::tunnel_allows(trust, &req) {
+        return reply(StatusCode::FORBIDDEN, "private space is not available");
+    }
+    let filter_list = trust != Trust::Full
+        && head.method == "GET"
+        && head.uri.split('?').next() == Some("/api/threads");
     let Ok(method) = Method::from_bytes(head.method.as_bytes()) else {
         return reply(StatusCode::BAD_REQUEST, "bad method");
     };
@@ -560,9 +684,25 @@ async fn dispatch(sh: &Shared, head: ReqHead, body: Bytes) -> Response<Body> {
     let Some(router) = sh.router.get() else {
         return reply(StatusCode::SERVICE_UNAVAILABLE, "not ready");
     };
-    match router.clone().oneshot(req).await {
+    let resp = match router.clone().oneshot(req).await {
         Ok(r) => r,
         Err(never) => match never {},
+    };
+    if !filter_list || !resp.status().is_success() {
+        return resp;
+    }
+    // Thread list for a public-trust member: private threads never leave this node.
+    let (mut parts, body) = resp.into_parts();
+    let filtered = match axum::body::to_bytes(body, MAX_BODY).await {
+        Ok(b) => policy::filter_thread_list(&b),
+        Err(_) => None,
+    };
+    match filtered {
+        Some(out) => {
+            parts.headers.remove("content-length");
+            Response::from_parts(parts, Body::from(out))
+        }
+        None => reply(StatusCode::FORBIDDEN, "private space is not available"),
     }
 }
 
@@ -575,11 +715,11 @@ async fn serve_stream(sh: Arc<Shared>, peer: NodeId, stream: Stream) {
         status,
         headers: vec![],
     };
-    if !sh.is_member(&peer) {
+    let Some(trust) = sh.trust_of(&peer) else {
         let _ = f.send_head(&respond(403)).await;
         let _ = f.finish().await;
         return;
-    }
+    };
     if head.method == "PING" {
         let _ = f.send_head(&respond(204)).await;
         let _ = f.finish().await;
@@ -600,7 +740,7 @@ async fn serve_stream(sh: Arc<Shared>, peer: NodeId, stream: Stream) {
             Err(_) => return,
         }
     }
-    let resp = dispatch(&sh, head, body.into()).await;
+    let resp = dispatch(&sh, trust, head, body.into()).await;
     let out = RespHead {
         status: resp.status().as_u16(),
         headers: resp
@@ -833,7 +973,7 @@ impl Actor {
                 }
                 Some((&PLAIN_CTL, rest)) => {
                     let mut g = self.sh.members.write().unwrap_or_else(|e| e.into_inner());
-                    let _ = pairing::apply_announcement(&mut g, &from, rest);
+                    let _ = pairing::apply_control(&mut g, &from, rest);
                 }
                 _ => {}
             },

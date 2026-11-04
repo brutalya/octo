@@ -126,11 +126,8 @@ impl N {
     }
 }
 
-/// Pairs b into a's network through the API. Returns (a, b).
-async fn paired(tok_a: Option<&str>, tok_b: Option<&str>) -> (N, N, String) {
-    let url = relay().await;
-    let a = start(&url, "alpha", tok_a, None).await;
-    let b = start(&url, "beta", tok_b, None).await;
+/// Runs the pairing a -> b through the API; `trust` is the host's choice (None = no body).
+async fn pair_nodes(a: &N, b: &N, trust: Option<bool>) {
     let (s, inv) = a.json("POST", "/api/pairing/invite", None).await;
     assert_eq!(s, StatusCode::OK, "{inv}");
     assert!(inv["expires_at"].as_u64().unwrap() > 0);
@@ -150,8 +147,9 @@ async fn paired(tok_a: Option<&str>, tok_b: Option<&str>) -> (N, N, String) {
     // Busy while a pairing is in flight.
     let (s, _) = a.json("POST", "/api/pairing/invite", None).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    let body = trust.map(|t| json!({"trust_private": t}));
     assert!(
-        a.call("POST", "/api/pairing/confirm", None)
+        a.call("POST", "/api/pairing/confirm", body)
             .await
             .status()
             .is_success()
@@ -162,22 +160,36 @@ async fn paired(tok_a: Option<&str>, tok_b: Option<&str>) -> (N, N, String) {
             .status()
             .is_success()
     );
-    let id_b = b.id().await;
-    // a lists b as online (eventually: relay link of a is re-established after pairing).
-    let mut ok = false;
+}
+
+async fn wait_online(a: &N, id: &str) {
     for _ in 0..100 {
         let (_, v) = a.json("GET", "/api/nodes", None).await;
         let v = v.as_array().unwrap().clone();
-        if v.len() == 2
-            && v.iter()
-                .any(|n| n["node_id"] == id_b.as_str() && n["online"] == true)
-        {
-            ok = true;
-            break;
+        if v.iter().any(|n| n["node_id"] == id && n["online"] == true) {
+            return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(ok, "peer never online");
+    panic!("peer never online");
+}
+
+/// Pairs b into a's network through the API. Returns (a, b).
+async fn paired(tok_a: Option<&str>, tok_b: Option<&str>) -> (N, N, String) {
+    paired_trust(tok_a, tok_b, None).await
+}
+
+async fn paired_trust(
+    tok_a: Option<&str>,
+    tok_b: Option<&str>,
+    trust: Option<bool>,
+) -> (N, N, String) {
+    let url = relay().await;
+    let a = start(&url, "alpha", tok_a, None).await;
+    let b = start(&url, "beta", tok_b, None).await;
+    pair_nodes(&a, &b, trust).await;
+    let id_b = b.id().await;
+    wait_online(&a, &id_b).await;
     (a, b, id_b)
 }
 
@@ -457,4 +469,266 @@ async fn tunnel_allow_list_denies_everything_else() {
         let (s, v) = a.json("GET", &format!("/api/nodes/{id_b}/{p}"), None).await;
         assert!(s.is_success(), "{p}: {s} {v}");
     }
+}
+
+// ---------------------------------------------------------------- trust levels
+
+async fn mk_thread(n: &N, space: &str) -> String {
+    let (s, t) = n
+        .json(
+            "POST",
+            "/api/threads",
+            Some(json!({"provider": "ollama", "space": space, "model": "m"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    t["id"].as_str().unwrap().to_string()
+}
+
+fn trust_of(list: &Value, id: &str) -> Value {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == id)
+        .unwrap()["trust"]
+        .clone()
+}
+
+#[tokio::test]
+async fn public_trust_cannot_reach_private_data() {
+    // Default: the host did not tick "trust private"; b sees a as public.
+    let (a, b, id_b) = paired(None, None).await;
+    let id_a = a.id().await;
+    let (_, la) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&la, &id_b), "public");
+    let (_, lb) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&lb, &id_a), "public");
+    let (pubt, privt) = (
+        mk_thread(&b, "public").await,
+        mk_thread(&b, "private").await,
+    );
+    let base = format!("/api/nodes/{id_b}");
+    // List is filtered.
+    let (s, v) = a.json("GET", &format!("{base}/threads"), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let ids: Vec<_> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].clone())
+        .collect();
+    assert_eq!(ids, [json!(pubt)]);
+    // Everything addressing the private thread is 403.
+    for (m, p, body) in [
+        ("GET", format!("threads/{privt}/messages"), None),
+        (
+            "POST",
+            format!("threads/{privt}/messages"),
+            Some(json!({"content": "hi"})),
+        ),
+        ("POST", format!("threads/{privt}/cancel"), None),
+        (
+            "PATCH",
+            format!("threads/{privt}"),
+            Some(json!({"approval": "auto"})),
+        ),
+        ("DELETE", format!("threads/{privt}"), None),
+        ("GET", "files/private".into(), None),
+        ("GET", "files/private/content?path=x".into(), None),
+        (
+            "POST",
+            "threads".into(),
+            Some(json!({"provider": "ollama", "space": "private", "model": "m"})),
+        ),
+        (
+            "POST",
+            format!("threads/{pubt}/messages"),
+            Some(json!({"content": "x", "attachments": [{"space": "private", "path": "p"}]})),
+        ),
+    ] {
+        let (s, v) = a.json(m, &format!("{base}/{p}"), body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}: {v}");
+    }
+    // Nothing happened to the private thread; public stuff works.
+    let (_, mine) = b.json("GET", "/api/threads", None).await;
+    assert_eq!(mine.as_array().unwrap().len(), 2);
+    let (s, _) = a
+        .json("GET", &format!("{base}/threads/{pubt}/messages"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = a.json("GET", &format!("{base}/files/public"), None).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn full_trust_reaches_private_and_trust_is_changeable() {
+    let (a, b, id_b) = paired_trust(None, None, Some(true)).await;
+    let id_a = a.id().await;
+    let (_, la) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&la, &id_b), "full");
+    let privt = mk_thread(&b, "private").await;
+    let base = format!("/api/nodes/{id_b}");
+    let (_, v) = a.json("GET", &format!("{base}/threads"), None).await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    let (s, _) = a
+        .json("GET", &format!("{base}/threads/{privt}/messages"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // b took a for full as well (it received the private key); b downgrades a locally.
+    let (_, lb) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&lb, &id_a), "full");
+    let (s, _) = b
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_a}/trust"),
+            Some(json!({"trust": "public"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = a
+        .json("GET", &format!("{base}/threads/{privt}/messages"), None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, v) = a.json("GET", &format!("{base}/threads"), None).await;
+    assert!(v.as_array().unwrap().is_empty());
+    // And upgrades it again.
+    b.json(
+        "PATCH",
+        &format!("/api/nodes/{id_a}/trust"),
+        Some(json!({"trust": "full"})),
+    )
+    .await;
+    let (s, _) = a
+        .json("GET", &format!("{base}/threads/{privt}/messages"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Bad input.
+    let (s, _) = b
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_a}/trust"),
+            Some(json!({"trust": "root"})),
+        )
+        .await;
+    assert!(s.is_client_error());
+    let (s, _) = b
+        .json(
+            "PATCH",
+            "/api/nodes/aaaaaaaaaaaaaaaaaaaaaaaaaa/trust",
+            Some(json!({"trust": "full"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+fn private_state(n: &N) -> (u64, Option<String>) {
+    let v: Value =
+        serde_json::from_slice(&std::fs::read(n.dir.path().join("membership.json")).unwrap())
+            .unwrap();
+    (
+        v["private_epoch"].as_u64().unwrap_or(0),
+        v["private_key"].as_str().map(str::to_string),
+    )
+}
+
+async fn wait_epoch(n: &N, epoch: u64) {
+    for _ in 0..100 {
+        if private_state(n).0 == epoch {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("epoch {epoch} never arrived: {:?}", private_state(n).0);
+}
+
+/// a hosts b and c, both full. Returns (a, b, c, id_b, id_c).
+async fn trio() -> (N, N, N, String, String) {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let b = start(&url, "beta", None, None).await;
+    let c = start(&url, "gamma", None, None).await;
+    pair_nodes(&a, &b, Some(true)).await;
+    let id_b = b.id().await;
+    wait_online(&a, &id_b).await;
+    pair_nodes(&a, &c, Some(true)).await;
+    let id_c = c.id().await;
+    wait_online(&a, &id_c).await;
+    // b learns about c from a's announcement.
+    for _ in 0..100 {
+        let (_, v) = b.json("GET", "/api/nodes", None).await;
+        if v.as_array().unwrap().len() == 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (_, v) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&v, &id_c), "full");
+    (a, b, c, id_b, id_c)
+}
+
+#[tokio::test]
+async fn downgrade_rotates_private_key_without_the_downgraded() {
+    let (a, b, c, _id_b, id_c) = trio().await;
+    let (e0, k0) = private_state(&a);
+    assert_eq!(private_state(&b), (e0, k0.clone()));
+    assert_eq!(private_state(&c), (e0, k0.clone()));
+    let (s, _) = a
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_c}/trust"),
+            Some(json!({"trust": "public"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (ea, ka) = private_state(&a);
+    assert_eq!(ea, e0 + 1);
+    assert_ne!(ka, k0);
+    wait_epoch(&b, e0 + 1).await;
+    assert_eq!(private_state(&b).1, ka);
+    // The downgraded node keeps the old epoch and key.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(private_state(&c), (e0, k0));
+    // Upgrading again sends the current key.
+    a.json(
+        "PATCH",
+        &format!("/api/nodes/{id_c}/trust"),
+        Some(json!({"trust": "full"})),
+    )
+    .await;
+    wait_epoch(&c, e0 + 1).await;
+    assert_eq!(private_state(&c).1, ka);
+    assert_eq!(private_state(&a).0, e0 + 1);
+}
+
+#[tokio::test]
+async fn removing_a_member_rotates_and_is_local_only() {
+    let (a, b, c, id_b, id_c) = trio().await;
+    let (e0, _) = private_state(&a);
+    // Not tunnelable.
+    for (m, p) in [
+        ("PATCH", format!("/api/nodes/{id_b}/nodes/{id_c}/trust")),
+        ("DELETE", format!("/api/nodes/{id_b}/nodes/{id_c}")),
+    ] {
+        let (s, _) = a.json(m, &p, Some(json!({"trust": "public"}))).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}");
+    }
+    let (s, _) = a
+        .json("DELETE", "/api/nodes/aaaaaaaaaaaaaaaaaaaaaaaaaa", None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = a.json("DELETE", &format!("/api/nodes/{id_c}"), None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(v.as_array().unwrap().len(), 2);
+    let (ea, ka) = private_state(&a);
+    assert_eq!(ea, e0 + 1);
+    wait_epoch(&b, e0 + 1).await;
+    assert_eq!(private_state(&b).1, ka);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(private_state(&c).0, e0);
+    // Cannot talk to the removed node any more.
+    let (s, _) = a
+        .json("GET", &format!("/api/nodes/{id_c}/threads"), None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }
