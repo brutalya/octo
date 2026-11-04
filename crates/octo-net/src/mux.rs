@@ -7,8 +7,9 @@
 //! stalls only its own stream's writer. Data beyond the window resets the stream.
 use crate::error::{NetError, Result};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
@@ -16,6 +17,8 @@ use tokio::task::JoinHandle;
 pub const MAX_DATA: usize = 64_000;
 pub const INITIAL_WINDOW: u32 = 262_144;
 const WRITE_CHUNK: usize = 16_384;
+/// A stream with no frame in either direction for this long is reset.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_STREAMS: usize = 256;
 const MAX_WINDOW_UPDATE: u32 = 1 << 24;
 
@@ -40,12 +43,15 @@ struct StreamInner {
     local_end: AtomicBool,
     remote_end: AtomicBool,
     dead: AtomicBool,
+    /// Last frame in either direction, in ms since `Shared::base`.
+    last: AtomicU64,
 }
 
 struct Shared {
     out: mpsc::Sender<Vec<u8>>,
     streams: Mutex<HashMap<u32, Arc<StreamInner>>>,
     next_id: AtomicU32,
+    base: Instant,
 }
 
 fn frame(id: u32, kind: u8, body: &[u8]) -> Vec<u8> {
@@ -61,6 +67,14 @@ impl Shared {
         self.streams.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn now_ms(&self) -> u64 {
+        self.base.elapsed().as_millis() as u64
+    }
+
+    fn touch(&self, s: &StreamInner) {
+        s.last.store(self.now_ms(), Ordering::Relaxed);
+    }
+
     fn new_stream(&self, id: u32) -> (Arc<StreamInner>, mpsc::UnboundedReceiver<Msg>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = Arc::new(StreamInner {
@@ -71,6 +85,7 @@ impl Shared {
             local_end: AtomicBool::new(false),
             remote_end: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            last: AtomicU64::new(self.now_ms()),
         });
         self.map().insert(id, inner.clone());
         (inner, rx)
@@ -100,11 +115,13 @@ pub struct Mux {
     shared: Arc<Shared>,
     accept_rx: mpsc::Receiver<Stream>,
     task: JoinHandle<()>,
+    watchdog: JoinHandle<()>,
 }
 
 impl Drop for Mux {
     fn drop(&mut self) {
         self.task.abort();
+        self.watchdog.abort();
     }
 }
 
@@ -116,17 +133,30 @@ impl Mux {
         inbound: mpsc::Receiver<Vec<u8>>,
         initiator: bool,
     ) -> Self {
+        Self::with_idle(out, inbound, initiator, IDLE_TIMEOUT)
+    }
+
+    /// Like `new`, with an explicit per-stream idle timeout.
+    pub fn with_idle(
+        out: mpsc::Sender<Vec<u8>>,
+        inbound: mpsc::Receiver<Vec<u8>>,
+        initiator: bool,
+        idle: Duration,
+    ) -> Self {
         let shared = Arc::new(Shared {
             out,
             streams: Mutex::new(HashMap::new()),
             next_id: AtomicU32::new(if initiator { 1 } else { 2 }),
+            base: Instant::now(),
         });
         let (accept_tx, accept_rx) = mpsc::channel(64);
         let task = tokio::spawn(read_loop(shared.clone(), inbound, accept_tx, initiator));
+        let watchdog = tokio::spawn(watchdog(shared.clone(), idle));
         Self {
             shared,
             accept_rx,
             task,
+            watchdog,
         }
     }
 
@@ -156,6 +186,26 @@ impl Mux {
     }
 }
 
+/// Resets streams that saw no frame in either direction for `idle` (stalled or dead peer).
+async fn watchdog(shared: Arc<Shared>, idle: Duration) {
+    let tick = (idle / 4).max(Duration::from_millis(10));
+    loop {
+        tokio::time::sleep(tick).await;
+        let now = shared.now_ms();
+        let stale: Vec<_> = shared
+            .map()
+            .values()
+            .filter(|s| {
+                now.saturating_sub(s.last.load(Ordering::Relaxed)) >= idle.as_millis() as u64
+            })
+            .cloned()
+            .collect();
+        for s in stale {
+            shared.kill(&s, true).await;
+        }
+    }
+}
+
 async fn read_loop(
     shared: Arc<Shared>,
     mut inbound: mpsc::Receiver<Vec<u8>>,
@@ -168,6 +218,9 @@ async fn read_loop(
         };
         let id = u32::from_be_bytes([*a, *b, *c, *d]);
         let existing = shared.map().get(&id).cloned();
+        if let Some(s) = &existing {
+            shared.touch(s);
+        }
         match *kind {
             K_OPEN => {
                 // Peer ids have the opposite parity of ours (initiator = odd).
@@ -256,6 +309,7 @@ impl Stream {
                 .await
                 .map_err(|_| NetError::Reset)?;
             permit.forget();
+            self.shared.touch(&self.inner);
             self.shared
                 .out
                 .send(frame(self.inner.id, K_DATA, chunk))
@@ -271,6 +325,7 @@ impl Stream {
             return Err(NetError::Reset);
         }
         if !self.inner.local_end.swap(true, Ordering::SeqCst) {
+            self.shared.touch(&self.inner);
             self.shared
                 .out
                 .send(frame(self.inner.id, K_END, &[]))
@@ -292,6 +347,7 @@ impl Stream {
         }
         match self.inbox.recv().await {
             Some(Msg::Data(b)) => {
+                self.shared.touch(&self.inner);
                 self.inner
                     .credit
                     .fetch_add(b.len() as i64, Ordering::SeqCst);

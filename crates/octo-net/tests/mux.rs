@@ -189,3 +189,43 @@ async fn reset_aborts_peer_writer_and_reader() {
     s.reset().await;
     assert!(r.read().await.is_err());
 }
+
+#[tokio::test]
+async fn idle_stream_with_stalled_peer_is_reset_on_both_sides() {
+    let (ab_tx, ab_rx) = mpsc::channel(64);
+    let (ba_tx, ba_rx) = mpsc::channel(64);
+    // Only A has a short idle timeout; B's own watchdog (default 60 s) must not be the cause.
+    let a = Mux::with_idle(ab_tx, ba_rx, true, Duration::from_millis(300));
+    let mut b = Mux::new(ba_tx, ab_rx, false);
+    let s = a.open().await.unwrap();
+    let mut peer = b.accept().await.unwrap();
+    // B never reads: A's write exceeds the window, gets no credit, and must fail by itself.
+    let big = vec![7u8; INITIAL_WINDOW as usize + 10_000];
+    let r = tokio::time::timeout(Duration::from_secs(5), s.write(&big)).await;
+    assert!(r.expect("write must not hang").is_err());
+    // B's side sees the reset (after draining what was already delivered).
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if peer.read().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(end.is_ok(), "peer stream must be reset");
+}
+
+#[tokio::test]
+async fn active_stream_is_not_idle_reset() {
+    let (ab_tx, ab_rx) = mpsc::channel(64);
+    let (ba_tx, ba_rx) = mpsc::channel(64);
+    let a = Mux::with_idle(ab_tx, ba_rx, true, Duration::from_millis(300));
+    let mut b = Mux::with_idle(ba_tx, ab_rx, false, Duration::from_millis(300));
+    let s = a.open().await.unwrap();
+    let mut peer = b.accept().await.unwrap();
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        s.write(b"tick").await.unwrap();
+        assert_eq!(peer.read().await.unwrap().unwrap(), b"tick");
+    }
+}
