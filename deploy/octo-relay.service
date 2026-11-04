@@ -1,0 +1,17 @@
+[Unit]
+Description=Octo relay (relay only, no API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/root/apps/octo/target/release/octo-server --relay-only --relay-addr 0.0.0.0:7443
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -38,6 +38,22 @@ pub async fn serve(
         .await
 }
 
+/// Router for the separate relay listener: only `/relay` (WebSocket) and `/healthz`.
+pub fn relay_app(relay: octo_net::relay::Relay) -> Router {
+    octo_net::relay::router(relay).route("/healthz", get(|| async { "ok" }))
+}
+
+/// Refuses a non-loopback API address without a bearer token.
+pub fn check_exposure(addr: std::net::SocketAddr, token: Option<&str>) -> Result<(), String> {
+    if addr.ip().is_loopback() || token.is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing to serve the API on non-loopback address {addr} without --token: \
+         the API would be open to the network. Pass --token <secret> or bind to 127.0.0.1"
+    ))
+}
+
 enum ApiError {
     Core(CoreError),
     Upload(MultipartError),

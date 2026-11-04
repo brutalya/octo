@@ -56,3 +56,12 @@ cargo tauri signer generate -w ~/.tauri/octo.key
 ```
 
 Add the private key as repo secret `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set), and the public key as repo variable `OCTO_UPDATER_PUBKEY`.
+
+## VPS
+
+Файлы в `deploy/` / files in `deploy/`. Build: `cargo build --release -p octo-server`.
+
+- `octo-node.service`: узел, API только на `127.0.0.1:7878`.
+- `octo-relay.service`: только relay (`--relay-only --relay-addr`), отдельный порт; отдаёт лишь `/relay` и `/healthz`, API там нет.
+- `Caddyfile.example`: `wss://домен/relay` -> `127.0.0.1:7443`. Для relay используйте `relay_url = wss://домен/relay`.
+- Сервер не стартует с `--addr` не на loopback без `--token`.

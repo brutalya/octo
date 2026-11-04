@@ -27,14 +27,36 @@ struct Args {
     /// Antigravity CLI dir (default: ~/.gemini/antigravity-cli).
     #[arg(long)]
     agy_dir: Option<PathBuf>,
-    /// Also act as a relay: WebSocket at /relay (E2EE frames between paired nodes; sees no plaintext).
+    /// Run a relay on a SEPARATE listener: only /relay (WebSocket) and /healthz.
+    /// The API listener never serves /relay.
     #[arg(long)]
-    relay: bool,
+    relay_addr: Option<String>,
+    /// Run only the relay (needs --relay-addr); no API listener, hub or node.
+    #[arg(long, requires = "relay_addr")]
+    relay_only: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let relay_listener = match &args.relay_addr {
+        Some(a) => {
+            let l = tokio::net::TcpListener::bind(a).await?;
+            println!("Octo relay: ws://{}/relay", l.local_addr()?);
+            let relay = octo_net::relay::Relay::new(Default::default())?;
+            Some((l, octo_server::relay_app(relay)))
+        }
+        None => None,
+    };
+    if args.relay_only {
+        let Some((l, app)) = relay_listener else {
+            anyhow::bail!("--relay-only needs --relay-addr");
+        };
+        axum::serve(l, app).await?;
+        return Ok(());
+    }
+    let api_addr: std::net::SocketAddr = args.addr.parse()?;
+    octo_server::check_exposure(api_addr, args.token.as_deref()).map_err(anyhow::Error::msg)?;
     let mut config = Config::new(args.data_dir);
     if let Some(p) = args.claude_bin {
         config.claude_bin = p;
@@ -61,14 +83,14 @@ async fn main() -> Result<()> {
     let hub = Arc::new(Hub::new(config)?);
     let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
     let app = octo_server::app_with_node(hub, node, web_dir, args.token);
-    let app = if args.relay {
-        app.merge(octo_net::relay::router(octo_net::relay::Relay::new(
-            Default::default(),
-        )?))
-    } else {
-        app
-    };
-    let listener = tokio::net::TcpListener::bind(&args.addr).await?;
+    if let Some((l, relay_app)) = relay_listener {
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(l, relay_app).await {
+                eprintln!("relay listener: {e}");
+            }
+        });
+    }
+    let listener = tokio::net::TcpListener::bind(api_addr).await?;
     println!("Octo: http://{}", listener.local_addr()?);
     if !web_built {
         println!("web UI not built: cd web && npm ci && npm run build");
