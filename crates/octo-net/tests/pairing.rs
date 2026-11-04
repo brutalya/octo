@@ -116,7 +116,10 @@ async fn full_pairing_over_relay() {
         let mut mb = mb;
         jp.finish(true, &mut mb).await.map(|_| mb)
     });
-    let member = hp.finish(true, &mut ma).await.unwrap();
+    let member = hp
+        .finish(true, octo_net::membership::Trust::Public, &mut ma)
+        .await
+        .unwrap();
     mb = ja.await.unwrap().unwrap();
     assert_eq!(member.node_id, kb.node_id());
     // Both sides now share the network key and know each other.
@@ -149,7 +152,11 @@ async fn rejection_on_host_pairs_nothing() {
         (r, mb2)
     });
     let hp = host.wait_peer().await.unwrap();
-    assert!(hp.finish(false, &mut ma).await.is_err());
+    assert!(
+        hp.finish(false, octo_net::membership::Trust::Public, &mut ma)
+            .await
+            .is_err()
+    );
     let (r, mb) = j.await.unwrap();
     assert!(r.is_err());
     assert!(ma.members().is_empty());

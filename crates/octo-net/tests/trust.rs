@@ -1,0 +1,155 @@
+mod common;
+use common::*;
+use octo_net::identity::NodeKey;
+use octo_net::membership::{Member, Membership, NetworkKey, Trust};
+use octo_net::pairing::{
+    PairHost, PairingCode, announcement, apply_announcement, apply_control, join,
+    private_key_message,
+};
+use octo_net::relay::RelayLimits;
+use std::time::Duration;
+
+const TTL: Duration = Duration::from_secs(300);
+
+async fn pair(trust: Trust) -> (Membership, Membership, NodeKey, NodeKey) {
+    let (addr, _s) = spawn_relay(RelayLimits::default()).await;
+    let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
+    let mut ma = Membership::ephemeral(NetworkKey::generate());
+    let mut host = PairHost::start(&url(addr), &ka, "laptop", TTL)
+        .await
+        .unwrap();
+    let code = PairingCode::parse(&host.code().to_string()).unwrap();
+    let j = tokio::spawn({
+        let kb = kb.clone();
+        async move {
+            let p = join(&code, &kb, "phone", TTL).await.unwrap();
+            let mut mb = Membership::ephemeral(NetworkKey::generate());
+            p.finish(true, &mut mb).await.unwrap();
+            mb
+        }
+    });
+    let hp = host.wait_peer().await.unwrap();
+    let m = hp.finish(true, trust, &mut ma).await.unwrap();
+    assert_eq!(m.trust, trust);
+    (ma, j.await.unwrap(), ka, kb)
+}
+
+#[tokio::test]
+async fn welcome_without_private_key_for_public_trust() {
+    let (ma, mb, ka, kb) = pair(Trust::Public).await;
+    assert_eq!(ma.get(&kb.node_id()).unwrap().trust, Trust::Public);
+    assert!(ma.private_key().is_some());
+    assert!(mb.private_key().is_none());
+    assert_eq!(mb.private_epoch(), 0);
+    assert_eq!(mb.get(&ka.node_id()).unwrap().trust, Trust::Public);
+}
+
+#[tokio::test]
+async fn welcome_with_private_key_for_full_trust() {
+    let (ma, mb, ka, kb) = pair(Trust::Full).await;
+    assert_eq!(ma.get(&kb.node_id()).unwrap().trust, Trust::Full);
+    let (ka_, kb_) = (ma.private_key().unwrap(), mb.private_key().unwrap());
+    assert_eq!(ka_.as_bytes(), kb_.as_bytes());
+    assert_eq!(ma.private_epoch(), mb.private_epoch());
+    assert_ne!(ka_.as_bytes(), ma.network_key().as_bytes());
+    assert_eq!(mb.get(&ka.node_id()).unwrap().trust, Trust::Full);
+}
+
+#[test]
+fn rotation_and_adoption_by_epoch() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("m.json");
+    let mut m = Membership::load_or_create(&p).unwrap();
+    let (e1, k1) = (m.private_epoch(), m.private_key().unwrap().clone());
+    let e2 = m.rotate_private_key().unwrap().unwrap();
+    assert_eq!(e2, e1 + 1);
+    assert_ne!(m.private_key().unwrap().as_bytes(), k1.as_bytes());
+    let again = Membership::load_or_create(&p).unwrap();
+    assert_eq!(again.private_epoch(), e2);
+    assert_eq!(
+        again.private_key().unwrap().as_bytes(),
+        m.private_key().unwrap().as_bytes()
+    );
+    // Older or equal epochs are ignored.
+    assert!(!m.adopt_private(e1, &k1).unwrap());
+    assert!(!m.adopt_private(e2, &k1).unwrap());
+    assert!(m.adopt_private(e2 + 1, &k1).unwrap());
+    assert_eq!(m.private_epoch(), e2 + 1);
+}
+
+#[test]
+fn set_trust_changes_and_persists() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("m.json");
+    let mut m = Membership::load_or_create(&p).unwrap();
+    let a = NodeKey::generate();
+    m.add(Member::new(a.public(), "a")).unwrap();
+    assert_eq!(m.get(&a.node_id()).unwrap().trust, Trust::Public);
+    assert!(m.set_trust(&a.node_id(), Trust::Full).unwrap());
+    assert_eq!(
+        Membership::load_or_create(&p)
+            .unwrap()
+            .get(&a.node_id())
+            .unwrap()
+            .trust,
+        Trust::Full
+    );
+    assert!(
+        !m.set_trust(&NodeKey::generate().node_id(), Trust::Full)
+            .unwrap()
+    );
+}
+
+#[test]
+fn announced_trust_only_from_full_members() {
+    let (a, b, c) = (
+        NodeKey::generate(),
+        NodeKey::generate(),
+        NodeKey::generate(),
+    );
+    let mut m = Membership::ephemeral(NetworkKey::generate());
+    let mut ma = Member::new(a.public(), "a");
+    ma.trust = Trust::Full;
+    m.add(ma).unwrap();
+    m.add(Member::new(b.public(), "b")).unwrap();
+    let mut cm = Member::new(c.public(), "c");
+    cm.trust = Trust::Full;
+    let msg = announcement(&cm);
+    // From a public member: added, but never as full.
+    apply_announcement(&mut m, &b.node_id(), &msg).unwrap();
+    assert_eq!(m.get(&c.node_id()).unwrap().trust, Trust::Public);
+    // From a full member: trust is taken over.
+    m.remove(&c.node_id()).unwrap();
+    apply_announcement(&mut m, &a.node_id(), &msg).unwrap();
+    assert_eq!(m.get(&c.node_id()).unwrap().trust, Trust::Full);
+}
+
+#[test]
+fn private_key_message_only_from_full_and_newer() {
+    let (a, b) = (NodeKey::generate(), NodeKey::generate());
+    let mut m = Membership::ephemeral(NetworkKey::generate());
+    let mut ma = Member::new(a.public(), "a");
+    ma.trust = Trust::Full;
+    m.add(ma).unwrap();
+    m.add(Member::new(b.public(), "b")).unwrap();
+    let k = NetworkKey::generate();
+    let msg = private_key_message(5, k.as_bytes());
+    assert!(apply_control(&mut m, &b.node_id(), &msg).is_err());
+    assert_eq!(m.private_epoch(), 1);
+    apply_control(&mut m, &a.node_id(), &msg).unwrap();
+    assert_eq!(m.private_epoch(), 5);
+    assert_eq!(m.private_key().unwrap().as_bytes(), k.as_bytes());
+    // Stale epoch ignored.
+    let old = private_key_message(4, &[7; 32]);
+    let _ = apply_control(&mut m, &a.node_id(), &old);
+    assert_eq!(m.private_epoch(), 5);
+    // Announcements still route through apply_control.
+    let c = NodeKey::generate();
+    apply_control(
+        &mut m,
+        &a.node_id(),
+        &announcement(&Member::new(c.public(), "c")),
+    )
+    .unwrap();
+    assert!(m.get(&c.node_id()).is_some());
+}

@@ -36,6 +36,20 @@ impl NetworkKey {
     }
 }
 
+/// Symmetric key of the private space (synced between full-trust members only). Same shape as
+/// the network key; kept as a distinct name so the two are never mixed up.
+pub type PrivateKey = NetworkKey;
+
+/// Per-member trust, a local policy of each node. `Full` members may use this node's private
+/// space and hold the private key; `Public` members only reach public data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trust {
+    Full,
+    #[default]
+    Public,
+}
+
 /// `BLAKE2s("octo-net-id-v1" || network_key)`. One-way: the relay learns the id, not the key.
 pub fn network_id_of(k: &NetworkKey) -> [u8; 32] {
     let mut h = Blake2s256::new();
@@ -51,6 +65,8 @@ pub struct Member {
     pub pubkey: [u8; 32],
     pub name: String,
     pub added_at: u64,
+    #[serde(default)]
+    pub trust: Trust,
 }
 
 impl Member {
@@ -64,6 +80,7 @@ impl Member {
             pubkey,
             name: name.chars().take(64).collect(),
             added_at,
+            trust: Trust::Public,
         }
     }
 
@@ -96,6 +113,10 @@ mod hex32 {
 struct Stored {
     network_key: String,
     members: Vec<Member>,
+    #[serde(default)]
+    private_key: Option<String>,
+    #[serde(default)]
+    private_epoch: u64,
 }
 
 #[derive(Clone)]
@@ -103,6 +124,16 @@ pub struct Membership {
     path: Option<PathBuf>,
     key: NetworkKey,
     members: Vec<Member>,
+    /// Private space key and its epoch; `None` on a node that is only public-trusted.
+    private: Option<(u64, PrivateKey)>,
+}
+
+fn decode_key(s: &str) -> Result<[u8; 32]> {
+    HEXLOWER
+        .decode(s.as_bytes())
+        .map_err(|_| NetError::Malformed)?
+        .try_into()
+        .map_err(|_| NetError::Malformed)
 }
 
 impl Membership {
@@ -112,6 +143,7 @@ impl Membership {
             path: None,
             key,
             members: Vec::new(),
+            private: Some((1, PrivateKey::generate())),
         }
     }
 
@@ -121,18 +153,19 @@ impl Membership {
             Ok(b) => {
                 let b = Zeroizing::new(b);
                 let s: Stored = serde_json::from_slice(&b)?;
-                let k: [u8; 32] = HEXLOWER
-                    .decode(s.network_key.as_bytes())
-                    .map_err(|_| NetError::Malformed)?
-                    .try_into()
-                    .map_err(|_| NetError::Malformed)?;
+                let k = decode_key(&s.network_key)?;
                 for m in &s.members {
                     m.validate()?;
                 }
+                let private = match &s.private_key {
+                    Some(p) => Some((s.private_epoch, PrivateKey::from_bytes(decode_key(p)?))),
+                    None => None,
+                };
                 Ok(Self {
                     path: Some(path.to_owned()),
                     key: NetworkKey::from_bytes(k),
                     members: s.members,
+                    private,
                 })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -140,6 +173,7 @@ impl Membership {
                     path: Some(path.to_owned()),
                     key: NetworkKey::generate(),
                     members: Vec::new(),
+                    private: Some((1, PrivateKey::generate())),
                 };
                 m.save()?;
                 Ok(m)
@@ -158,6 +192,11 @@ impl Membership {
         let stored = Stored {
             network_key: HEXLOWER.encode(self.key.as_bytes()),
             members: self.members.clone(),
+            private_key: self
+                .private
+                .as_ref()
+                .map(|(_, k)| HEXLOWER.encode(k.as_bytes())),
+            private_epoch: self.private.as_ref().map_or(0, |(e, _)| *e),
         };
         let json = Zeroizing::new(serde_json::to_vec_pretty(&stored)?);
         // Write a private temp file, then rename over the target: atomic and never world-readable.
@@ -173,6 +212,54 @@ impl Membership {
 
     pub fn network_key(&self) -> &NetworkKey {
         &self.key
+    }
+
+    /// Key of the private space; `None` when no full-trust member gave it to this node.
+    pub fn private_key(&self) -> Option<&PrivateKey> {
+        self.private.as_ref().map(|(_, k)| k)
+    }
+
+    /// Epoch of the private key (0 = none).
+    pub fn private_epoch(&self) -> u64 {
+        self.private.as_ref().map_or(0, |(e, _)| *e)
+    }
+
+    /// New random private key with the next epoch. `None` when this node holds no private key.
+    pub fn rotate_private_key(&mut self) -> Result<Option<u64>> {
+        let Some((e, _)) = &self.private else {
+            return Ok(None);
+        };
+        let e = e + 1;
+        self.private = Some((e, PrivateKey::generate()));
+        self.save()?;
+        Ok(Some(e))
+    }
+
+    /// Takes a key received from a full-trust member if its epoch is newer than ours.
+    pub fn adopt_private(&mut self, epoch: u64, key: &PrivateKey) -> Result<bool> {
+        if epoch <= self.private_epoch() {
+            return Ok(false);
+        }
+        self.private = Some((epoch, key.clone()));
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Changes a member's trust; false if there is no such member or nothing changed.
+    pub fn set_trust(&mut self, id: &NodeId, trust: Trust) -> Result<bool> {
+        let Some(m) = self.members.iter_mut().find(|m| &m.node_id == id) else {
+            return Ok(false);
+        };
+        if m.trust == trust {
+            return Ok(false);
+        }
+        m.trust = trust;
+        self.save()?;
+        Ok(true)
+    }
+
+    pub fn trust_of(&self, id: &NodeId) -> Option<Trust> {
+        self.get(id).map(|m| m.trust)
     }
 
     pub fn network_id(&self) -> [u8; 32] {
@@ -206,9 +293,15 @@ impl Membership {
     }
 
     /// Replaces key and members (a joining node adopting the host's network).
-    pub(crate) fn adopt(&mut self, key: NetworkKey, members: Vec<Member>) -> Result<()> {
+    pub(crate) fn adopt(
+        &mut self,
+        key: NetworkKey,
+        members: Vec<Member>,
+        private: Option<(u64, PrivateKey)>,
+    ) -> Result<()> {
         self.key = key;
         self.members = members;
+        self.private = private;
         self.save()
     }
 }

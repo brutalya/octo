@@ -9,7 +9,7 @@
 //! Frames: `[1][kind][bytes]`, kind 0x21 msg1, 0x22 msg2, 0x23 msg3, 0x24 transport (JSON).
 use crate::error::{NetError, Result};
 use crate::identity::{NodeId, NodeKey};
-use crate::membership::{Member, Membership, NetworkKey};
+use crate::membership::{Member, Membership, NetworkKey, PrivateKey, Trust};
 use crate::relay_client::{ERR_PEER_UNAVAILABLE, Event, RelayClientConfig, RelayHandle};
 use crate::session::WIRE_VERSION;
 use blake2::{Blake2s256, Digest};
@@ -126,7 +126,16 @@ enum PairMsg {
         host: Member,
         members: Vec<Member>,
         network_key: String,
+        /// Present only when the host trusts the joiner fully.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        private_key: Option<WirePrivate>,
     },
+}
+
+#[derive(Serialize, Deserialize)]
+struct WirePrivate {
+    epoch: u64,
+    key: String,
 }
 
 fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
@@ -333,7 +342,12 @@ impl HostPending {
 
     /// Host user's decision. Waits for the joiner's own confirmation first, so the network key
     /// is only ever sent when both humans approved the same SAS.
-    pub async fn finish(mut self, accept: bool, membership: &mut Membership) -> Result<Member> {
+    pub async fn finish(
+        mut self,
+        accept: bool,
+        trust: Trust,
+        membership: &mut Membership,
+    ) -> Result<Member> {
         match recv_msg(&mut self.relay, self.peer, self.deadline, &mut self.t).await? {
             PairMsg::Confirm => {}
             _ => return Err(NetError::Pairing("peer aborted".into())),
@@ -344,7 +358,15 @@ impl HostPending {
             self.relay.shutdown().await;
             return Err(NetError::Pairing("rejected".into()));
         }
-        let member = Member::new(self.peer_pub, &self.peer_name);
+        let mut member = Member::new(self.peer_pub, &self.peer_name);
+        member.trust = trust;
+        let private_key = match (trust, membership.private_key()) {
+            (Trust::Full, Some(k)) => Some(WirePrivate {
+                epoch: membership.private_epoch(),
+                key: HEXLOWER.encode(k.as_bytes()),
+            }),
+            _ => None,
+        };
         let welcome = PairMsg::Welcome {
             host: Member::new(self.host_key.public(), &self.host_name),
             members: membership
@@ -354,6 +376,7 @@ impl HostPending {
                 .cloned()
                 .collect(),
             network_key: HEXLOWER.encode(membership.network_key().as_bytes()),
+            private_key,
         };
         membership.add(member.clone())?;
         let f = seal(&mut self.t, &welcome)?;
@@ -449,22 +472,34 @@ impl JoinPending {
                 host,
                 mut members,
                 network_key,
+                private_key,
             } => {
                 host.validate()?;
                 if host.pubkey != self.host_pub {
                     return Err(NetError::Pairing("welcome host key mismatch".into()));
                 }
-                let key: [u8; 32] = HEXLOWER
-                    .decode(network_key.as_bytes())
-                    .map_err(|_| NetError::Malformed)?
-                    .try_into()
-                    .map_err(|_| NetError::Malformed)?;
+                let key = decode32(&network_key)?;
                 for m in &members {
                     m.validate()?;
                 }
                 members.retain(|m| m.node_id != self.own && m.node_id != host.node_id);
+                // Trust labels are the host's opinion: take them only when the host handed us the
+                // private key (it trusts us, so we treat it as full); otherwise everyone is public.
+                let private = match private_key {
+                    Some(p) => Some((p.epoch, PrivateKey::from_bytes(decode32(&p.key)?))),
+                    None => None,
+                };
+                let mut host = host;
+                if private.is_some() {
+                    host.trust = Trust::Full;
+                } else {
+                    host.trust = Trust::Public;
+                    for m in &mut members {
+                        m.trust = Trust::Public;
+                    }
+                }
                 members.push(host);
-                membership.adopt(NetworkKey::from_bytes(key), members)?;
+                membership.adopt(NetworkKey::from_bytes(key), members, private)?;
                 self.relay.shutdown().await;
                 Ok(())
             }
@@ -473,30 +508,77 @@ impl JoinPending {
     }
 }
 
-// ---------------------------------------------------------------- membership broadcast
+fn decode32(s: &str) -> Result<[u8; 32]> {
+    HEXLOWER
+        .decode(s.as_bytes())
+        .map_err(|_| NetError::Malformed)?
+        .try_into()
+        .map_err(|_| NetError::Malformed)
+}
+
+// ---------------------------------------------------------------- control messages (IK sessions)
 
 /// Plaintext for the host to send (over an established IK session) to every other member.
 pub fn announcement(m: &Member) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({"t": "member_added", "member": m})).unwrap_or_default()
 }
 
-/// Applies an announcement received over an IK session from `from`. Only members may announce.
+/// Plaintext handing the private key of `epoch` to a full-trust member.
+pub fn private_key_message(epoch: u64, key: &[u8; 32]) -> Vec<u8> {
+    serde_json::to_vec(
+        &serde_json::json!({"t": "private_key", "epoch": epoch, "key": HEXLOWER.encode(key)}),
+    )
+    .unwrap_or_default()
+}
+
+/// Applies a control message received over an IK session from `from`: `member_added` or
+/// `private_key`. Only members may send them; the key only from members we trust fully.
+pub fn apply_control(membership: &mut Membership, from: &NodeId, plaintext: &[u8]) -> Result<()> {
+    let trust = membership.trust_of(from).ok_or(NetError::NotMember)?;
+    #[derive(Deserialize)]
+    struct Head {
+        t: String,
+    }
+    let head: Head = serde_json::from_slice(plaintext)?;
+    match head.t.as_str() {
+        "member_added" => apply_announcement(membership, from, plaintext),
+        "private_key" => {
+            #[derive(Deserialize)]
+            struct K {
+                epoch: u64,
+                key: String,
+            }
+            if trust != Trust::Full {
+                return Err(NetError::NotMember);
+            }
+            let k: K = serde_json::from_slice(plaintext)?;
+            let key = PrivateKey::from_bytes(decode32(&k.key)?);
+            membership.adopt_private(k.epoch, &key)?;
+            Ok(())
+        }
+        _ => Err(NetError::Malformed),
+    }
+}
+
+/// Applies an announcement received over an IK session from `from`. Only members may announce;
+/// the announced trust level is honoured only when the announcer is trusted fully.
 pub fn apply_announcement(
     membership: &mut Membership,
     from: &NodeId,
     plaintext: &[u8],
 ) -> Result<()> {
-    if membership.get(from).is_none() {
-        return Err(NetError::NotMember);
-    }
+    let sender = membership.trust_of(from).ok_or(NetError::NotMember)?;
     #[derive(Deserialize)]
     struct A {
         t: String,
         member: Member,
     }
-    let a: A = serde_json::from_slice(plaintext)?;
+    let mut a: A = serde_json::from_slice(plaintext)?;
     if a.t != "member_added" {
         return Err(NetError::Malformed);
+    }
+    if sender != Trust::Full {
+        a.member.trust = Trust::Public;
     }
     membership.add(a.member)
 }
