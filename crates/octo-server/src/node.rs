@@ -520,11 +520,19 @@ fn reply(status: StatusCode, msg: &str) -> Response<Body> {
         .unwrap_or_default()
 }
 
-/// Tunneled requests may only reach the local API, never the node/pairing endpoints.
+/// Routes reachable through the tunnel (allow-list by first path segment after `/api/`):
+/// threads (incl. messages, cancel), providers (incl. models), files, import. Everything else
+/// (settings, pairing, nodes, unknown paths) is denied, so new routes are private by default.
+const TUNNEL_ROUTES: [&str; 4] = ["threads", "providers", "files", "import"];
+
 fn path_allowed(uri: &str) -> bool {
     let path = uri.split('?').next().unwrap_or("");
-    let denied = |p: &str| path == p || path.starts_with(&format!("{p}/"));
-    path.starts_with("/api/") && !denied("/api/nodes") && !denied("/api/pairing")
+    let Some(rest) = path.strip_prefix("/api/") else {
+        return false;
+    };
+    let mut segs = rest.split('/');
+    let first_ok = segs.next().is_some_and(|f| TUNNEL_ROUTES.contains(&f));
+    first_ok && segs.all(|s| s != ".." && s != "." && !s.contains('%'))
 }
 
 /// Runs a request against the local router (no TCP, no bearer token).

@@ -425,3 +425,36 @@ async fn forwarding_to_self_is_local_and_not_reforwardable() {
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn tunnel_allow_list_denies_everything_else() {
+    let (a, b, id_b) = paired(None, None).await;
+    let denied: [(&str, &str, Option<Value>); 6] = [
+        ("PATCH", "settings", Some(json!({"node_name": "evil"}))),
+        ("GET", "settings", None),
+        ("GET", "pairing/pending", None),
+        (
+            "POST",
+            "pairing/join",
+            Some(json!({"code": "x", "name": "y"})),
+        ),
+        ("GET", "nodes", None),
+        ("GET", "unknown", None),
+    ];
+    for (m, p, body) in denied {
+        let (s, v) = a.json(m, &format!("/api/nodes/{id_b}/{p}"), body).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}: {v}");
+    }
+    for p in ["threads/../settings", "threads/%2e%2e/settings"] {
+        let (s, _) = a.json("GET", &format!("/api/nodes/{id_b}/{p}"), None).await;
+        assert!(s.is_client_error(), "{p}: {s}");
+    }
+    // Nothing changed on b.
+    let (_, s) = b.json("GET", "/api/settings", None).await;
+    assert_ne!(s["node_name"], "evil");
+    // The allow-listed classes still work.
+    for p in ["threads", "providers", "files/public"] {
+        let (s, v) = a.json("GET", &format!("/api/nodes/{id_b}/{p}"), None).await;
+        assert!(s.is_success(), "{p}: {s} {v}");
+    }
+}
