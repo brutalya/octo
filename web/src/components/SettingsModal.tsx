@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { api } from '../api/client';
+import { Devices } from './Devices';
 import type { ProviderKind, SettingsView, SettingsPatch } from '../api/types';
 
 type Result = { ok: true; count: number } | { ok: false; error: string };
@@ -81,7 +82,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         role="dialog"
         aria-label="Settings"
         onMouseDown={(e) => e.stopPropagation()}
-        className="flex w-96 max-w-[90vw] flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+        className="flex max-h-[90vh] w-96 max-w-[90vw] flex-col overflow-y-auto gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
       >
         <button
           aria-label="Close"
@@ -111,6 +112,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             return r;
           }}
         />
+        <Devices />
       </div>
     </div>
   );

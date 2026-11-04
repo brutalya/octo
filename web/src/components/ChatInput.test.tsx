@@ -91,3 +91,13 @@ describe('ChatInput attachments', () => {
     expect(screen.queryByText('secret.md')).toBeNull();
   });
 });
+
+describe('ChatInput disabled', () => {
+  it('disables send and does not submit', async () => {
+    const onSend = vi.fn();
+    render(<ChatInput streaming={false} disabled onSend={onSend} onStop={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await userEvent.type(screen.getByRole('textbox'), 'hi{Enter}');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});

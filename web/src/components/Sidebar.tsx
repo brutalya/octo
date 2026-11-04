@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Plus, Settings, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import { api } from '../api/client';
 import { relativeTime, shortCwd } from '../lib/format';
+import { NodeSwitcher } from './NodeSwitcher';
 import { SettingsModal } from './SettingsModal';
 import { useThreadsStore } from '../stores/threads';
 import type { Approval, ModelInfo, ProviderKind, SessionSummary, Space } from '../api/types';
@@ -268,7 +269,8 @@ export function Sidebar() {
           </li>
         ))}
       </ul>
-      <div className="p-2">
+      <div className="flex items-center gap-1 p-2">
+        <NodeSwitcher />
         <button
           aria-label="Settings"
           onClick={() => setSettingsOpen(true)}

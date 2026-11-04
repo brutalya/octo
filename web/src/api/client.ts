@@ -1,10 +1,16 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, ProviderKind, ProviderStatus,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread,
 } from './types';
 
-const BASE = '/api';
+const LOCAL = '/api';
+let base = LOCAL;
+
+/** Re-target data calls to a remote node; null = this node. */
+export function setNodeBase(nodeId: string | null): void {
+  base = nodeId ? `${LOCAL}/nodes/${encodeURIComponent(nodeId)}` : LOCAL;
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -12,14 +18,14 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+async function request(path: string, init?: RequestInit, local = false): Promise<Response> {
   const token = (window as { __OCTO_TOKEN__?: string }).__OCTO_TOKEN__;
   if (token) {
     const headers = new Headers(init?.headers);
     headers.set('authorization', `Bearer ${token}`);
     init = { ...init, headers };
   }
-  const res = await fetch(BASE + path, init);
+  const res = await fetch((local ? LOCAL : base) + path, init);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new ApiError(res.status, text || `HTTP ${res.status}`);
@@ -43,9 +49,30 @@ export const api = {
   importSession: async (kind: ProviderKind, externalId: string): Promise<Thread> =>
     (await request(`/import/${kind}`, jsonInit('POST', { external_id: externalId }))).json(),
   models: async (kind: ProviderKind): Promise<ModelInfo[]> => (await request(`/providers/${kind}/models`)).json(),
-  settings: async (): Promise<SettingsView> => (await request('/settings')).json(),
+  settings: async (): Promise<SettingsView> => (await request('/settings', undefined, true)).json(),
   patchSettings: async (patch: SettingsPatch): Promise<SettingsView> =>
-    (await request('/settings', jsonInit('PATCH', patch))).json(),
+    (await request('/settings', jsonInit('PATCH', patch), true)).json(),
+  nodes: async (): Promise<NodeInfo[]> => (await request('/nodes', undefined, true)).json(),
+  pairingInvite: async (): Promise<PairingInvite> =>
+    (await request('/pairing/invite', { method: 'POST' }, true)).json(),
+  pairingJoin: async (code: string, name: string): Promise<void> => {
+    await request('/pairing/join', jsonInit('POST', { code, name }), true);
+  },
+  /** null when no pairing is pending (404). */
+  pairingPending: async (): Promise<PairingPending | null> => {
+    try {
+      return await (await request('/pairing/pending', undefined, true)).json();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  },
+  pairingConfirm: async (): Promise<void> => {
+    await request('/pairing/confirm', { method: 'POST' }, true);
+  },
+  pairingReject: async (): Promise<void> => {
+    await request('/pairing/reject', { method: 'POST' }, true);
+  },
   files: async (space: Space): Promise<FileEntry[]> => (await request(`/files/${space}`)).json(),
   fileText: async (space: Space, path: string): Promise<string> =>
     (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).text(),

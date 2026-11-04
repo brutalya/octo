@@ -5,15 +5,21 @@ import { FilesPanel } from './components/FilesPanel';
 import { ChatInput } from './components/ChatInput';
 import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
+import { useNodesStore } from './stores/nodes';
 
 export function App() {
   const activeId = useThreadsStore((s) => s.activeId);
   const space = useThreadsStore((s) => s.threads.find((t) => t.id === s.activeId)?.space);
+  const offline = useNodesStore((s) => s.nodes.some((n) => n.node_id === s.selectedId && !n.online));
   const streaming = useChatStore((s) => (activeId ? s.streaming[activeId] !== undefined : false));
 
   useEffect(() => {
-    void useThreadsStore.getState().load().catch(() => {});
-    void useThreadsStore.getState().loadProviders().catch(() => {});
+    void useNodesStore.getState().load().finally(() => {
+      void useThreadsStore.getState().load().catch(() => {});
+      void useThreadsStore.getState().loadProviders().catch(() => {});
+    });
+    const poll = setInterval(() => void useNodesStore.getState().load(), 5000);
+    return () => clearInterval(poll);
   }, []);
 
   useEffect(() => {
@@ -33,6 +39,7 @@ export function App() {
               key={activeId}
               space={space}
               streaming={streaming}
+              disabled={offline}
               onSend={(text, att) => void useChatStore.getState().send(activeId, text, att)}
               onStop={() => void useChatStore.getState().stop(activeId)}
             />

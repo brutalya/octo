@@ -7,6 +7,7 @@ import type { AttachmentRef, Space } from '../api/types';
 interface Props {
   space?: Space;
   streaming: boolean;
+  disabled?: boolean;
   onSend: (text: string, attachments: AttachmentRef[]) => void;
   onStop: () => void;
 }
@@ -35,7 +36,7 @@ function Picker({ space, picked, onPick }: { space: Space; picked: AttachmentRef
   );
 }
 
-export function ChatInput({ space, streaming, onSend, onStop }: Props) {
+export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [picking, setPicking] = useState(false);
@@ -55,7 +56,7 @@ export function ChatInput({ space, streaming, onSend, onStop }: Props) {
 
   const submit = () => {
     const text = value.trim();
-    if (!text || streaming) return;
+    if (!text || streaming || disabled) return;
     onSend(text, attachments);
     setValue('');
     setAttachments([]);
@@ -153,8 +154,9 @@ export function ChatInput({ space, streaming, onSend, onStop }: Props) {
         ) : (
           <button
             aria-label="Send"
+            disabled={disabled}
             onClick={submit}
-            className="rounded-xl bg-indigo-500 p-2.5 text-slate-50 hover:bg-indigo-600"
+            className="rounded-xl bg-indigo-500 p-2.5 text-slate-50 hover:bg-indigo-600 disabled:opacity-40"
           >
             <ArrowUp size={16} />
           </button>
