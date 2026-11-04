@@ -146,3 +146,151 @@ fn oversized_plaintext_rejected() {
     let f = a.encrypt(idb, &ok).unwrap();
     assert!(f.len() <= octo_net::relay::MAX_PAYLOAD);
 }
+
+fn pair() -> (
+    (
+        Sessions,
+        octo_net::membership::Membership,
+        octo_net::identity::NodeId,
+    ),
+    (
+        Sessions,
+        octo_net::membership::Membership,
+        octo_net::identity::NodeId,
+    ),
+) {
+    let ((ka, ma), (kb, mb)) = two_nodes();
+    let (ida, idb) = (ka.node_id(), kb.node_id());
+    ((Sessions::new(ka), ma, ida), (Sessions::new(kb), mb, idb))
+}
+
+#[test]
+fn dropped_frame_does_not_desync() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let _lost = a.encrypt(idb, b"1").unwrap();
+    let f2 = a.encrypt(idb, b"2").unwrap();
+    let f3 = a.encrypt(idb, b"3").unwrap();
+    assert!(matches!(b.handle(&mb, ida, &f2).unwrap(), Handled::Data(d) if d == b"2"));
+    assert!(matches!(b.handle(&mb, ida, &f3).unwrap(), Handled::Data(d) if d == b"3"));
+}
+
+#[test]
+fn reordered_within_window_ok_but_not_twice() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let fs: Vec<_> = (0..5u8).map(|i| a.encrypt(idb, &[i]).unwrap()).collect();
+    for i in [4, 0, 3, 1, 2] {
+        assert!(matches!(b.handle(&mb, ida, &fs[i]).unwrap(), Handled::Data(d) if d == [i as u8]));
+    }
+    for f in &fs {
+        assert!(b.handle(&mb, ida, f).is_err());
+    }
+}
+
+#[test]
+fn nonce_older_than_window_rejected() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let fs: Vec<_> = (0..2100u32)
+        .map(|_| a.encrypt(idb, b"x").unwrap())
+        .collect();
+    b.handle(&mb, ida, &fs[2099]).unwrap();
+    assert!(b.handle(&mb, ida, &fs[0]).is_err(), "too old");
+    assert!(b.handle(&mb, ida, &fs[51]).is_err(), "just outside");
+    b.handle(&mb, ida, &fs[52]).unwrap();
+}
+
+#[test]
+fn simultaneous_connect_converges() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    let h_a = a.connect(&ma, idb).unwrap();
+    let h_b = b.connect(&mb, ida).unwrap();
+    let ra = a.handle(&ma, idb, &h_b).unwrap();
+    let rb = b.handle(&mb, ida, &h_a).unwrap();
+    let (low_is_a, reply) = if ida < idb {
+        assert!(matches!(ra, Handled::Ignored), "{ra:?}");
+        let Handled::Reply(r) = rb else {
+            panic!("{rb:?}")
+        };
+        (true, r)
+    } else {
+        assert!(matches!(rb, Handled::Ignored), "{rb:?}");
+        let Handled::Reply(r) = ra else {
+            panic!("{ra:?}")
+        };
+        (false, r)
+    };
+    // The responder's reply goes to the initiator (the smaller id).
+    if low_is_a {
+        assert!(matches!(
+            a.handle(&ma, idb, &reply).unwrap(),
+            Handled::Established
+        ));
+    } else {
+        assert!(matches!(
+            b.handle(&mb, ida, &reply).unwrap(),
+            Handled::Established
+        ));
+    }
+    let f = a.encrypt(idb, b"ab").unwrap();
+    assert!(matches!(b.handle(&mb, ida, &f).unwrap(), Handled::Data(d) if d == b"ab"));
+    let f = b.encrypt(ida, b"ba").unwrap();
+    assert!(matches!(a.handle(&ma, idb, &f).unwrap(), Handled::Data(d) if d == b"ba"));
+}
+
+#[test]
+fn msg1_replay_rejected_after_restart() {
+    let ((ka, ma), (kb, mb)) = two_nodes();
+    let (ida, idb) = (ka.node_id(), kb.node_id());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ts.json");
+    let mut a = Sessions::new(ka);
+    let mut b = Sessions::with_store(kb.clone(), &path).unwrap();
+    let hs1 = a.connect(&ma, idb).unwrap();
+    b.handle(&mb, ida, &hs1).unwrap();
+    drop(b);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let mut b2 = Sessions::with_store(kb, &path).unwrap();
+    assert!(matches!(b2.handle(&mb, ida, &hs1), Err(NetError::Replay)));
+    let hs1b = a.connect(&ma, idb).unwrap();
+    assert!(b2.handle(&mb, ida, &hs1b).is_ok());
+}
+
+#[test]
+fn repeated_aead_failures_trigger_rehandshake() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let mut bad = a.encrypt(idb, b"hello").unwrap();
+    let l = bad.len();
+    bad[l - 1] ^= 1;
+    for _ in 0..15 {
+        assert!(b.handle(&mb, ida, &bad).is_err());
+        assert!(b.is_established(&ida), "must not tear down");
+    }
+    // A good frame resets the counter.
+    let good = a.encrypt(idb, b"ok").unwrap();
+    b.handle(&mb, ida, &good).unwrap();
+    for _ in 0..15 {
+        assert!(b.handle(&mb, ida, &bad).is_err());
+    }
+    assert!(b.is_established(&ida));
+    let Handled::Rehandshake(hs1) = b.handle(&mb, ida, &bad).unwrap() else {
+        panic!("expected rehandshake")
+    };
+    assert!(!b.is_established(&ida));
+    let Handled::Reply(hs2) = a.handle(&ma, idb, &hs1).unwrap() else {
+        panic!()
+    };
+    assert!(matches!(
+        b.handle(&mb, ida, &hs2).unwrap(),
+        Handled::Established
+    ));
+    let f = a.encrypt(idb, b"again").unwrap();
+    assert!(matches!(b.handle(&mb, ida, &f).unwrap(), Handled::Data(_)));
+}
