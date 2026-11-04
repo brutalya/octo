@@ -4,3 +4,4 @@ web/dist/
 *.db
 .env
 *.tsbuildinfo
+crates/octo-desktop/gen/
