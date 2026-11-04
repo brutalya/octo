@@ -1,4 +1,5 @@
 use octo_core::crypto::{CryptoError, Key, decrypt, encrypt};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 fn key() -> Key {
@@ -57,6 +58,7 @@ fn rejects_truncated_wrong_key_wrong_aad() {
     assert!(decrypt(&key(), &ct, b"b").is_err());
 }
 
+#[cfg(unix)]
 #[test]
 fn key_file_created_0600_and_reused() {
     let dir = tempfile::tempdir().unwrap();

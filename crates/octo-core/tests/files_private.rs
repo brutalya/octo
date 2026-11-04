@@ -1,6 +1,7 @@
 use octo_core::crypto::Key;
 use octo_core::files::FilesError;
 use octo_core::files::private::PrivateFiles;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -21,6 +22,7 @@ fn all_files(root: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg(unix)]
 #[test]
 fn nothing_readable_on_disk_names_blobs_or_index() {
     let d = tempfile::tempdir().unwrap();

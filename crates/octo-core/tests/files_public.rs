@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use octo_core::files::FilesError;
 use octo_core::files::public::PublicFiles;
 
@@ -12,6 +13,7 @@ fn files_are_plain_on_disk() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinks_cannot_escape_the_root() {
     let d = tempfile::tempdir().unwrap();

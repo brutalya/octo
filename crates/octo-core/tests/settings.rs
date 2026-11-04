@@ -1,4 +1,5 @@
 use octo_core::settings::{Settings, SettingsPatch, mask_key};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -34,6 +35,7 @@ fn view_without_key_is_null() {
     assert!(v["openrouter_api_key"].is_null());
 }
 
+#[cfg(unix)]
 #[test]
 fn save_is_0600_and_roundtrips() {
     let dir = tempfile::tempdir().unwrap();

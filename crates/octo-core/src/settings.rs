@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use ts_rs::TS;
 
@@ -133,11 +132,7 @@ impl Settings {
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_vec_pretty(self).map_err(|_| SettingsError::Parse)?;
         let _ = std::fs::remove_file(&tmp);
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut f = crate::fsutil::create_new_private(&tmp)?;
         f.write_all(&json)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)?;

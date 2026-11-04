@@ -1,3 +1,4 @@
+#![cfg(unix)] // shell-script based (sh, sleep); unix only
 use octo_core::CoreError;
 use octo_core::registry::{ProcEvent, ProcessRegistry};
 use std::path::Path;

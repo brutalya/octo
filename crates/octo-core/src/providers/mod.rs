@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::settings::Settings;
 use crate::storage::Approval;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 use ts_rs::TS;
@@ -62,12 +62,15 @@ impl ProviderKind {
         matches!(self, ProviderKind::Ollama | ProviderKind::OpenRouter)
     }
 
-    fn bin(self, cfg: &Config) -> Option<&Path> {
-        match self {
-            ProviderKind::Claude => Some(&cfg.claude_bin),
-            ProviderKind::Antigravity => Some(&cfg.agy_bin),
-            _ => None,
-        }
+    /// Resolved through PATH/PATHEXT (finds `claude.cmd`, `agy.exe` on Windows);
+    /// falls back to the configured value if not found.
+    fn bin(self, cfg: &Config) -> Option<PathBuf> {
+        let configured: &Path = match self {
+            ProviderKind::Claude => &cfg.claude_bin,
+            ProviderKind::Antigravity => &cfg.agy_bin,
+            _ => return None,
+        };
+        Some(which::which(configured).unwrap_or_else(|_| configured.to_path_buf()))
     }
 }
 

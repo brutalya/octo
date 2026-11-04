@@ -3,7 +3,6 @@ use super::{FileEntry, FileKind, FilesError};
 use crate::crypto::{Key, decrypt, encrypt};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,11 +110,7 @@ impl PrivateFiles {
     }
 
     fn write_private(&self, path: &Path, data: &[u8]) -> Result<(), FilesError> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut f = crate::fsutil::create_new_private(path)?;
         f.write_all(data)?;
         f.sync_all()?;
         Ok(())

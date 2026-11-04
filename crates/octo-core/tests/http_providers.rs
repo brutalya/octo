@@ -592,6 +592,7 @@ async fn attachment_policy_and_media_checks_happen_before_anything_is_sent_or_st
     collect(e.hub.send_message(&t.id, "fine", &[]).await.unwrap()).await;
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn settings_persist_with_0600_and_reload() {
     use std::os::unix::fs::PermissionsExt;

@@ -1,3 +1,4 @@
+#![cfg(unix)] // uses tests/fixtures/fake_cli.sh; unix only
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};

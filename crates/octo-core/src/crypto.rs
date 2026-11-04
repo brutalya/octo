@@ -1,7 +1,6 @@
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const NONCE_LEN: usize = 24;
@@ -49,11 +48,7 @@ impl Key {
         }
         let mut bytes = [0u8; 32];
         rand::fill(&mut bytes[..]);
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut f = crate::fsutil::create_new_private(path)?;
         f.write_all(&bytes)?;
         f.sync_all()?;
         Ok(Self(bytes))

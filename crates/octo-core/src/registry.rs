@@ -1,7 +1,5 @@
 use crate::error::CoreError;
-use nix::errno::Errno;
-use nix::sys::signal::{Signal, killpg};
-use nix::unistd::Pid;
+use crate::procgroup::{self, Group};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -30,31 +28,27 @@ type Running = Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>;
 const TERM_GRACE: Duration = Duration::from_secs(2);
 
 /// Kills the whole process group when dropped (task aborted, runtime shutdown).
-struct GroupGuard(Option<Pid>);
+struct GroupGuard(Option<Group>);
 
 impl Drop for GroupGuard {
     fn drop(&mut self) {
         if let Some(pg) = self.0 {
-            let _ = killpg(pg, Signal::SIGKILL);
+            pg.kill();
         }
     }
 }
 
-fn group_alive(pg: Pid) -> bool {
-    !matches!(killpg(pg, None), Err(Errno::ESRCH))
-}
-
 /// SIGTERM the group, wait up to `TERM_GRACE`, then SIGKILL; always reaps the leader.
-async fn kill_group(child: &mut tokio::process::Child, pg: Option<Pid>) {
+async fn kill_group(child: &mut tokio::process::Child, pg: Option<Group>) {
     let Some(pg) = pg else {
         let _ = child.kill().await;
         return;
     };
-    let _ = killpg(pg, Signal::SIGTERM);
+    pg.terminate();
     let deadline = tokio::time::Instant::now() + TERM_GRACE;
     loop {
         let reaped = matches!(child.try_wait(), Ok(Some(_)) | Err(_));
-        if reaped && !group_alive(pg) {
+        if reaped && !pg.alive() {
             return;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -62,7 +56,7 @@ async fn kill_group(child: &mut tokio::process::Child, pg: Option<Pid>) {
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    let _ = killpg(pg, Signal::SIGKILL);
+    pg.kill();
     let _ = child.wait().await;
 }
 
@@ -102,11 +96,11 @@ impl ProcessRegistry {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
+            .kill_on_drop(true);
+        procgroup::configure(&mut cmd);
         let mut child = cmd.spawn()?;
         let pid = child.id();
-        let pgid = pid.and_then(|p| i32::try_from(p).ok()).map(Pid::from_raw);
+        let pgid = pid.and_then(Group::from_pid);
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
         map.insert(key.to_string(), Some(cancel_tx));
         drop(map);

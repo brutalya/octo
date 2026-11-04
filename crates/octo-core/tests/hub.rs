@@ -1,3 +1,4 @@
+#![cfg(unix)] // uses tests/fixtures/fake_cli.sh; unix only
 use octo_core::providers::{AgentEvent, ProviderKind};
 use octo_core::storage::{Approval, Space};
 use octo_core::{Config, Hub};

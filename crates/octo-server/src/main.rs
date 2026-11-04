@@ -38,9 +38,13 @@ async fn main() -> Result<()> {
             PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist")),
         ])
         .find(|p| p.is_dir());
+    let web_built = web_dir.is_some();
     let app = octo_server::app(Arc::new(Hub::new(config)?), web_dir);
     let listener = tokio::net::TcpListener::bind(&args.addr).await?;
-    println!("listening on http://{}", listener.local_addr()?);
+    println!("Octo: http://{}", listener.local_addr()?);
+    if !web_built {
+        println!("web UI not built: cd web && npm ci && npm run build");
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
