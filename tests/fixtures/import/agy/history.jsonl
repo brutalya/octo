@@ -1,0 +1,5 @@
+{"display":"first prompt in demo","timestamp":1772359200000,"type":null,"workspace":"/srv/demo"}
+{"display":"/clear","timestamp":1772359260000,"type":"slash_command","workspace":"/srv/demo"}
+{"display":"second prompt in demo","timestamp":1772359440000,"type":null,"workspace":"/srv/demo"}
+{"display":"later session prompt","timestamp":1772441400000,"type":null,"workspace":"/srv/demo"}
+{"display":"other workspace prompt","timestamp":1772441400000,"type":null,"workspace":"/other"}

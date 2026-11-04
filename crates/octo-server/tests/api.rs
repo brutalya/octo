@@ -22,6 +22,7 @@ fn app() -> (Router, tempfile::TempDir) {
         claude_bin: fake.clone(),
         agy_bin: fake,
         openrouter_base: String::new(),
+        ..Config::new(None)
     };
     (
         octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None),
@@ -221,6 +222,7 @@ async fn serves_web_dir_with_index_fallback() {
         claude_bin: "x".into(),
         agy_bin: "x".into(),
         openrouter_base: String::new(),
+        ..Config::new(None)
     };
     let app = octo_server::app(
         Arc::new(Hub::new(cfg).unwrap()),

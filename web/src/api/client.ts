@@ -1,7 +1,7 @@
 import { readAgentEvents } from './sse';
 import type {
   AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, ProviderKind, ProviderStatus,
-  SettingsView, SettingsPatch, Space, Thread,
+  SessionSummary, SettingsView, SettingsPatch, Space, Thread,
 } from './types';
 
 const BASE = '/api';
@@ -32,6 +32,10 @@ export const api = {
   threads: async (): Promise<Thread[]> => (await request('/threads')).json(),
   createThread: async (provider: ProviderKind, space: Space, approval: Approval, model?: string): Promise<Thread> =>
     (await request('/threads', jsonInit('POST', { provider, space, approval, model }))).json(),
+  importSessions: async (kind: ProviderKind, q: string): Promise<SessionSummary[]> =>
+    (await request(`/import/${kind}/sessions?q=${encodeURIComponent(q)}`)).json(),
+  importSession: async (kind: ProviderKind, externalId: string): Promise<Thread> =>
+    (await request(`/import/${kind}`, jsonInit('POST', { external_id: externalId }))).json(),
   models: async (kind: ProviderKind): Promise<ModelInfo[]> => (await request(`/providers/${kind}/models`)).json(),
   settings: async (): Promise<SettingsView> => (await request('/settings')).json(),
   patchSettings: async (patch: SettingsPatch): Promise<SettingsView> =>

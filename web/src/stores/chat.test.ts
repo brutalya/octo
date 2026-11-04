@@ -18,7 +18,7 @@ const json = (v: unknown, status = 200) =>
   new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
 
 const thread: Thread = {
-  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
+  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, cwd: null, origin: 'octo', created_at: 1, updated_at: 1,
 };
 
 beforeEach(() => {

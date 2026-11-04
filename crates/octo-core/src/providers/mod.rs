@@ -159,9 +159,10 @@ pub fn build_invocation(
     external_session_id: Option<&str>,
     approval: Approval,
     extra: CliExtra<'_>,
+    cwd: &Path,
 ) -> Option<Invocation> {
     let mut command = Command::new(kind.bin(cfg)?);
-    command.kill_on_drop(true);
+    command.kill_on_drop(true).current_dir(cwd);
     command.args(build_args(
         kind,
         approval,

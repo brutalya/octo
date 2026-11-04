@@ -1,0 +1,6 @@
+CREATE TABLE `conversation_summaries` (`conversation_id` text,`title` text NOT NULL DEFAULT "",`preview` text NOT NULL DEFAULT "",`step_count` integer NOT NULL DEFAULT 0,`last_modified_time` datetime NOT NULL,`workspace_uris` text NOT NULL,`status` text NOT NULL DEFAULT "",`parent_conversation_id` text NOT NULL DEFAULT "",`nesting_depth` integer NOT NULL DEFAULT 0, PRIMARY KEY (`conversation_id`));
+INSERT INTO conversation_summaries VALUES('aaaaaaaa-0000-4000-8000-000000000001','Refactor parser','',12,'2026-03-01 10:05:00.123456789+00:00','["file:///srv/demo"]','CASCADE_RUN_STATUS_IDLE','',0);
+INSERT INTO conversation_summaries VALUES('aaaaaaaa-0000-4000-8000-000000000002','Second chat','',6,'2026-03-02 08:55:00+00:00','["file:///srv/demo"]','CASCADE_RUN_STATUS_IDLE','',0);
+INSERT INTO conversation_summaries VALUES('aaaaaaaa-0000-4000-8000-000000000003','','preview text',4,'2026-03-03 12:00:00+00:00','["file:///C:/work/my%20app"]','CASCADE_RUN_STATUS_IDLE','',0);
+INSERT INTO conversation_summaries VALUES('aaaaaaaa-0000-4000-8000-000000000004','Sub agent','',3,'2026-03-01 10:03:00+00:00','["file:///srv/demo"]','CASCADE_RUN_STATUS_IDLE','aaaaaaaa-0000-4000-8000-000000000001',1);
+INSERT INTO conversation_summaries VALUES('aaaaaaaa-0000-4000-8000-000000000005','Empty','',0,'2026-03-03 12:30:00+00:00','[]','CASCADE_RUN_STATUS_IDLE','',0);

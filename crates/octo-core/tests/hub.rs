@@ -16,6 +16,7 @@ async fn no_done_once_cancel_requested() {
         claude_bin: fake.clone(),
         agy_bin: fake,
         openrouter_base: String::new(),
+        ..Config::new(None)
     })
     .unwrap();
     for _ in 0..20 {

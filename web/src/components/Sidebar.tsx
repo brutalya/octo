@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plus, Settings, ShieldCheck, Trash2, Zap } from 'lucide-react';
 import { api } from '../api/client';
+import { relativeTime, shortCwd } from '../lib/format';
 import { SettingsModal } from './SettingsModal';
 import { useThreadsStore } from '../stores/threads';
-import type { Approval, ModelInfo, ProviderKind, Space } from '../api/types';
+import type { Approval, ModelInfo, ProviderKind, SessionSummary, Space } from '../api/types';
 
 const HTTP_PROVIDERS: ProviderKind[] = ['ollama', 'openrouter'];
 
@@ -55,6 +56,57 @@ function ModelMenu({ kind, onPick }: { kind: ProviderKind; onPick: (id: string) 
   );
 }
 
+function SessionMenu({ kind, onPick }: { kind: ProviderKind; onPick: (externalId: string) => void }) {
+  const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    const timer = setTimeout(() => {
+      api.importSessions(kind, query.trim())
+        .then((s) => live && setSessions(s))
+        .catch((e: unknown) => live && setError(e instanceof Error ? e.message : String(e)));
+    }, query ? 150 : 0);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [kind, query]);
+
+  return (
+    <div className="border-t border-slate-200 p-1">
+      <input
+        autoFocus
+        type="search"
+        role="searchbox"
+        aria-label="Search sessions"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        className="mb-1 w-full rounded-md border border-slate-200 bg-transparent px-2 py-1 text-sm text-slate-800 outline-none focus:border-indigo-500"
+      />
+      {error && <div className="px-2 py-1 text-xs text-red-500">{error}</div>}
+      <div role="listbox" className="max-h-72 w-72 overflow-y-auto">
+        {(sessions ?? []).map((s) => (
+          <button
+            key={s.external_id}
+            role="option"
+            aria-selected={false}
+            onClick={() => onPick(s.external_id)}
+            className="block w-full rounded px-2 py-1 text-left hover:bg-slate-100"
+          >
+            <span className="block truncate text-sm text-slate-700">{s.title}</span>
+            <span className="flex justify-between gap-2 text-xs text-slate-400">
+              <span className="truncate">{shortCwd(s.cwd)}</span>
+              <span className="shrink-0">{relativeTime(s.updated_at)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ApprovalIcon({ approval, size }: { approval: Approval; size: number }) {
   return approval === 'auto' ? <Zap size={size} /> : <ShieldCheck size={size} />;
 }
@@ -62,14 +114,17 @@ function ApprovalIcon({ approval, size }: { approval: Approval; size: number }) 
 function NewThreadMenu() {
   const providers = useThreadsStore((s) => s.providers);
   const create = useThreadsStore((s) => s.create);
+  const importSession = useThreadsStore((s) => s.importSession);
   const [approval, setApproval] = useState<Approval>('confirm');
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<{ kind: ProviderKind; space: Space } | null>(null);
+  const [sessionsOf, setSessionsOf] = useState<ProviderKind | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const close = () => {
     setOpen(false);
     setPending(null);
+    setSessionsOf(null);
   };
 
   useEffect(() => {
@@ -82,6 +137,7 @@ function NewThreadMenu() {
   }, [open]);
 
   const pick = (kind: ProviderKind, space: Space) => {
+    setSessionsOf(null);
     if (HTTP_PROVIDERS.includes(kind)) {
       setPending({ kind, space });
       return;
@@ -94,6 +150,13 @@ function NewThreadMenu() {
     if (!pending) return;
     close();
     void create(pending.kind, pending.space, approval, model);
+  };
+
+  const pickSession = (externalId: string) => {
+    if (!sessionsOf) return;
+    const kind = sessionsOf;
+    close();
+    void importSession(kind, externalId);
   };
 
   const choice = 'px-2 py-0.5 rounded-md text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 disabled:hover:bg-transparent';
@@ -123,7 +186,8 @@ function NewThreadMenu() {
             </button>
           </div>
           {providers.map((p) => (
-            <div key={p.kind} className="flex items-center justify-between gap-3 px-2 py-1">
+            <div key={p.kind}>
+            <div className="flex items-center justify-between gap-3 px-2 py-1">
               <span className="text-sm text-slate-800">{p.kind}</span>
               <span className="flex gap-1">
                 <button
@@ -139,7 +203,21 @@ function NewThreadMenu() {
                 </button>
               </span>
             </div>
+            {!HTTP_PROVIDERS.includes(p.kind) && (
+              <button
+                aria-label={`${p.kind} sessions`}
+                onClick={() => {
+                  setPending(null);
+                  setSessionsOf(sessionsOf === p.kind ? null : p.kind);
+                }}
+                className="block w-full px-2 pb-1 text-left text-xs text-slate-400 hover:text-slate-700"
+              >
+                sessions
+              </button>
+            )}
+            </div>
           ))}
+          {sessionsOf && <SessionMenu key={sessionsOf} kind={sessionsOf} onPick={pickSession} />}
           {pending && <ModelMenu key={`${pending.kind}`} kind={pending.kind} onPick={pickModel} />}
         </div>
       )}

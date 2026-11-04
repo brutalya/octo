@@ -26,3 +26,12 @@ Goal: sessions started in a terminal (Antigravity, Claude Code) appear in Octo a
 ## Web
 - "+" dropdown: under each CLI provider a second item opens a searchable session list (title, cwd short, relative time). Click = import + open.
 - Imported threads look like any other thread. No badges.
+
+## Deviations
+- **Antigravity messages: option 3.** Option 1 (an official history export) was not found; option 2 (decoding `steps.step_payload`) was not attempted because the protobuf layout could not be inferred reliably without reading real conversations. The thread shows user prompts from `history.jsonl` (entries with `type` null, i.e. not slash commands) plus one assistant line `*history unavailable*`. `history.jsonl` has no conversation id, so a prompt is assigned to a conversation by workspace and time: the first session of that workspace whose `last_modified_time` is at or after the prompt, and after the previous session of the same workspace. Sub-agent conversations (`parent_conversation_id` set) and conversations with 0 steps are not listed. Conversation DBs are not opened at all.
+- **Cache refresh only for imported Claude threads.** Octo-created CLI threads keep their own cache (the CLI copy contains inlined attachment text). Antigravity's cache is never replaced because its history is lossy and would drop replies produced in Octo. Refresh compares a stamp (`mtime:size`) and is skipped while a run is in progress; a vanished source keeps the cache.
+- Claude tool calls become `> Tool: <name> <summary>` lines inside the assistant message; consecutive assistant entries are merged into one message. Envelope user entries (`<command-...>`, `<local-command-...>`, `<system-reminder>`), thinking blocks, sidechain and meta entries are skipped.
+- `cwd` is a normal field of `POST /threads`; CLI threads default to `<data>/public`. A run fails fast (400, nothing stored) if the working directory does not exist.
+- Config: `claude_projects_dir` and `agy_dir` default to `<home>/.claude/projects` and `<home>/.gemini/antigravity-cli` (home via the platform home dir, so `%USERPROFILE%` on Windows); server flags `--claude-projects-dir`, `--agy-dir`.
+- Session ids from the API are validated (`[A-Za-z0-9_-]`) before any file lookup.
+- Web: each CLI provider row in the "+" menu has a "sessions" item opening the search list (server-side `q`, debounced).

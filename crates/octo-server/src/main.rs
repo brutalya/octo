@@ -18,6 +18,12 @@ struct Args {
     claude_bin: Option<PathBuf>,
     #[arg(long)]
     agy_bin: Option<PathBuf>,
+    /// Claude Code projects dir (default: ~/.claude/projects).
+    #[arg(long)]
+    claude_projects_dir: Option<PathBuf>,
+    /// Antigravity CLI dir (default: ~/.gemini/antigravity-cli).
+    #[arg(long)]
+    agy_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -29,6 +35,12 @@ async fn main() -> Result<()> {
     }
     if let Some(p) = args.agy_bin {
         config.agy_bin = p;
+    }
+    if let Some(p) = args.claude_projects_dir {
+        config.claude_projects_dir = p;
+    }
+    if let Some(p) = args.agy_dir {
+        config.agy_dir = p;
     }
     let web_dir = args
         .web_dir

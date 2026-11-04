@@ -92,6 +92,7 @@ struct NewThread {
     #[serde(default)]
     approval: Approval,
     model: Option<String>,
+    cwd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -104,6 +105,17 @@ struct NewMessage {
     content: String,
     #[serde(default)]
     attachments: Vec<AttachmentRef>,
+}
+
+#[derive(Deserialize)]
+struct SessionsQuery {
+    #[serde(default)]
+    q: String,
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    external_id: String,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +146,8 @@ pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
         )
         .route("/threads/{id}/cancel", post(cancel))
         .route("/providers/{kind}/models", get(models))
+        .route("/import/{kind}/sessions", get(import_sessions))
+        .route("/import/{kind}", post(import_session))
         .route("/settings", get(get_settings).patch(patch_settings))
         .route(
             "/files/{space}",
@@ -168,11 +182,12 @@ async fn create_thread(
     State(h): State<Shared>,
     Json(b): Json<NewThread>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(h.create_thread(
+    Ok(Json(h.create_thread_in(
         b.provider,
         b.space,
         b.approval,
         b.model.as_deref(),
+        b.cwd.as_deref(),
     )?))
 }
 
@@ -193,7 +208,39 @@ async fn list_messages(
     State(h): State<Shared>,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(h.list_messages(&id)?))
+    // may re-read the CLI's session file
+    Ok(Json(blocking_core(move || h.list_messages(&id)).await?))
+}
+
+async fn import_sessions(
+    State(h): State<Shared>,
+    Path(kind): Path<ProviderKind>,
+    Query(q): Query<SessionsQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        blocking_core(move || h.import_sessions(kind, &q.q)).await?,
+    ))
+}
+
+async fn import_session(
+    State(h): State<Shared>,
+    Path(kind): Path<ProviderKind>,
+    Json(b): Json<ImportBody>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        blocking_core(move || h.import_session(kind, &b.external_id)).await?,
+    ))
+}
+
+async fn blocking_core<T, F>(f: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, CoreError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|_| ApiError::Core(CoreError::Invalid("task failed")))?
+        .map_err(ApiError::from)
 }
 
 async fn cancel(State(h): State<Shared>, Path(id): Path<String>) -> StatusCode {

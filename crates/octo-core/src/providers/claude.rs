@@ -71,7 +71,7 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
     }
 }
 
-fn tool_summary(input: &Value) -> String {
+pub(crate) fn tool_summary(input: &Value) -> String {
     ["command", "file_path", "pattern", "url", "path", "query"]
         .iter()
         .find_map(|k| input[*k].as_str())

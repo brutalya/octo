@@ -7,7 +7,7 @@ import { useThreadsStore } from '../stores/threads';
 import type { Thread } from '../api/types';
 
 const th = (id: string, space: Thread['space']): Thread => ({
-  id, title: id, provider: 'ollama', space, approval: 'confirm', model: 'm', created_at: 1, updated_at: 1,
+  id, title: id, provider: 'ollama', space, approval: 'confirm', model: 'm', cwd: null, origin: 'octo', created_at: 1, updated_at: 1,
 });
 const load = vi.fn(async () => {});
 const upload = vi.fn(async () => {});

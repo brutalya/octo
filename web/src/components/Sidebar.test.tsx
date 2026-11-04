@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sidebar } from './Sidebar';
 import { useThreadsStore } from '../stores/threads';
@@ -13,7 +13,7 @@ const providers: ProviderStatus[] = [
 ];
 
 const t = (id: string, title: string): Thread => ({
-  id, title, provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
+  id, title, provider: 'claude', space: 'public', approval: 'confirm', model: null, cwd: null, origin: 'octo', created_at: 1, updated_at: 1,
 });
 
 beforeEach(() => {
@@ -141,5 +141,62 @@ describe('Sidebar http providers', () => {
     render(<Sidebar />);
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+});
+
+describe('Sidebar session picker', () => {
+  const sessions = [
+    { external_id: 's1', title: 'Fix the parser', cwd: '/srv/apps/demo', updated_at: Date.now() - 3 * 3_600_000, messages: 4, imported_thread_id: null },
+    { external_id: 's2', title: 'Write docs', cwd: 'C:\\work\\site', updated_at: Date.now() - 2 * 86_400_000, messages: 2, imported_thread_id: null },
+  ];
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn(async (url: string) => {
+      const q = new URL(url, 'http://x').searchParams.get('q') ?? '';
+      const rows = sessions.filter((x) => x.title.toLowerCase().includes(q.toLowerCase()));
+      return new Response(JSON.stringify(rows), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('only CLI providers offer sessions', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    expect(screen.getByRole('button', { name: 'claude sessions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'antigravity sessions' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'ollama sessions' })).toBeNull();
+  });
+
+  it('lists sessions with title, short cwd and relative time', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
+    expect(await screen.findByRole('option', { name: /Fix the parser/ })).toBeInTheDocument();
+    expect(screen.getByText('apps/demo')).toBeInTheDocument();
+    expect(screen.getByText('work/site')).toBeInTheDocument();
+    expect(screen.getByText('3h')).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/import/claude/sessions?q=');
+  });
+
+  it('search asks the server and narrows the list', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
+    await screen.findByRole('option', { name: /Write docs/ });
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search sessions' }), 'docs');
+    await waitFor(() => expect(screen.queryByRole('option', { name: /Fix the parser/ })).toBeNull());
+    expect(screen.getByRole('option', { name: /Write docs/ })).toBeInTheDocument();
+  });
+
+  it('clicking a session imports it and closes the menu', async () => {
+    const importSession = vi.fn(async () => {});
+    useThreadsStore.setState({ importSession });
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
+    await userEvent.click(await screen.findByRole('option', { name: /Fix the parser/ }));
+    expect(importSession).toHaveBeenCalledWith('claude', 's1');
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });

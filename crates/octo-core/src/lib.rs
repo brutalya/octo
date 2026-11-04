@@ -5,6 +5,7 @@ pub mod error;
 pub mod files;
 mod fsutil;
 pub mod hub;
+pub mod import;
 pub mod policy;
 mod procgroup;
 pub mod providers;

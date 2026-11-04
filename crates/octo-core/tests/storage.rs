@@ -1,5 +1,5 @@
 use octo_core::providers::ProviderKind;
-use octo_core::storage::{Approval, Role, Space, Storage};
+use octo_core::storage::{Approval, NewImport, Origin, Role, SourceMessage, Space, Storage};
 
 fn db() -> Storage {
     Storage::open_in_memory().unwrap()
@@ -14,7 +14,7 @@ fn migrations_set_version_and_are_idempotent() {
         .unwrap();
     drop(s);
     let s = Storage::open(&path).unwrap();
-    assert_eq!(s.user_version().unwrap(), 3);
+    assert_eq!(s.user_version().unwrap(), 4);
     assert_eq!(s.list_threads().unwrap().len(), 1);
 }
 
@@ -135,7 +135,7 @@ fn migration_2_keeps_old_threads_as_confirm() {
         .unwrap();
     }
     let s = Storage::open(&path).unwrap();
-    assert_eq!(s.user_version().unwrap(), 3);
+    assert_eq!(s.user_version().unwrap(), 4);
     assert_eq!(
         s.get_thread("x").unwrap().unwrap().approval,
         Approval::Confirm
@@ -205,7 +205,102 @@ fn migrates_a_version_2_database() {
         .unwrap();
     }
     let s = Storage::open(&path).unwrap();
-    assert_eq!(s.user_version().unwrap(), 3);
+    assert_eq!(s.user_version().unwrap(), 4);
     assert_eq!(s.get_thread("t").unwrap().unwrap().model, None);
     assert!(s.list_messages("t").unwrap()[0].attachments.is_empty());
+}
+
+#[test]
+fn threads_have_cwd_and_origin() {
+    let s = Storage::open_in_memory().unwrap();
+    let t = s
+        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
+        .unwrap();
+    assert_eq!(t.cwd, None);
+    assert_eq!(t.origin, Origin::Octo);
+    let t = s
+        .create_thread_in(
+            ProviderKind::Claude,
+            Space::Public,
+            Approval::Confirm,
+            None,
+            Some("/srv/x"),
+        )
+        .unwrap();
+    assert_eq!(
+        s.get_thread(&t.id).unwrap().unwrap().cwd.as_deref(),
+        Some("/srv/x")
+    );
+}
+
+fn imported(s: &Storage) -> octo_core::storage::Thread {
+    s.import_thread(&NewImport {
+        provider: ProviderKind::Claude,
+        external_id: "ext-1",
+        title: "T",
+        cwd: Some("/srv/x"),
+        updated_at: 5_000,
+        stamp: "s1",
+        messages: &[
+            SourceMessage {
+                role: Role::User,
+                content: "a".into(),
+                created_at: 1_000,
+            },
+            SourceMessage {
+                role: Role::Assistant,
+                content: "b".into(),
+                created_at: 2_000,
+            },
+        ],
+    })
+    .unwrap()
+}
+
+#[test]
+fn import_creates_public_imported_thread_with_messages() {
+    let s = Storage::open_in_memory().unwrap();
+    let t = imported(&s);
+    assert_eq!(t.origin, Origin::Imported);
+    assert_eq!(t.space, Space::Public);
+    assert_eq!(t.updated_at, 5_000);
+    assert_eq!(t.external_session_id.as_deref(), Some("ext-1"));
+    let found = s
+        .find_by_external(ProviderKind::Claude, "ext-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.id, t.id);
+    assert!(
+        s.find_by_external(ProviderKind::Antigravity, "ext-1")
+            .unwrap()
+            .is_none()
+    );
+    let m = s.list_messages(&t.id).unwrap();
+    assert_eq!(
+        m.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(s.sync_stamp(&t.id).unwrap().as_deref(), Some("s1"));
+}
+
+#[test]
+fn replace_messages_swaps_cache_and_stamp() {
+    let s = Storage::open_in_memory().unwrap();
+    let t = imported(&s);
+    s.replace_messages(
+        &t.id,
+        &[SourceMessage {
+            role: Role::User,
+            content: "c".into(),
+            created_at: 3_000,
+        }],
+        "s2",
+        9_000,
+    )
+    .unwrap();
+    let m = s.list_messages(&t.id).unwrap();
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].content, "c");
+    assert_eq!(s.sync_stamp(&t.id).unwrap().as_deref(), Some("s2"));
+    assert_eq!(s.get_thread(&t.id).unwrap().unwrap().updated_at, 9_000);
 }

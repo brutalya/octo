@@ -3,7 +3,7 @@ import { useThreadsStore } from './threads';
 import type { Thread } from '../api/types';
 
 const thread: Thread = {
-  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, created_at: 1, updated_at: 1,
+  id: 't1', title: '', provider: 'claude', space: 'public', approval: 'confirm', model: null, cwd: null, origin: 'octo', created_at: 1, updated_at: 1,
 };
 const json = (v: unknown) =>
   new Response(JSON.stringify(v), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -30,5 +30,28 @@ describe('threads store approval', () => {
     expect(init.method).toBe('PATCH');
     expect(JSON.parse(init.body as string)).toEqual({ approval: 'auto' });
     expect(useThreadsStore.getState().threads[0].approval).toBe('auto');
+  });
+});
+
+describe('threads store import', () => {
+  it('imports a session, adds the thread and opens it', async () => {
+    const f = vi.fn(async () => json({ ...thread, id: 'imp', origin: 'imported' }));
+    vi.stubGlobal('fetch', f);
+    await useThreadsStore.getState().importSession('claude', 'ext-1');
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/import/claude');
+    expect(JSON.parse(init.body as string)).toEqual({ external_id: 'ext-1' });
+    const s = useThreadsStore.getState();
+    expect(s.activeId).toBe('imp');
+    expect(s.threads.map((x) => x.id)).toEqual(['imp', 't1']);
+  });
+
+  it('an already imported session is not duplicated', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ ...thread, title: 'renamed' })));
+    await useThreadsStore.getState().importSession('claude', 'ext-1');
+    const s = useThreadsStore.getState();
+    expect(s.threads).toHaveLength(1);
+    expect(s.threads[0].title).toBe('renamed');
+    expect(s.activeId).toBe('t1');
   });
 });

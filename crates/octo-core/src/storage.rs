@@ -21,6 +21,10 @@ const MIGRATIONS: &[&str] = &[
         CHECK(approval IN('auto','confirm'));",
     "ALTER TABLE threads ADD COLUMN model TEXT;
      ALTER TABLE messages ADD COLUMN attachments TEXT;",
+    "ALTER TABLE threads ADD COLUMN cwd TEXT;
+     ALTER TABLE threads ADD COLUMN origin TEXT NOT NULL DEFAULT 'octo'
+        CHECK(origin IN('octo','imported'));
+     ALTER TABLE threads ADD COLUMN sync_stamp TEXT;",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -74,6 +78,25 @@ impl Approval {
     }
 }
 
+/// Where a thread was created: in Octo, or imported from a CLI's own storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Origin {
+    Octo,
+    Imported,
+}
+
+impl Origin {
+    fn parse(s: &str) -> Self {
+        if s == "imported" {
+            Origin::Imported
+        } else {
+            Origin::Octo
+        }
+    }
+}
+
 /// Reference to a file in a space, attached to a user message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -117,6 +140,8 @@ pub struct Thread {
     pub space: Space,
     pub approval: Approval,
     pub model: Option<String>,
+    pub cwd: Option<String>,
+    pub origin: Origin,
     #[serde(skip)]
     #[ts(skip)]
     pub external_session_id: Option<String>,
@@ -124,6 +149,25 @@ pub struct Thread {
     pub created_at: i64,
     #[ts(type = "number")]
     pub updated_at: i64,
+}
+
+/// One message read from a CLI's own storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceMessage {
+    pub role: Role,
+    pub content: String,
+    pub created_at: i64,
+}
+
+/// A CLI session to be stored as an imported (public) thread.
+pub struct NewImport<'a> {
+    pub provider: ProviderKind,
+    pub external_id: &'a str,
+    pub title: &'a str,
+    pub cwd: Option<&'a str>,
+    pub updated_at: i64,
+    pub stamp: &'a str,
+    pub messages: &'a [SourceMessage],
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -154,7 +198,7 @@ fn new_id() -> String {
 }
 
 const THREAD_COLS: &str =
-    "id,title,provider,space,external_session_id,created_at,updated_at,approval,model";
+    "id,title,provider,space,external_session_id,created_at,updated_at,approval,model,cwd,origin";
 
 fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
     let provider: String = r.get(2)?;
@@ -169,7 +213,29 @@ fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
         updated_at: r.get(6)?,
         approval: Approval::parse(&r.get::<_, String>(7)?),
         model: r.get(8)?,
+        cwd: r.get(9)?,
+        origin: Origin::parse(&r.get::<_, String>(10)?),
     })
+}
+
+fn insert_source_messages(
+    tx: &rusqlite::Transaction<'_>,
+    thread_id: &str,
+    messages: &[SourceMessage],
+) -> rusqlite::Result<()> {
+    for m in messages {
+        tx.execute(
+            "INSERT INTO messages(id,thread_id,role,content,created_at) VALUES(?,?,?,?,?)",
+            params![
+                new_id(),
+                thread_id,
+                m.role.as_str(),
+                m.content,
+                m.created_at
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 impl Storage {
@@ -211,6 +277,17 @@ impl Storage {
         approval: Approval,
         model: Option<&str>,
     ) -> rusqlite::Result<Thread> {
+        self.create_thread_in(provider, space, approval, model, None)
+    }
+
+    pub fn create_thread_in(
+        &self,
+        provider: ProviderKind,
+        space: Space,
+        approval: Approval,
+        model: Option<&str>,
+        cwd: Option<&str>,
+    ) -> rusqlite::Result<Thread> {
         let now = now_ms();
         let t = Thread {
             id: new_id(),
@@ -219,15 +296,81 @@ impl Storage {
             space,
             approval,
             model: model.map(str::to_string),
+            cwd: cwd.map(str::to_string),
+            origin: Origin::Octo,
             external_session_id: None,
             created_at: now,
             updated_at: now,
         };
         self.conn().execute(
-            "INSERT INTO threads(id,title,provider,space,approval,model,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-            params![t.id, t.title, provider.as_str(), space.as_str(), approval.as_str(), t.model, now, now],
+            "INSERT INTO threads(id,title,provider,space,approval,model,cwd,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            params![t.id, t.title, provider.as_str(), space.as_str(), approval.as_str(), t.model, t.cwd, now, now],
         )?;
         Ok(t)
+    }
+
+    /// Stores a CLI session as a public, imported thread together with its messages.
+    pub fn import_thread(&self, n: &NewImport<'_>) -> rusqlite::Result<Thread> {
+        let id = new_id();
+        let created = n.messages.first().map_or(n.updated_at, |m| m.created_at);
+        let title: String = n.title.chars().take(60).collect();
+        let c = self.conn();
+        let tx = c.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO threads(id,title,provider,space,external_session_id,created_at,updated_at,cwd,origin,sync_stamp)
+             VALUES(?,?,?,'public',?,?,?,?,'imported',?)",
+            params![id, title, n.provider.as_str(), n.external_id, created, n.updated_at, n.cwd, n.stamp],
+        )?;
+        insert_source_messages(&tx, &id, n.messages)?;
+        tx.commit()?;
+        drop(c);
+        self.get_thread(&id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn find_by_external(
+        &self,
+        provider: ProviderKind,
+        external_id: &str,
+    ) -> rusqlite::Result<Option<Thread>> {
+        self.conn()
+            .query_row(
+                &format!(
+                    "SELECT {THREAD_COLS} FROM threads WHERE provider=? AND external_session_id=? ORDER BY rowid LIMIT 1"
+                ),
+                params![provider.as_str(), external_id],
+                thread_row,
+            )
+            .optional()
+    }
+
+    pub fn sync_stamp(&self, id: &str) -> rusqlite::Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT sync_stamp FROM threads WHERE id=?", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Replaces the message cache of a thread with the source's current content.
+    pub fn replace_messages(
+        &self,
+        id: &str,
+        messages: &[SourceMessage],
+        stamp: &str,
+        updated_at: i64,
+    ) -> rusqlite::Result<()> {
+        let c = self.conn();
+        let tx = c.unchecked_transaction()?;
+        tx.execute("DELETE FROM messages WHERE thread_id=?", [id])?;
+        insert_source_messages(&tx, id, messages)?;
+        tx.execute(
+            "UPDATE threads SET sync_stamp=?, updated_at=? WHERE id=?",
+            params![stamp, updated_at, id],
+        )?;
+        tx.commit()
     }
 
     pub fn list_threads(&self) -> rusqlite::Result<Vec<Thread>> {

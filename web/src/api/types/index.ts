@@ -12,3 +12,5 @@ export type { FileKind } from './FileKind';
 export type { ModelInfo } from './ModelInfo';
 export type { SettingsPatch } from './SettingsPatch';
 export type { SettingsView } from './SettingsView';
+export type { Origin } from './Origin';
+export type { SessionSummary } from './SessionSummary';
