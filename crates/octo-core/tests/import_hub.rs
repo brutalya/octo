@@ -39,6 +39,12 @@ fn env() -> Env {
         &root.path().join("projects"),
     );
     copy_dir(&fixtures().join("agy"), &root.path().join("agy"));
+    // The sqlite index is generated from its committed SQL dump (*.db is gitignored).
+    let sql = std::fs::read_to_string(fixtures().join("agy/conversation_summaries.sql")).unwrap();
+    rusqlite::Connection::open(root.path().join("agy/conversation_summaries.db"))
+        .unwrap()
+        .execute_batch(&sql)
+        .unwrap();
     let mut cfg = Config::new(Some(root.path().join("data")));
     cfg.claude_projects_dir = root.path().join("projects");
     cfg.agy_dir = root.path().join("agy");

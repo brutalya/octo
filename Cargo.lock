@@ -3135,6 +3135,7 @@ dependencies = [
  "octo-core",
  "octo-net",
  "rand 0.10.3",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

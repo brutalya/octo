@@ -81,8 +81,18 @@ fn claude_stamp_changes_with_content() {
     assert_ne!(a, b);
 }
 
-fn agy() -> PathBuf {
-    fixtures().join("agy")
+/// Antigravity storage with its sqlite index generated from the committed SQL
+/// dump (`*.db` is gitignored, so it cannot ship with the fixtures).
+fn agy_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let src = fixtures().join("agy");
+    std::fs::copy(src.join("history.jsonl"), dir.path().join("history.jsonl")).unwrap();
+    let sql = std::fs::read_to_string(src.join("conversation_summaries.sql")).unwrap();
+    rusqlite::Connection::open(dir.path().join("conversation_summaries.db"))
+        .unwrap()
+        .execute_batch(&sql)
+        .unwrap();
+    dir
 }
 
 const A1: &str = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -91,7 +101,7 @@ const A3: &str = "aaaaaaaa-0000-4000-8000-000000000003";
 
 #[test]
 fn agy_list_uses_summaries_and_skips_subagents_and_empty() {
-    let list = antigravity::list(&agy());
+    let list = antigravity::list(agy_dir().path());
     let ids: Vec<_> = list.iter().map(|s| s.external_id.as_str()).collect();
     assert_eq!(ids, [A3, A2, A1], "newest first");
     let a1 = &list[2];
@@ -104,7 +114,7 @@ fn agy_list_uses_summaries_and_skips_subagents_and_empty() {
 
 #[test]
 fn agy_messages_are_history_prompts_plus_unavailable_line() {
-    let d = antigravity::read(&agy(), A1).unwrap();
+    let d = antigravity::read(agy_dir().path(), A1).unwrap();
     let got: Vec<_> = d
         .messages
         .iter()
@@ -120,10 +130,10 @@ fn agy_messages_are_history_prompts_plus_unavailable_line() {
     );
     assert_eq!(d.messages[0].created_at, 1_772_359_200_000);
     // prompts after the previous session belong to the next one in the same workspace
-    let d2 = antigravity::read(&agy(), A2).unwrap();
+    let d2 = antigravity::read(agy_dir().path(), A2).unwrap();
     assert_eq!(d2.messages[0].content, "later session prompt");
     assert_eq!(d2.messages.len(), 2);
-    let d3 = antigravity::read(&agy(), A3).unwrap();
+    let d3 = antigravity::read(agy_dir().path(), A3).unwrap();
     assert_eq!(d3.messages.len(), 1);
     assert_eq!(d3.session.messages, 1);
 }
@@ -131,7 +141,7 @@ fn agy_messages_are_history_prompts_plus_unavailable_line() {
 #[test]
 fn agy_missing_dir_and_unknown_id() {
     assert!(antigravity::list(Path::new("/definitely/not/here")).is_empty());
-    assert!(antigravity::read(&agy(), "zzz").is_none());
+    assert!(antigravity::read(agy_dir().path(), "zzz").is_none());
 }
 
 #[test]
