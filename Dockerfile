@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM node:20-alpine AS web
+FROM node:22-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -36,7 +36,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 ENTRYPOINT ["octo-server", "--relay-only", "--relay-addr", "0.0.0.0:7443"]
 
 # Full node: web UI + API + Claude Code CLI. Antigravity (agy) is optional, see docs/deploy.md.
-FROM node:20-bookworm-slim AS node
+FROM node:22-bookworm-slim AS node
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git \
  && rm -rf /var/lib/apt/lists/* \

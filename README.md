@@ -5,7 +5,7 @@ AI interaction hub: Claude Code / agy CLI, Ollama, OpenRouter. Private / Public 
 ## Требования / Prerequisites
 
 - Rust (rustup): https://rustup.rs
-- Node 20+
+- Node 22+
 - Optional / по желанию: Claude Code (`claude`), `agy` CLI, Ollama
 
 ## Запуск / Run (dev)
