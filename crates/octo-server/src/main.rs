@@ -17,6 +17,12 @@ struct Args {
     /// Require `Authorization: Bearer <token>` on /api/*. Open when omitted.
     #[arg(long)]
     token: Option<String>,
+    /// Read the token from this file; a random one (0600) is created on first start.
+    #[arg(long, conflicts_with = "token")]
+    token_file: Option<PathBuf>,
+    /// Probe http://<ADDR>/healthz and exit 0/1 (for container HEALTHCHECK).
+    #[arg(long, value_name = "ADDR")]
+    healthcheck: Option<String>,
     #[arg(long)]
     claude_bin: Option<PathBuf>,
     #[arg(long)]
@@ -38,7 +44,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if let Some(a) = &args.healthcheck {
+        if let Err(e) = octo_server::healthcheck(a) {
+            eprintln!("unhealthy: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if let Some(p) = &args.token_file {
+        args.token = Some(octo_server::load_or_create_token(p)?);
+    }
     let relay_listener = match &args.relay_addr {
         Some(a) => {
             let l = tokio::net::TcpListener::bind(a).await?;

@@ -57,14 +57,17 @@ cargo tauri signer generate -w ~/.tauri/octo.key
 
 Add the private key as repo secret `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set), and the public key as repo variable `OCTO_UPDATER_PUBKEY`.
 
-## VPS
+## Deploy
 
-Файлы в `deploy/` / files in `deploy/`. Build: `cargo build --release -p octo-server`.
+Docker relay/node behind Nginx Proxy Manager, systemd alternative: [docs/deploy.md](docs/deploy.md).
 
-- `octo-node.service`: узел, API только на `127.0.0.1:7878`.
-- `octo-relay.service`: только relay (`--relay-only --relay-addr`), отдельный порт; отдаёт лишь `/relay` и `/healthz`, API там нет.
-- `Caddyfile.example`: `wss://домен/relay` -> `127.0.0.1:7443`. Для relay используйте `relay_url = wss://домен/relay`.
-- Сервер не стартует с `--addr` не на loopback без `--token`.
+Quick start (relay):
+
+    docker login ghcr.io
+    cp deploy/relay/docker-compose.yml . && $EDITOR docker-compose.yml   # set image
+    docker compose up -d
+    # NPM: host relay.example.com -> octo-relay:7443, Websockets ON, SSL
+    curl https://relay.example.com/healthz
 
 ## Безопасность / Security
 - Relay видит: IP узлов, `network_id` (хэш, не ключ), id узлов, размеры и время кадров. Не видит: содержимое (Noise IK end-to-end), ключи, имена, потоки запросов.

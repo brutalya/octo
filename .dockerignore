@@ -1,0 +1,10 @@
+target
+**/node_modules
+web/dist
+.git
+.github
+*.db
+.env
+crates/octo-desktop/gen
+docs
+deploy

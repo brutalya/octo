@@ -55,6 +55,60 @@ pub fn check_exposure(addr: std::net::SocketAddr, token: Option<&str>) -> Result
     ))
 }
 
+/// Reads the API token from `path`, creating a random 0600 one when missing.
+pub fn load_or_create_token(path: &std::path::Path) -> std::io::Result<String> {
+    use std::io::Write;
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                return Err(std::io::Error::other("token file is empty"));
+            }
+            return Ok(t);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut raw = [0u8; 48];
+    rand::fill(&mut raw[..]);
+    let token: String = raw
+        .iter()
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect();
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)?.write_all(token.as_bytes())?;
+    Ok(token)
+}
+
+/// Minimal HTTP GET /healthz over plain TCP (no curl in the slim image).
+pub fn healthcheck(addr: &str) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+    let sa = addr
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| std::io::Error::other("bad address"))?;
+    let t = Duration::from_secs(3);
+    let mut s = std::net::TcpStream::connect_timeout(&sa, t)?;
+    s.set_read_timeout(Some(t))?;
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
+    let mut buf = String::new();
+    s.read_to_string(&mut buf)?;
+    if buf.starts_with("HTTP/1.1 200") {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("healthz: not 200"))
+    }
+}
+
 enum ApiError {
     Core(CoreError),
     Upload(MultipartError),
@@ -209,7 +263,9 @@ fn build(
         )),
         None => api,
     };
-    let router = Router::new().nest("/api", api);
+    let router = Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .nest("/api", api);
     match web_dir {
         Some(dir) => {
             let index = ServeFile::new(dir.join("index.html"));

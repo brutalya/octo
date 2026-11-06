@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/root/apps/octo/target/release/octo-server --relay-only --relay-addr 0.0.0.0:7443
+ExecStart=/opt/octo/bin/octo-server --relay-only --relay-addr 0.0.0.0:7443
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

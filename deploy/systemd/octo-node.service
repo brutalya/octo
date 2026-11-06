@@ -5,14 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/root/apps/octo/target/release/octo-server --addr 127.0.0.1:7878 --data-dir /root/.local/share/octo
+ExecStart=/opt/octo/bin/octo-server --addr 127.0.0.1:7878 --data-dir /var/lib/octo
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 # data dir + CLI state (Claude Code, Antigravity) that the agents write to
-ReadWritePaths=/root/.local/share/octo /root/.claude /root/.gemini /root/.config
+ReadWritePaths=/var/lib/octo /home/octo/.claude /home/octo/.gemini /home/octo/.config
 
 [Install]
 WantedBy=multi-user.target

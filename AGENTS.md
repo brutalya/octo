@@ -2,7 +2,7 @@
 
 Octo is an AI interaction hub: chats with CLI agents (Claude Code, Antigravity), local models and OpenRouter, with strict Private / Public spaces and (later) E2EE sync between PC, server and phone. Everything else (tasks, kitchen, ...) is a plugin, not core.
 
-Source of truth: this file + `docs/`. The old project `/root/apps/tasktree` is reference only — never copy its architecture, never import its concepts (Sovereign OS, Knowledge Lake, Inspector, Sandbox, Mem0, modes).
+Source of truth: this file + `docs/`. The old project `tasktree` is reference only — never copy its architecture, never import its concepts (Sovereign OS, Knowledge Lake, Inspector, Sandbox, Mem0, modes).
 
 ## Engineering
 - Tests first: write the failing test, then the implementation. Never edit a test just to make code pass.
@@ -22,6 +22,11 @@ Source of truth: this file + `docs/`. The old project `/root/apps/tasktree` is r
 - Minimal. No decorative headers, no badges, no emoji, no placeholder "coming soon" features, no explanatory text that the UI already makes obvious.
 - Show only configured/installed providers.
 - Icons: lucide-react. No CDN assets (works offline).
+
+## Docs
+- README and `docs/deploy.md` must be updated in the same commit as any change to build, run, deploy, ports, flags or config.
+- Docs are concise and complete.
+- Docs never contain personal data (real domains, IPs, usernames, emails, keys, local paths of a specific machine); use placeholders (`relay.example.com`, `<owner>/<repo>`).
 
 ## Commits
 Conventional commits, small and focused.

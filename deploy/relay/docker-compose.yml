@@ -1,0 +1,16 @@
+# Octo relay behind Nginx Proxy Manager. In NPM forward to http://octo-relay:7443 (Websockets ON).
+services:
+  octo-relay:
+    image: ghcr.io/OWNER/REPO-relay:main   # replace OWNER/REPO with the GitHub repository path (lowercase)
+    container_name: octo-relay
+    restart: unless-stopped
+    # Alternative without a shared network: publish the port and forward NPM to <docker-host>:7443
+    # ports:
+    #   - "7443:7443"
+    networks:
+      - npm
+
+networks:
+  npm:
+    name: ${NPM_NETWORK:-npm_default}
+    external: true

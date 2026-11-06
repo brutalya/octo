@@ -22,6 +22,15 @@ async fn api_router_has_no_relay() {
 }
 
 #[tokio::test]
+async fn api_healthz_is_open_even_with_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = Config::new(Some(tmp.path().to_path_buf()));
+    let app = octo_server::app_with_token(Arc::new(Hub::new(cfg).unwrap()), None, Some("t".into()));
+    assert_eq!(status(&app, "/healthz").await, StatusCode::OK);
+    assert_eq!(status(&app, "/api/threads").await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn relay_router_serves_only_relay_and_healthz() {
     let relay = octo_net::relay::Relay::new(Default::default()).unwrap();
     let app = octo_server::relay_app(relay);

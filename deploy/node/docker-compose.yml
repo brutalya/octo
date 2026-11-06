@@ -1,0 +1,23 @@
+# Octo node (web UI + API + Claude Code) behind Nginx Proxy Manager.
+# In NPM forward to http://octo-node:7878 (Websockets ON). The API requires the token from /data/token.
+services:
+  octo-node:
+    image: ghcr.io/OWNER/REPO-node:main   # replace OWNER/REPO with the GitHub repository path (lowercase)
+    container_name: octo-node
+    restart: unless-stopped
+    # ports:
+    #   - "7878:7878"
+    volumes:
+      - octo-data:/data                  # database, keys, token
+      - octo-claude:/home/octo/.claude   # Claude Code login
+    networks:
+      - npm
+
+volumes:
+  octo-data:
+  octo-claude:
+
+networks:
+  npm:
+    name: ${NPM_NETWORK:-npm_default}
+    external: true
