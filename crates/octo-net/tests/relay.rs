@@ -361,7 +361,7 @@ async fn bidirectional_bulk_does_not_deadlock() {
     let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
     let mut a = online(addr, &ka, NET1).await;
     let mut b = online(addr, &kb, NET1).await;
-    const N: usize = 400;
+    const N: usize = 500;
     let (ida, idb) = (ka.node_id(), kb.node_id());
     let all = async {
         let (ra, rb) = (&a, &b);
