@@ -11,6 +11,13 @@
 //! - C->R `0x10 || to(16) || payload`  (SEND)
 //! - R->C `0x11 || from(16) || payload` (DELIVER; `from` is the authenticated sender)
 //! - R->C `0x12 || code` (ERROR), R->C `0x13` (READY, sent once after auth)
+//! - C->R `0x14` (KEEPALIVE): no payload, never forwarded. Clients send one every 30 s so an
+//!   authenticated connection that stays silent for `idle_timeout` (120 s) can be closed.
+//!
+//! Each connection runs a reader and a writer concurrently, so a slow socket write never stops
+//! reads (and vice versa); a write that does not complete within `write_timeout` closes the
+//! connection.
+use crate::NOISE_MAX;
 use crate::error::Result;
 use crate::identity::NodeId;
 use axum::Router;
@@ -18,33 +25,42 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use futures_util::StreamExt;
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use snow::{Builder, TransportState};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 
 pub const RELAY_VERSION: u8 = 1;
-pub const RELAY_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+pub const RELAY_PARAMS: &str = crate::XX_PARAMS;
 pub const RELAY_PROLOGUE: &[u8] = b"octo-relay-v1";
 /// 65535 (Noise max) - 16 (tag) - 1 (type) - 16 (node id).
 pub const MAX_PAYLOAD: usize = 65_502;
-pub(crate) const NOISE_MAX: usize = 65_535;
 
 pub(crate) const T_SEND: u8 = 0x10;
 pub(crate) const T_DELIVER: u8 = 0x11;
 pub(crate) const T_ERROR: u8 = 0x12;
 pub(crate) const T_READY: u8 = 0x13;
+pub(crate) const T_KEEPALIVE: u8 = 0x14;
+/// How often clients send `T_KEEPALIVE`.
+pub(crate) const KEEPALIVE_EVERY: Duration = Duration::from_secs(30);
 
 pub const ERR_PEER_UNAVAILABLE: u8 = 1;
-/// No longer sent as an in-band error; reserved (the relay closes abusive connections).
-pub const ERR_RATE_LIMITED: u8 = 2;
 pub const ERR_BUSY: u8 = 3;
 
 /// Noise transport state of the node<->relay link.
 pub(crate) struct Link(pub TransportState);
+
+/// The link is shared by the reader (open) and the writer (seal) of one connection; the lock is
+/// only held for the CPU-bound cipher call, never across an await.
+pub(crate) type SharedLink = Arc<Mutex<Link>>;
+
+pub(crate) fn lock_link(l: &SharedLink) -> MutexGuard<'_, Link> {
+    l.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 impl Link {
     pub fn seal(&mut self, pt: &[u8]) -> Result<Vec<u8>> {
@@ -62,7 +78,10 @@ impl Link {
 }
 
 /// Reads the next binary message; `None` on close, error, or any non-binary data frame.
-pub(crate) async fn recv_bin_axum(ws: &mut WebSocket) -> Option<Vec<u8>> {
+pub(crate) async fn recv_bin_stream<S>(ws: &mut S) -> Option<Vec<u8>>
+where
+    S: futures_util::Stream<Item = std::result::Result<Message, axum::Error>> + Unpin,
+{
     loop {
         match ws.next().await? {
             Ok(Message::Binary(b)) => return Some(b.to_vec()),
@@ -78,7 +97,12 @@ pub struct RelayLimits {
     pub msg_burst: f64,
     pub bytes_per_sec: f64,
     pub byte_burst: f64,
+    /// Time allowed for the whole pre-auth handshake.
     pub handshake_timeout: Duration,
+    /// An authenticated connection that sends nothing for this long is closed.
+    pub idle_timeout: Duration,
+    /// A socket write that takes longer than this closes the connection.
+    pub write_timeout: Duration,
     pub max_connections: usize,
     /// Per-connection outbound queue (messages).
     pub queue: usize,
@@ -93,7 +117,9 @@ impl Default for RelayLimits {
             msg_burst: 400.0,
             bytes_per_sec: 8.0 * 1024.0 * 1024.0,
             byte_burst: 16.0 * 1024.0 * 1024.0,
-            handshake_timeout: Duration::from_secs(10),
+            handshake_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(120),
+            write_timeout: Duration::from_secs(30),
             max_connections: 1024,
             queue: 256,
             abuse_after: Duration::from_secs(30),
@@ -117,20 +143,7 @@ impl TokenBucket {
             last: now,
         }
     }
-    pub fn allow(&mut self, cost: f64, now: Instant) -> bool {
-        let dt = now.saturating_duration_since(self.last).as_secs_f64();
-        self.last = now;
-        self.tokens = (self.tokens + dt * self.rate).min(self.capacity);
-        if self.tokens >= cost {
-            self.tokens -= cost;
-            true
-        } else {
-            false
-        }
-    }
-}
 
-impl TokenBucket {
     /// Takes `cost` tokens unconditionally (the balance may go negative) and returns how long
     /// the caller must wait before the debt is repaid. Zero when tokens were available.
     pub fn reserve(&mut self, cost: f64, now: Instant) -> Duration {
@@ -155,7 +168,7 @@ struct Inner {
     static_key: Vec<u8>,
     nets: Mutex<HashMap<[u8; 32], HashMap<NodeId, Peer>>>,
     next_conn: AtomicU64,
-    conns: Semaphore,
+    conns: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -166,7 +179,7 @@ impl Relay {
         // The relay key is per process; clients do not pin it (the relay is untrusted).
         let kp = Builder::new(RELAY_PARAMS.parse()?).generate_keypair()?;
         Ok(Self(Arc::new(Inner {
-            conns: Semaphore::new(limits.max_connections),
+            conns: Arc::new(Semaphore::new(limits.max_connections)),
             limits,
             static_key: kp.private,
             nets: Mutex::new(HashMap::new()),
@@ -208,20 +221,21 @@ pub fn router(relay: Relay) -> Router {
 }
 
 async fn ws_handler(State(relay): State<Relay>, ws: WebSocketUpgrade) -> Response {
-    match relay.0.conns.try_acquire() {
-        Ok(p) => p.forget(),
-        Err(_) => return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
-    }
+    // The permit lives in the upgrade closure: it is released when the connection ends, and
+    // also when the upgrade fails and the closure is dropped without running.
+    let Ok(permit) = relay.0.conns.clone().try_acquire_owned() else {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
     ws.max_message_size(NOISE_MAX + 64)
         .max_frame_size(NOISE_MAX + 64)
         .on_upgrade(move |s| async move {
+            let _permit = permit;
             handle_socket(&relay, s).await;
-            relay.0.conns.add_permits(1);
         })
 }
 
 async fn handshake(relay: &Relay, ws: &mut WebSocket) -> Option<(Link, NodeId, [u8; 32])> {
-    let m1 = recv_bin_axum(ws).await?;
+    let m1 = recv_bin_stream(ws).await?;
     let (ver, m1) = m1.split_first()?;
     if *ver != RELAY_VERSION {
         return None;
@@ -239,7 +253,7 @@ async fn handshake(relay: &Relay, ws: &mut WebSocket) -> Option<(Link, NodeId, [
     ws.send(Message::Binary(buf[..n].to_vec().into()))
         .await
         .ok()?;
-    let m3 = recv_bin_axum(ws).await?;
+    let m3 = recv_bin_stream(ws).await?;
     let n = hs.read_message(&m3, &mut buf).ok()?;
     let net: [u8; 32] = buf[..n].try_into().ok()?;
     let pk: [u8; 32] = hs.get_remote_static()?.try_into().ok()?;
@@ -250,48 +264,61 @@ async fn handshake(relay: &Relay, ws: &mut WebSocket) -> Option<(Link, NodeId, [
 async fn handle_socket(relay: &Relay, mut ws: WebSocket) {
     let hs =
         tokio::time::timeout(relay.0.limits.handshake_timeout, handshake(relay, &mut ws)).await;
-    let Ok(Some((mut link, me, net))) = hs else {
+    let Ok(Some((link, me, net))) = hs else {
         return;
     };
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(relay.0.limits.queue);
+    let link: SharedLink = Arc::new(Mutex::new(link));
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(relay.0.limits.queue);
     let conn = relay.0.next_conn.fetch_add(1, Ordering::Relaxed);
     relay.register(net, me, Peer { conn, tx });
-    run_connection(relay, &mut ws, &mut link, &mut rx, me, net).await;
+    run_connection(relay, ws, link, rx, me, net).await;
     relay.unregister(net, me, conn);
 }
 
-async fn send_sealed(ws: &mut WebSocket, link: &mut Link, pt: &[u8]) -> bool {
-    match link.seal(pt) {
-        Ok(ct) => ws.send(Message::Binary(ct.into())).await.is_ok(),
-        Err(_) => false,
-    }
+/// Seals `pt` and writes it, giving up after `limit`.
+async fn send_sealed(
+    sink: &mut SplitSink<WebSocket, Message>,
+    link: &SharedLink,
+    pt: &[u8],
+    limit: Duration,
+) -> bool {
+    let Ok(ct) = lock_link(link).seal(pt) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(limit, sink.send(Message::Binary(ct.into()))).await,
+        Ok(Ok(()))
+    )
 }
 
-/// Sleeps for `wait` while still delivering this connection's outbound queue.
-async fn pause(
-    rx: &mut mpsc::Receiver<Vec<u8>>,
-    ws: &mut WebSocket,
-    link: &mut Link,
-    wait: Duration,
-) -> bool {
-    let sleep = tokio::time::sleep(wait);
-    tokio::pin!(sleep);
+/// Writer half: delivers other nodes' frames (`rx`) and this connection's own control
+/// messages (`ctl`: READY, ERROR). Returns when the socket fails or times out.
+async fn write_loop(
+    mut sink: SplitSink<WebSocket, Message>,
+    link: SharedLink,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    mut ctl: mpsc::Receiver<Vec<u8>>,
+    limit: Duration,
+) {
     loop {
-        tokio::select! {
-            () = &mut sleep => return true,
-            out = rx.recv() => {
-                let Some(m) = out else { return false };
-                if !send_sealed(ws, link, &m).await { return false }
-            }
+        let m = tokio::select! {
+            // None: replaced by a newer connection of the same node.
+            m = rx.recv() => m,
+            m = ctl.recv() => m,
+        };
+        let Some(m) = m else { return };
+        if !send_sealed(&mut sink, &link, &m, limit).await {
+            return;
         }
     }
 }
 
-async fn run_connection(
+/// Reader half: decrypts, rate-limits and routes. Returns on close, error or violation.
+async fn read_loop(
     relay: &Relay,
-    ws: &mut WebSocket,
-    link: &mut Link,
-    rx: &mut mpsc::Receiver<Vec<u8>>,
+    mut stream: SplitStream<WebSocket>,
+    link: SharedLink,
+    ctl: mpsc::Sender<Vec<u8>>,
     me: NodeId,
     net: [u8; 32],
 ) {
@@ -301,54 +328,85 @@ async fn run_connection(
     let mut bytes = TokenBucket::new(l.byte_burst, l.bytes_per_sec, now);
     // Start of the current uninterrupted over-limit period.
     let mut over_since: Option<Instant> = None;
-    if !send_sealed(ws, link, &[T_READY]).await {
+    loop {
+        let Ok(Some(ct)) = tokio::time::timeout(l.idle_timeout, recv_bin_stream(&mut stream)).await
+        else {
+            return;
+        };
+        // Must decrypt every message even if we then drop it: the Noise nonce is implicit.
+        let Ok(pt) = lock_link(&link).open(&ct) else {
+            return;
+        };
+        let payload = match pt.split_first() {
+            Some((&T_KEEPALIVE, [])) => &[][..],
+            Some((&T_SEND, rest)) if rest.len() >= 16 && rest.len() - 16 <= MAX_PAYLOAD => {
+                &rest[16..]
+            }
+            _ => return,
+        };
+        let t = Instant::now();
+        // Backpressure: stop reading this connection until the debt is repaid, so the sender's
+        // WebSocket/TCP window fills. Frames are never dropped. The writer keeps flowing.
+        let wait = msgs
+            .reserve(1.0, t)
+            .max(bytes.reserve(payload.len() as f64, t));
+        if wait.is_zero() {
+            over_since = None;
+        } else {
+            let since = *over_since.get_or_insert(t);
+            if t + wait > since + l.abuse_after {
+                return;
+            }
+            tokio::time::sleep(wait).await;
+        }
+        if pt[0] == T_KEEPALIVE {
+            continue;
+        }
+        let Ok(to) = <[u8; 16]>::try_from(&pt[1..17]) else {
+            return;
+        };
+        let code = match relay.lookup(&net, &NodeId::from_bytes(to)) {
+            None => Some(ERR_PEER_UNAVAILABLE),
+            Some(tx) => {
+                let mut m = Vec::with_capacity(17 + payload.len());
+                m.push(T_DELIVER);
+                m.extend_from_slice(me.as_bytes());
+                m.extend_from_slice(payload);
+                match tx.try_send(m) {
+                    Ok(()) => None,
+                    Err(mpsc::error::TrySendError::Full(_)) => Some(ERR_BUSY),
+                    Err(mpsc::error::TrySendError::Closed(_)) => Some(ERR_PEER_UNAVAILABLE),
+                }
+            }
+        };
+        if let Some(c) = code
+            && ctl.send(vec![T_ERROR, c]).await.is_err()
+        {
+            return;
+        }
+    }
+}
+
+async fn run_connection(
+    relay: &Relay,
+    ws: WebSocket,
+    link: SharedLink,
+    rx: mpsc::Receiver<Vec<u8>>,
+    me: NodeId,
+    net: [u8; 32],
+) {
+    let (sink, stream) = ws.split();
+    let (ctl_tx, ctl_rx) = mpsc::channel(16);
+    if ctl_tx.send(vec![T_READY]).await.is_err() {
         return;
     }
-    loop {
-        tokio::select! {
-            incoming = recv_bin_axum(ws) => {
-                let Some(ct) = incoming else { return };
-                // Must decrypt every message even if we then drop it: the Noise nonce is implicit.
-                let Ok(pt) = link.open(&ct) else { return };
-                let Some((&T_SEND, rest)) = pt.split_first() else { return };
-                if rest.len() < 16 || rest.len() - 16 > MAX_PAYLOAD { return }
-                let (to, payload) = rest.split_at(16);
-                let Ok(to) = <[u8; 16]>::try_from(to) else { return };
-                let to = NodeId::from_bytes(to);
-                let t = Instant::now();
-                // Backpressure: stop reading this connection until the debt is repaid, so the
-                // sender's WebSocket/TCP window fills. Frames are never dropped.
-                let wait = msgs.reserve(1.0, t).max(bytes.reserve(payload.len() as f64, t));
-                if wait.is_zero() {
-                    over_since = None;
-                } else {
-                    let since = *over_since.get_or_insert(t);
-                    if t + wait > since + l.abuse_after { return }
-                    if !pause(rx, ws, link, wait).await { return }
-                }
-                let code = match relay.lookup(&net, &to) {
-                    None => Some(ERR_PEER_UNAVAILABLE),
-                    Some(tx) => {
-                        let mut m = Vec::with_capacity(17 + payload.len());
-                        m.push(T_DELIVER);
-                        m.extend_from_slice(me.as_bytes());
-                        m.extend_from_slice(payload);
-                        match tx.try_send(m) {
-                            Ok(()) => None,
-                            Err(mpsc::error::TrySendError::Full(_)) => Some(ERR_BUSY),
-                            Err(mpsc::error::TrySendError::Closed(_)) => Some(ERR_PEER_UNAVAILABLE),
-                        }
-                    }
-                };
-                if let Some(c) = code
-                    && !send_sealed(ws, link, &[T_ERROR, c]).await { return }
-            }
-            out = rx.recv() => {
-                // None: replaced by a newer connection of the same node.
-                let Some(m) = out else { return };
-                if !send_sealed(ws, link, &m).await { return }
-            }
-        }
+    let limit = relay.0.limits.write_timeout;
+    let writer = write_loop(sink, link.clone(), rx, ctl_rx, limit);
+    let reader = read_loop(relay, stream, link, ctl_tx, me, net);
+    // Either half ending (close, error, timeout, violation) ends the connection.
+    tokio::select! {
+        () = writer => {}
+        () = reader => {}
     }
 }
 
@@ -360,12 +418,16 @@ mod tests {
     fn bucket_refills_over_time() {
         let t0 = Instant::now();
         let mut b = TokenBucket::new(3.0, 1.0, t0);
-        assert!(b.allow(1.0, t0) && b.allow(1.0, t0) && b.allow(1.0, t0));
-        assert!(!b.allow(1.0, t0));
-        assert!(b.allow(1.0, t0 + Duration::from_secs(1)));
-        assert!(!b.allow(1.0, t0 + Duration::from_secs(1)));
+        let s1 = Duration::from_secs(1);
+        assert!(b.reserve(1.0, t0).is_zero() && b.reserve(1.0, t0).is_zero());
+        assert!(b.reserve(1.0, t0).is_zero());
+        // Empty: the next token costs one second of waiting.
+        assert_eq!(b.reserve(1.0, t0), s1);
+        // One second later the debt of one token is repaid; the next reserve waits again.
+        assert_eq!(b.reserve(1.0, t0 + s1), s1);
         // Never exceeds capacity.
         let later = t0 + Duration::from_secs(100);
-        assert!(b.allow(3.0, later) && !b.allow(1.0, later));
+        assert!(b.reserve(3.0, later).is_zero());
+        assert!(!b.reserve(1.0, later).is_zero());
     }
 }

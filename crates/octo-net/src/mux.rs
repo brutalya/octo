@@ -4,13 +4,17 @@
 //! 4 window (body u32 BE = bytes of credit). The initiator opens odd ids, the responder even.
 //! Flow control: each direction of each stream starts with `INITIAL_WINDOW` bytes of credit;
 //! the receiver returns credit only when the application *reads* data, so a slow reader
-//! stalls only its own stream's writer. Data beyond the window resets the stream.
+//! stalls only its own stream's writer. Data beyond the window, or an empty data frame, resets
+//! the stream; a data/end/window frame for an unknown stream is answered with RESET (once per id).
+//! RESET and window frames never block the read loop: if the outgoing queue is full they wait in
+//! an internal queue drained by a pump task.
 use crate::error::{NetError, Result};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// Largest data body in one frame (whole frame stays below the 64 KB session limit).
@@ -21,6 +25,8 @@ const WRITE_CHUNK: usize = 16_384;
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_STREAMS: usize = 256;
 const MAX_WINDOW_UPDATE: u32 = 1 << 24;
+/// Remembered ids we already answered with RESET (bounded; cleared when full).
+const MAX_RESET_MEMORY: usize = 4096;
 
 const K_OPEN: u8 = 0;
 const K_DATA: u8 = 1;
@@ -43,15 +49,32 @@ struct StreamInner {
     local_end: AtomicBool,
     remote_end: AtomicBool,
     dead: AtomicBool,
+    /// Flips to true with `dead`; wakes writers blocked on the outgoing queue.
+    dead_tx: watch::Sender<bool>,
     /// Last frame in either direction, in ms since `Shared::base`.
     last: AtomicU64,
 }
 
 struct Shared {
     out: mpsc::Sender<Vec<u8>>,
+    /// Overflow queue for RESET/WINDOW frames when `out` is full.
+    ctl: mpsc::UnboundedSender<Vec<u8>>,
     streams: Mutex<HashMap<u32, Arc<StreamInner>>>,
-    next_id: AtomicU32,
+    /// Next id to hand out (u64 so exhaustion is detectable).
+    next_id: AtomicU64,
     base: Instant,
+}
+
+impl StreamInner {
+    /// Marks the stream dead and wakes its writers; true if this call did it.
+    fn mark_dead(&self) -> bool {
+        if self.dead.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.send_win.close();
+        self.dead_tx.send_replace(true);
+        true
+    }
 }
 
 fn frame(id: u32, kind: u8, body: &[u8]) -> Vec<u8> {
@@ -75,7 +98,28 @@ impl Shared {
         s.last.store(self.now_ms(), Ordering::Relaxed);
     }
 
-    fn new_stream(&self, id: u32) -> (Arc<StreamInner>, mpsc::UnboundedReceiver<Msg>) {
+    /// Registers a stream: the peer's `id`, or the next local id when `None`. The capacity
+    /// check and the insert happen under one lock.
+    fn new_stream(
+        &self,
+        id: Option<u32>,
+    ) -> Result<(Arc<StreamInner>, mpsc::UnboundedReceiver<Msg>)> {
+        let mut map = self.map();
+        if map.len() >= MAX_STREAMS {
+            return Err(NetError::TooLarge);
+        }
+        let id = match id {
+            Some(id) if map.contains_key(&id) => return Err(NetError::Malformed),
+            Some(id) => id,
+            None => {
+                let next = self.next_id.load(Ordering::SeqCst);
+                if next > u64::from(u32::MAX) {
+                    return Err(NetError::Closed);
+                }
+                self.next_id.store(next + 2, Ordering::SeqCst);
+                next as u32
+            }
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = Arc::new(StreamInner {
             id,
@@ -85,22 +129,30 @@ impl Shared {
             local_end: AtomicBool::new(false),
             remote_end: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            dead_tx: watch::channel(false).0,
             last: AtomicU64::new(self.now_ms()),
         });
-        self.map().insert(id, inner.clone());
-        (inner, rx)
+        map.insert(id, inner.clone());
+        Ok((inner, rx))
+    }
+
+    /// Queues a RESET/WINDOW frame without ever waiting: `out` if it has room, else the
+    /// overflow queue.
+    fn send_ctl(&self, f: Vec<u8>) {
+        if let Err(mpsc::error::TrySendError::Full(f)) = self.out.try_send(f) {
+            let _ = self.ctl.send(f);
+        }
     }
 
     /// Tears the stream down locally; optionally tells the peer.
-    async fn kill(&self, s: &StreamInner, tell_peer: bool) {
-        if s.dead.swap(true, Ordering::SeqCst) {
+    fn kill(&self, s: &StreamInner, tell_peer: bool) {
+        if !s.mark_dead() {
             return;
         }
-        s.send_win.close();
         let _ = s.inbox.send(Msg::Reset);
         self.map().remove(&s.id);
         if tell_peer {
-            let _ = self.out.send(frame(s.id, K_RESET, &[])).await;
+            self.send_ctl(frame(s.id, K_RESET, &[]));
         }
     }
 
@@ -116,15 +168,19 @@ pub struct Mux {
     accept_rx: mpsc::Receiver<Stream>,
     task: JoinHandle<()>,
     watchdog: JoinHandle<()>,
+    pump: JoinHandle<()>,
 }
 
 impl Drop for Mux {
     fn drop(&mut self) {
         self.task.abort();
         self.watchdog.abort();
-        // The link is gone (e.g. the session was replaced): fail pending reads at once.
+        self.pump.abort();
+        // The link is gone (e.g. the session was replaced): fail pending reads and wake
+        // blocked writers at once.
         let streams: Vec<_> = self.shared.map().drain().map(|(_, s)| s).collect();
         for s in streams {
+            s.mark_dead();
             let _ = s.inbox.send(Msg::Reset);
         }
     }
@@ -148,29 +204,30 @@ impl Mux {
         initiator: bool,
         idle: Duration,
     ) -> Self {
+        let (ctl, ctl_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             out,
+            ctl,
             streams: Mutex::new(HashMap::new()),
-            next_id: AtomicU32::new(if initiator { 1 } else { 2 }),
+            next_id: AtomicU64::new(if initiator { 1 } else { 2 }),
             base: Instant::now(),
         });
         let (accept_tx, accept_rx) = mpsc::channel(64);
         let task = tokio::spawn(read_loop(shared.clone(), inbound, accept_tx, initiator));
         let watchdog = tokio::spawn(watchdog(shared.clone(), idle));
+        let pump = tokio::spawn(pump(shared.out.clone(), ctl_rx));
         Self {
             shared,
             accept_rx,
             task,
             watchdog,
+            pump,
         }
     }
 
     pub async fn open(&self) -> Result<Stream> {
-        if self.shared.map().len() >= MAX_STREAMS {
-            return Err(NetError::TooLarge);
-        }
-        let id = self.shared.next_id.fetch_add(2, Ordering::SeqCst);
-        let (inner, inbox) = self.shared.new_stream(id);
+        let (inner, inbox) = self.shared.new_stream(None)?;
+        let id = inner.id;
         let s = Stream {
             inner,
             shared: self.shared.clone(),
@@ -191,6 +248,15 @@ impl Mux {
     }
 }
 
+/// Forwards overflowed control frames to `out`, off the read loop.
+async fn pump(out: mpsc::Sender<Vec<u8>>, mut ctl: mpsc::UnboundedReceiver<Vec<u8>>) {
+    while let Some(f) = ctl.recv().await {
+        if out.send(f).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Resets streams that saw no frame in either direction for `idle` (stalled or dead peer).
 async fn watchdog(shared: Arc<Shared>, idle: Duration) {
     let tick = (idle / 4).max(Duration::from_millis(10));
@@ -206,7 +272,7 @@ async fn watchdog(shared: Arc<Shared>, idle: Duration) {
             .cloned()
             .collect();
         for s in stale {
-            shared.kill(&s, true).await;
+            shared.kill(&s, true);
         }
     }
 }
@@ -217,24 +283,39 @@ async fn read_loop(
     accept: mpsc::Sender<Stream>,
     initiator: bool,
 ) {
+    let mut answered: HashSet<u32> = HashSet::new();
     while let Some(f) = inbound.recv().await {
-        let ([a, b, c, d, kind, body @ ..], true) = (f.as_slice(), f.len() >= 5) else {
+        let Some((id, rest)) = f.split_first_chunk::<4>() else {
             continue;
         };
-        let id = u32::from_be_bytes([*a, *b, *c, *d]);
+        let [kind, body @ ..] = rest else { continue };
+        let id = u32::from_be_bytes(*id);
         let existing = shared.map().get(&id).cloned();
         if let Some(s) = &existing {
             shared.touch(s);
         }
+        // Answers a frame the peer should not have sent with RESET, at most once per id.
+        let mut reset_unknown = |shared: &Shared| {
+            if answered.len() >= MAX_RESET_MEMORY {
+                answered.clear();
+            }
+            if answered.insert(id) {
+                shared.send_ctl(frame(id, K_RESET, &[]));
+            }
+        };
         match *kind {
             K_OPEN => {
                 // Peer ids have the opposite parity of ours (initiator = odd).
                 let peer_parity_ok = id != 0 && (id % 2 == 1) != initiator;
-                if existing.is_some() || !peer_parity_ok || shared.map().len() >= MAX_STREAMS {
-                    let _ = shared.out.send(frame(id, K_RESET, &[])).await;
+                let created = if existing.is_some() || !peer_parity_ok {
+                    None
+                } else {
+                    shared.new_stream(Some(id)).ok()
+                };
+                let Some((inner, inbox)) = created else {
+                    reset_unknown(&shared);
                     continue;
-                }
-                let (inner, inbox) = shared.new_stream(id);
+                };
                 let s = Stream {
                     inner: inner.clone(),
                     shared: shared.clone(),
@@ -242,38 +323,48 @@ async fn read_loop(
                     read_done: false,
                 };
                 if accept.try_send(s).is_err() {
-                    shared.kill(&inner, true).await;
+                    shared.kill(&inner, true);
                 }
             }
             K_DATA => {
-                let Some(s) = existing else { continue };
-                let over = body.len() > MAX_DATA
+                let Some(s) = existing else {
+                    reset_unknown(&shared);
+                    continue;
+                };
+                let over = body.is_empty()
+                    || body.len() > MAX_DATA
                     || s.credit.fetch_sub(body.len() as i64, Ordering::SeqCst)
                         - (body.len() as i64)
                         < 0
                     || s.remote_end.load(Ordering::SeqCst);
                 if over {
-                    shared.kill(&s, true).await;
+                    shared.kill(&s, true);
                 } else {
                     let _ = s.inbox.send(Msg::Data(body.to_vec()));
                 }
             }
             K_END => {
-                let Some(s) = existing else { continue };
+                let Some(s) = existing else {
+                    reset_unknown(&shared);
+                    continue;
+                };
                 s.remote_end.store(true, Ordering::SeqCst);
                 let _ = s.inbox.send(Msg::End);
                 shared.forget_if_done(&s);
             }
             K_RESET => {
                 if let Some(s) = existing {
-                    shared.kill(&s, false).await;
+                    shared.kill(&s, false);
                 }
             }
             K_WINDOW => {
-                let Some(s) = existing else { continue };
+                let Some(s) = existing else {
+                    reset_unknown(&shared);
+                    continue;
+                };
                 match <[u8; 4]>::try_from(body).map(u32::from_be_bytes) {
                     Ok(n) if n <= MAX_WINDOW_UPDATE => s.send_win.add_permits(n as usize),
-                    _ => shared.kill(&s, true).await,
+                    _ => shared.kill(&s, true),
                 }
             }
             _ => {}
@@ -282,7 +373,7 @@ async fn read_loop(
     // Link closed: fail every stream.
     let all: Vec<_> = shared.map().values().cloned().collect();
     for s in all {
-        shared.kill(&s, false).await;
+        shared.kill(&s, false);
     }
 }
 
@@ -315,11 +406,13 @@ impl Stream {
                 .map_err(|_| NetError::Reset)?;
             permit.forget();
             self.shared.touch(&self.inner);
-            self.shared
-                .out
-                .send(frame(self.inner.id, K_DATA, chunk))
-                .await
-                .map_err(|_| NetError::Closed)?;
+            let mut dead = self.inner.dead_tx.subscribe();
+            tokio::select! {
+                sent = self.shared.out.send(frame(self.inner.id, K_DATA, chunk)) => {
+                    sent.map_err(|_| NetError::Closed)?;
+                }
+                _ = dead.wait_for(|d| *d) => return Err(NetError::Reset),
+            }
         }
         Ok(())
     }
@@ -342,7 +435,7 @@ impl Stream {
     }
 
     pub async fn reset(&self) {
-        self.shared.kill(&self.inner, true).await;
+        self.shared.kill(&self.inner, true);
     }
 
     /// Next chunk; `Ok(None)` after the peer's `finish`. Reading returns credit to the peer.
@@ -360,11 +453,7 @@ impl Stream {
                     && !self.inner.dead.load(Ordering::SeqCst)
                 {
                     let w = (b.len() as u32).to_be_bytes();
-                    let _ = self
-                        .shared
-                        .out
-                        .send(frame(self.inner.id, K_WINDOW, &w))
-                        .await;
+                    self.shared.send_ctl(frame(self.inner.id, K_WINDOW, &w));
                 }
                 Ok(Some(b))
             }
@@ -384,10 +473,27 @@ impl Drop for Stream {
     fn drop(&mut self) {
         let i = &self.inner;
         let finished = i.local_end.load(Ordering::SeqCst) && i.remote_end.load(Ordering::SeqCst);
-        if !finished && !i.dead.swap(true, Ordering::SeqCst) {
-            i.send_win.close();
-            let _ = self.shared.out.try_send(frame(i.id, K_RESET, &[]));
+        if !finished && i.mark_dead() {
+            self.shared.send_ctl(frame(i.id, K_RESET, &[]));
         }
         self.shared.map().remove(&i.id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stream_id_exhaustion_is_an_error_not_a_wrap() {
+        let (out, _out_rx) = mpsc::channel(8);
+        let (_in_tx, inbound) = mpsc::channel(8);
+        let m = Mux::new(out, inbound, true);
+        m.shared
+            .next_id
+            .store(u64::from(u32::MAX) - 2, Ordering::SeqCst);
+        assert_eq!(m.open().await.unwrap().id(), u32::MAX - 2);
+        assert_eq!(m.open().await.unwrap().id(), u32::MAX);
+        assert!(m.open().await.is_err());
     }
 }

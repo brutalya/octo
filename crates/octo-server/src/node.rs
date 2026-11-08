@@ -400,7 +400,9 @@ impl Node {
 
     /// Sends the current private key to `to` over IK.
     async fn send_private(&self, to: &[NodeId], epoch: u64, key: [u8; 32]) {
-        let msg = pairing::private_key_message(epoch, &key);
+        let Ok(msg) = pairing::private_key_message(epoch, &key) else {
+            return;
+        };
         for id in to {
             let _ = self.sh.cmd.send(Cmd::Control(*id, msg.clone())).await;
         }
@@ -630,7 +632,9 @@ async fn host_flow(sh: &Arc<Shared>, gen_: u64, host: &mut PairHost) {
     };
     *sh.members.write().unwrap_or_else(|e| e.into_inner()) = m;
     let _ = sh.cmd.send(Cmd::Reconfigure).await;
-    let msg = pairing::announcement(&member);
+    let Ok(msg) = pairing::announcement(&member) else {
+        return;
+    };
     for id in before {
         let _ = sh.cmd.send(Cmd::Control(id, msg.clone())).await;
     }
@@ -1066,9 +1070,10 @@ impl Actor {
                     let g = self.sh.members.read().unwrap_or_else(|e| e.into_inner());
                     (g.private_epoch(), g.private_key().map(|k| *k.as_bytes()))
                 };
-                if let (true, true, Some(key)) = (full, epoch > theirs, key) {
-                    self.send_ctl(from, &pairing::private_key_message(epoch, &key))
-                        .await;
+                if let (true, true, Some(key)) = (full, epoch > theirs, key)
+                    && let Ok(msg) = pairing::private_key_message(epoch, &key)
+                {
+                    self.send_ctl(from, &msg).await;
                 }
             }
             _ => {

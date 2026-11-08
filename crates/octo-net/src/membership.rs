@@ -9,6 +9,13 @@ use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 const NETWORK_ID_DOMAIN: &[u8] = b"octo-net-id-v1";
+/// Longest display name, in characters.
+pub const MAX_NAME_CHARS: usize = 64;
+
+/// A display name is at most 64 characters and has no control characters.
+pub fn valid_display_name(s: &str) -> bool {
+    s.chars().count() <= MAX_NAME_CHARS && !s.chars().any(char::is_control)
+}
 
 /// Shared secret of a network (used for 4b sync). Zeroized on drop; Debug is redacted.
 #[derive(Clone)]
@@ -37,8 +44,31 @@ impl NetworkKey {
 }
 
 /// Symmetric key of the private space (synced between full-trust members only). Same shape as
-/// the network key; kept as a distinct name so the two are never mixed up.
-pub type PrivateKey = NetworkKey;
+/// the network key; a distinct type so the two are never mixed up.
+#[derive(Clone)]
+pub struct PrivateKey(Zeroizing<[u8; 32]>);
+
+impl std::fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivateKey(..)")
+    }
+}
+
+impl PrivateKey {
+    pub fn generate() -> Self {
+        let mut k = Zeroizing::new([0u8; 32]);
+        rand::fill(&mut k[..]);
+        Self(k)
+    }
+
+    pub fn from_bytes(b: [u8; 32]) -> Self {
+        Self(Zeroizing::new(b))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
 
 /// Per-member trust, a local policy of each node. `Full` members may use this node's private
 /// space and hold the private key; `Public` members only reach public data.
@@ -78,7 +108,11 @@ impl Member {
         Self {
             node_id: NodeId::from_pubkey(&pubkey),
             pubkey,
-            name: name.chars().take(64).collect(),
+            name: name
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_NAME_CHARS)
+                .collect(),
             added_at,
             trust: Trust::Public,
         }
@@ -86,7 +120,7 @@ impl Member {
 
     /// A member read from the wire is only valid if node_id really derives from pubkey.
     pub fn validate(&self) -> Result<()> {
-        if NodeId::from_pubkey(&self.pubkey) != self.node_id {
+        if NodeId::from_pubkey(&self.pubkey) != self.node_id || !valid_display_name(&self.name) {
             return Err(NetError::Malformed);
         }
         Ok(())
@@ -175,14 +209,21 @@ impl Membership {
                     members: Vec::new(),
                     private: Some((1, PrivateKey::generate())),
                 };
-                m.save()?;
+                m.write(&m.key, &m.members, m.private.as_ref())?;
                 Ok(m)
             }
             Err(e) => Err(e.into()),
         }
     }
 
-    fn save(&self) -> Result<()> {
+    /// Persists the given state (not necessarily `self`'s), so callers can save first and only
+    /// then assign: a failed save leaves memory untouched.
+    fn write(
+        &self,
+        key: &NetworkKey,
+        members: &[Member],
+        private: Option<&(u64, PrivateKey)>,
+    ) -> Result<()> {
         let Some(path) = &self.path else {
             return Ok(());
         };
@@ -190,13 +231,10 @@ impl Membership {
             std::fs::create_dir_all(dir)?;
         }
         let stored = Stored {
-            network_key: HEXLOWER.encode(self.key.as_bytes()),
-            members: self.members.clone(),
-            private_key: self
-                .private
-                .as_ref()
-                .map(|(_, k)| HEXLOWER.encode(k.as_bytes())),
-            private_epoch: self.private.as_ref().map_or(0, |(e, _)| *e),
+            network_key: HEXLOWER.encode(key.as_bytes()),
+            members: members.to_vec(),
+            private_key: private.map(|(_, k)| HEXLOWER.encode(k.as_bytes())),
+            private_epoch: private.map_or(0, |(e, _)| *e),
         };
         let json = Zeroizing::new(serde_json::to_vec_pretty(&stored)?);
         // Write a private temp file, then rename over the target: atomic and never world-readable.
@@ -229,9 +267,10 @@ impl Membership {
         let Some((e, _)) = &self.private else {
             return Ok(None);
         };
-        let e = e + 1;
-        self.private = Some((e, PrivateKey::generate()));
-        self.save()?;
+        let next = (e + 1, PrivateKey::generate());
+        self.write(&self.key, &self.members, Some(&next))?;
+        let e = next.0;
+        self.private = Some(next);
         Ok(Some(e))
     }
 
@@ -240,21 +279,24 @@ impl Membership {
         if epoch <= self.private_epoch() {
             return Ok(false);
         }
-        self.private = Some((epoch, key.clone()));
-        self.save()?;
+        let next = (epoch, key.clone());
+        self.write(&self.key, &self.members, Some(&next))?;
+        self.private = Some(next);
         Ok(true)
     }
 
     /// Changes a member's trust; false if there is no such member or nothing changed.
     pub fn set_trust(&mut self, id: &NodeId, trust: Trust) -> Result<bool> {
-        let Some(m) = self.members.iter_mut().find(|m| &m.node_id == id) else {
+        let mut members = self.members.clone();
+        let Some(m) = members.iter_mut().find(|m| &m.node_id == id) else {
             return Ok(false);
         };
         if m.trust == trust {
             return Ok(false);
         }
         m.trust = trust;
-        self.save()?;
+        self.write(&self.key, &members, self.private.as_ref())?;
+        self.members = members;
         Ok(true)
     }
 
@@ -274,22 +316,44 @@ impl Membership {
         self.members.iter().find(|m| &m.node_id == id)
     }
 
-    /// Adds (or replaces by node id) a member and persists.
-    pub fn add(&mut self, m: Member) -> Result<()> {
+    /// Adds a member and persists. An existing node id is never overwritten: returns `false`.
+    pub fn add(&mut self, m: Member) -> Result<bool> {
+        if self.get(&m.node_id).is_some() {
+            m.validate()?;
+            return Ok(false);
+        }
+        self.put(m)?;
+        Ok(true)
+    }
+
+    /// Adds or replaces by node id and persists (local decisions such as completing a pairing).
+    pub(crate) fn put(&mut self, m: Member) -> Result<()> {
         m.validate()?;
-        self.members.retain(|x| x.node_id != m.node_id);
-        self.members.push(m);
-        self.save()
+        let mut members: Vec<Member> = self
+            .members
+            .iter()
+            .filter(|x| x.node_id != m.node_id)
+            .cloned()
+            .collect();
+        members.push(m);
+        self.write(&self.key, &members, self.private.as_ref())?;
+        self.members = members;
+        Ok(())
     }
 
     pub fn remove(&mut self, id: &NodeId) -> Result<bool> {
-        let before = self.members.len();
-        self.members.retain(|m| &m.node_id != id);
-        let changed = self.members.len() != before;
-        if changed {
-            self.save()?;
+        let members: Vec<Member> = self
+            .members
+            .iter()
+            .filter(|m| &m.node_id != id)
+            .cloned()
+            .collect();
+        if members.len() == self.members.len() {
+            return Ok(false);
         }
-        Ok(changed)
+        self.write(&self.key, &members, self.private.as_ref())?;
+        self.members = members;
+        Ok(true)
     }
 
     /// Replaces key and members (a joining node adopting the host's network).
@@ -299,9 +363,10 @@ impl Membership {
         members: Vec<Member>,
         private: Option<(u64, PrivateKey)>,
     ) -> Result<()> {
+        self.write(&key, &members, private.as_ref())?;
         self.key = key;
         self.members = members;
         self.private = private;
-        self.save()
+        Ok(())
     }
 }
