@@ -317,3 +317,44 @@ fn apply_dir_over_nonempty_dir_or_under_file_is_skipped() {
     assert_eq!(s.read("f").unwrap(), b"file");
     assert!(s.manifest().iter().all(|m| m.path != "f/child.txt"));
 }
+
+#[test]
+fn apply_rejects_malformed_remote_entries() {
+    let d = tempfile::tempdir().unwrap();
+    let f = open(d.path(), "a");
+    let r = rev(5, "b");
+    for p in ["../x", "/abs", "a//b", "./a", "a/", "a/./b", "a\\b", ""] {
+        assert!(
+            f.apply(&file(p, b"x", r.clone()), Some(b"x")).is_err(),
+            "{p:?}"
+        );
+        assert!(f.apply(&tomb(p, r.clone()), None).is_err(), "tomb {p:?}");
+        assert!(f.apply(&dir(p, r.clone()), None).is_err(), "dir {p:?}");
+    }
+    for h in ["", "zz", &"A".repeat(64), &"a".repeat(63)] {
+        let mut e = file("ok.txt", b"x", r.clone());
+        e.hash = h.into();
+        assert!(f.apply(&e, Some(b"x")).is_err(), "hash {h:?}");
+    }
+    // Tombstones and directories never carry data.
+    assert!(f.apply(&tomb("t", r.clone()), Some(b"x")).is_err());
+    assert!(f.apply(&dir("d", r.clone()), Some(b"x")).is_err());
+    assert!(f.manifest().is_empty(), "{:?}", f.manifest());
+}
+
+#[test]
+fn plan_skips_malformed_remote_entries() {
+    let r = rev(5, "b");
+    let mut bad_hash = file("h.txt", b"x", r.clone());
+    bad_hash.hash = "nothex".into();
+    let remote = vec![
+        file("../x", b"x", r.clone()),
+        file("a//b", b"x", r.clone()),
+        tomb("/abs", r.clone()),
+        bad_hash,
+        file("good.txt", b"x", r.clone()),
+    ];
+    let p = plan(&[], &remote);
+    assert_eq!(p.len(), 1);
+    assert!(matches!(&p[0], Action::Fetch(e) if e.path == "good.txt"));
+}

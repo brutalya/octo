@@ -124,3 +124,15 @@ fn thread_list_is_filtered() {
     assert!(filter_thread_list(b"xx").is_none());
     assert!(filter_thread_list(br#"[{"id":"a"}]"#).is_none());
 }
+
+#[test]
+fn sync_routes_denied_for_public_allowed_for_full() {
+    for path in [
+        "/api/sync/private/manifest",
+        "/api/sync/private/blob/00",
+        "/api/sync/private/blob/abc?x=1",
+    ] {
+        assert!(!tunnel_allows(Trust::Public, &req("GET", path)), "{path}");
+        assert!(tunnel_allows(Trust::Full, &req("GET", path)), "{path}");
+    }
+}

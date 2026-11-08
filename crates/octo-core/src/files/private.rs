@@ -447,6 +447,9 @@ impl PrivateFiles {
     pub fn apply(&self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<(), FilesError> {
         let path = non_root(&entry.path)?;
         let live_file = !entry.deleted && entry.kind == FileKind::File;
+        if !well_formed(entry) || path != entry.path || (!live_file && data.is_some()) {
+            return Err(FilesError::Invalid);
+        }
         let plain: Option<Vec<u8>> = if live_file {
             let bytes = match data {
                 Some(d) => d.to_vec(),
@@ -523,6 +526,17 @@ impl PrivateFiles {
     }
 }
 
+fn is_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A remote entry is acceptable if its path is already normalized and non-root, and a live
+/// file carries a well-formed content hash.
+fn well_formed(e: &SyncEntry) -> bool {
+    let path_ok = non_root(&e.path).is_ok_and(|p| p == e.path);
+    path_ok && (e.deleted || e.kind != FileKind::File || is_hash(&e.hash))
+}
+
 fn non_root(path: &str) -> Result<String, FilesError> {
     let n = normalize(path)?;
     if n.is_empty() {
@@ -562,6 +576,7 @@ pub fn plan(local: &[SyncEntry], remote: &[SyncEntry]) -> Vec<Action> {
         .collect();
     remote
         .iter()
+        .filter(|r| well_formed(r))
         .filter(|r| by_path.get(r.path.as_str()).is_none_or(|l| r.rev > l.rev))
         .map(|r| {
             let needs_data =

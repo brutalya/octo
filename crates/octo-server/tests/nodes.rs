@@ -732,3 +732,223 @@ async fn removing_a_member_rotates_and_is_local_only() {
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------- private sync (stage 4b, step 2)
+
+const MULTIPART_B: &str = "XBOUNDARYX";
+
+async fn put_private(n: &N, path: &str, data: &[u8]) {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let mut body = format!(
+        "--{MULTIPART_B}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{MULTIPART_B}--\r\n").as_bytes());
+    let mut b = Request::builder()
+        .method("POST")
+        .uri(format!("/api/files/private?path={dir}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={MULTIPART_B}"),
+        );
+    if let Some(t) = &n.token {
+        b = b.header("authorization", format!("Bearer {t}"));
+    }
+    let r = n
+        .app
+        .clone()
+        .oneshot(b.body(Body::from(body)).unwrap())
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+}
+
+async fn raw(n: &N, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
+    let r = n.call(method, uri, None).await;
+    let s = r.status();
+    (
+        s,
+        r.into_body().collect().await.unwrap().to_bytes().to_vec(),
+    )
+}
+
+async fn read_private(n: &N, path: &str) -> Option<Vec<u8>> {
+    let (s, b) = raw(n, "GET", &format!("/api/files/private/content?path={path}")).await;
+    (s == StatusCode::OK).then_some(b)
+}
+
+/// Polls until `path` has exactly `want` (None = absent), within a timeout.
+async fn wait_private(n: &N, path: &str, want: Option<&[u8]>) {
+    for _ in 0..150 {
+        if read_private(n, path).await.as_deref() == want {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "{path}: expected {want:?}, got {:?}",
+        read_private(n, path).await
+    );
+}
+
+/// Stops the node and returns its data dir, to start it again with `restart`.
+fn take_offline(n: N) -> tempfile::TempDir {
+    n.dir
+}
+
+async fn restart(dir: tempfile::TempDir) -> N {
+    let cfg = Config {
+        data_dir: dir.path().to_path_buf(),
+        claude_bin: fake(),
+        agy_bin: fake(),
+        openrouter_base: String::new(),
+        ..Config::new(None)
+    };
+    let hub = Arc::new(Hub::new(cfg, "test-node").unwrap());
+    let node = Node::start(
+        hub.clone(),
+        dir.path(),
+        NodeOpts {
+            connect_timeout: Duration::from_millis(1500),
+        },
+    )
+    .unwrap();
+    let app = octo_server::app_with_node(hub, node.clone(), None, None);
+    N {
+        app,
+        _node: node,
+        dir,
+        token: None,
+    }
+}
+
+#[tokio::test]
+async fn sync_routes_local_manifest_and_blob() {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    put_private(&a, "docs/a.txt", b"hello").await;
+    let (s, m) = a.json("GET", "/api/sync/private/manifest", None).await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    let e = m
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["path"] == "docs/a.txt")
+        .unwrap()
+        .clone();
+    let hash = e["hash"].as_str().unwrap().to_string();
+    assert_eq!(e["deleted"], false);
+    let (s, body) = raw(&a, "GET", &format!("/api/sync/private/blob/{hash}")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body, b"hello");
+    let unknown = "0".repeat(64);
+    let (s, _) = raw(&a, "GET", &format!("/api/sync/private/blob/{unknown}")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    for bad in ["zz", "not-a-hash", "ABCDEF"] {
+        let (s, _) = raw(&a, "GET", &format!("/api/sync/private/blob/{bad}")).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn sync_routes_reachable_through_tunnel_by_full_member() {
+    let (a, b, id_b) = paired_trust(None, None, Some(true)).await;
+    put_private(&b, "x.txt", b"x").await;
+    let (s, m) = a
+        .json(
+            "GET",
+            &format!("/api/nodes/{id_b}/sync/private/manifest"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert!(m.as_array().unwrap().iter().any(|e| e["path"] == "x.txt"));
+}
+
+#[tokio::test]
+async fn private_file_syncs_to_full_member_and_delete_propagates() {
+    let (a, b, _) = paired_trust(None, None, Some(true)).await;
+    put_private(&a, "notes/n.txt", b"v1").await;
+    wait_private(&b, "notes/n.txt", Some(b"v1")).await;
+    // B deletes -> A loses it.
+    let (s, _) = raw(&b, "DELETE", "/api/files/private?path=notes/n.txt").await;
+    assert!(s.is_success(), "{s}");
+    wait_private(&a, "notes/n.txt", None).await;
+    wait_private(&b, "notes/n.txt", None).await;
+}
+
+#[tokio::test]
+async fn public_member_gets_403_and_no_private_files() {
+    // a hosts b (full) and c (public).
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let b = start(&url, "beta", None, None).await;
+    let c = start(&url, "gamma", None, None).await;
+    pair_nodes(&a, &b, Some(true)).await;
+    let id_b = b.id().await;
+    wait_online(&a, &id_b).await;
+    pair_nodes(&a, &c, Some(false)).await;
+    let (id_a, id_c) = (a.id().await, c.id().await);
+    wait_online(&a, &id_c).await;
+    for p in [
+        format!("/api/nodes/{id_a}/sync/private/manifest"),
+        format!("/api/nodes/{id_a}/sync/private/blob/{}", "0".repeat(64)),
+    ] {
+        let (s, _) = raw(&c, "GET", &p).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "c -> a {p}");
+    }
+    for p in [
+        format!("/api/nodes/{id_c}/sync/private/manifest"),
+        format!("/api/nodes/{id_c}/sync/private/blob/{}", "0".repeat(64)),
+    ] {
+        let (s, _) = raw(&a, "GET", &p).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "a -> c {p}");
+    }
+    put_private(&a, "secret.txt", b"s").await;
+    // Positive control: the full member gets it, so a sync round has certainly happened.
+    wait_private(&b, "secret.txt", Some(b"s")).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (s, list) = c.json("GET", "/api/files/private", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(list.as_array().unwrap().is_empty(), "{list}");
+}
+
+#[tokio::test]
+async fn offline_member_catches_up_after_reconnect() {
+    let (a, b, _) = paired_trust(None, None, Some(true)).await;
+    let id_b = b.id().await;
+    put_private(&a, "one.txt", b"1").await;
+    wait_private(&b, "one.txt", Some(b"1")).await;
+    let dir = take_offline(b);
+    put_private(&a, "two.txt", b"2").await;
+    let (s, _) = raw(&a, "DELETE", "/api/files/private?path=one.txt").await;
+    assert!(s.is_success());
+    let b = restart(dir).await;
+    wait_online(&a, &id_b).await;
+    wait_private(&b, "two.txt", Some(b"2")).await;
+    wait_private(&b, "one.txt", None).await;
+}
+
+#[tokio::test]
+async fn private_key_epoch_catches_up_for_member_offline_during_rotation() {
+    let (a, b, c, id_b, id_c) = trio().await;
+    let (e0, _) = private_state(&a);
+    let dir_c = take_offline(c);
+    // Downgrading b rotates the key; c is full but offline and misses it.
+    let (s, _) = a
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_b}/trust"),
+            Some(json!({"trust": "public"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (ea, ka) = private_state(&a);
+    assert_eq!(ea, e0 + 1);
+    let c = restart(dir_c).await;
+    wait_online(&a, &id_c).await;
+    wait_epoch(&c, e0 + 1).await;
+    assert_eq!(private_state(&c).1, ka);
+    drop(b);
+}

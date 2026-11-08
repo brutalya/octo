@@ -229,3 +229,18 @@ async fn active_stream_is_not_idle_reset() {
         assert_eq!(peer.read().await.unwrap().unwrap(), b"tick");
     }
 }
+
+#[tokio::test]
+async fn dropping_the_mux_fails_pending_reads_at_once() {
+    let (a, mut b) = pair();
+    let mut s = a.open().await.unwrap();
+    let _peer = b.accept().await.unwrap();
+    let reader = tokio::spawn(async move { s.read().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(a);
+    let r = tokio::time::timeout(Duration::from_secs(2), reader)
+        .await
+        .expect("read must not hang")
+        .unwrap();
+    assert!(r.is_err(), "{r:?}");
+}

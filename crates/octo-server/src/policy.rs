@@ -32,7 +32,8 @@ pub fn tunnel_allows(trust: Trust, req: &TunnelReq) -> bool {
     let _ = req.method;
     let seg = segments(req.path);
     let private_files = seg.first() == Some(&"files") && seg.get(1) == Some(&"private");
-    !(private_files || req.thread_space == Some(Space::Private) || req.body_private)
+    let sync = seg.first() == Some(&"sync");
+    !(private_files || sync || req.thread_space == Some(Space::Private) || req.body_private)
 }
 
 /// Id of the thread a path addresses (`/api/threads/{id}[/...]`).

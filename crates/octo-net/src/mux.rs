@@ -122,6 +122,11 @@ impl Drop for Mux {
     fn drop(&mut self) {
         self.task.abort();
         self.watchdog.abort();
+        // The link is gone (e.g. the session was replaced): fail pending reads at once.
+        let streams: Vec<_> = self.shared.map().drain().map(|(_, s)| s).collect();
+        for s in streams {
+            let _ = s.inbox.send(Msg::Reset);
+        }
     }
 }
 

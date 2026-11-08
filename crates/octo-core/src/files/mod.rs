@@ -5,7 +5,7 @@ pub mod public;
 use crate::crypto::{CryptoError, Key};
 use crate::storage::Space;
 use path::PathError;
-use private::PrivateFiles;
+use private::{PrivateFiles, SyncEntry};
 use public::PublicFiles;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -114,6 +114,21 @@ impl Files {
             Space::Public => self.public.read(path),
             Space::Private => self.private()?.read(path),
         }
+    }
+
+    /// Private-space manifest including tombstones (for sync).
+    pub fn private_manifest(&self) -> Result<Vec<SyncEntry>, FilesError> {
+        Ok(self.private()?.manifest())
+    }
+
+    /// Plaintext of a live private file by content hash.
+    pub fn private_blob(&self, hash: &str) -> Result<Option<Vec<u8>>, FilesError> {
+        Ok(self.private()?.read_by_hash(hash))
+    }
+
+    /// Applies a remote private entry (see `PrivateFiles::apply`).
+    pub fn private_apply(&self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<(), FilesError> {
+        self.private()?.apply(entry, data)
     }
 
     pub fn mkdir(&self, space: Space, path: &str) -> Result<(), FilesError> {

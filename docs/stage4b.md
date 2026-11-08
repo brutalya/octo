@@ -31,3 +31,12 @@ Store-and-forward for full members that are never online at the same time. Decid
 - `Hub::new(config, node_id)` and `Files::open(data_dir, node_id)` take the node id; the server and desktop pass `octo_server::node::node_id(data_dir)` (derived from `keys/node.key`, the same key the Node uses).
 - New `FilesError::HashMismatch` (HTTP 400) for a failed hash check in `apply`.
 - `apply` is a no-op (Ok) when the local entry's rev is not older than the remote's; missing parent directories created by `apply` get rev `{0, ""}`.
+
+## Deviations (Step 2)
+- Each node keeps its own at-rest files key (`keys/private.key`); the membership `private_key`/epoch is separate. Sync moves plaintext over the IK sessions, and epoch catch-up concerns only the membership key.
+- Sync rounds also start when the relay link becomes ready and when a session with a full member is established (both sides); the 60 s run is a fallback for established peers.
+- `private_epoch` is sent on session establishment to full members; the side with the newer epoch replies with `private_key`.
+- Local private changes are detected in the HTTP layer (successful non-GET on `/api/files/private`, also via the tunnel); remote applies do not hint.
+- Blobs and the manifest are size-capped (50 MB / 32 MB); sync tasks run off the node actor.
+- `apply` and `plan` reject remote entries with a non-normalized or root path, a malformed live-file hash, or data given for a directory or tombstone.
+- A failed sync run (session churn) is retried with backoff; dropping a mux fails pending stream reads at once; a failed probe resets a session only if it is still the one the probe used.

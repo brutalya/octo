@@ -252,6 +252,27 @@ fn build(
     let local = local_api(hub);
     let api = match node {
         Some(n) => {
+            // Weak: the router is stored inside the node, a strong reference would be a cycle.
+            let notify = Arc::downgrade(&n);
+            let local = local.layer(middleware::from_fn(move |req: Request, next: Next| {
+                let notify = notify.clone();
+                async move {
+                    let changes = req.method() != axum::http::Method::GET
+                        && req
+                            .uri()
+                            .path()
+                            .trim_start_matches("/api")
+                            .starts_with("/files/private");
+                    let resp = next.run(req).await;
+                    if changes
+                        && resp.status().is_success()
+                        && let Some(n) = notify.upgrade()
+                    {
+                        n.private_changed();
+                    }
+                    resp
+                }
+            }));
             n.set_router(Router::new().nest("/api", local.clone()));
             local.merge(node_routes(n))
         }
@@ -303,6 +324,8 @@ fn local_api(hub: Shared) -> Router {
         )
         .route("/files/{space}/content", get(file_content))
         .route("/files/{space}/dir", post(make_dir))
+        .route("/sync/private/manifest", get(sync_manifest))
+        .route("/sync/private/blob/{hash}", get(sync_blob))
         .with_state(hub)
 }
 
@@ -500,6 +523,21 @@ async fn file_content(
         ],
         data,
     ))
+}
+
+async fn sync_manifest(State(h): State<Shared>) -> ApiResult<impl IntoResponse> {
+    Ok(Json(blocking(&h, |f| f.private_manifest()).await?))
+}
+
+async fn sync_blob(State(h): State<Shared>, Path(hash): Path<String>) -> ApiResult<Response> {
+    let valid = hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if !valid {
+        return Err(CoreError::Invalid("invalid hash").into());
+    }
+    let data = blocking(&h, move |f| f.private_blob(&hash))
+        .await?
+        .ok_or(FilesError::NotFound)?;
+    Ok(([(header::CONTENT_TYPE, "application/octet-stream")], data).into_response())
 }
 
 async fn make_dir(
