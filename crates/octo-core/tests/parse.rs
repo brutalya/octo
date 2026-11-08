@@ -87,3 +87,15 @@ fn antigravity_error_result() {
         }]
     );
 }
+
+#[test]
+fn claude_subagent_text_deltas_are_ignored() {
+    let main = r#"{"type":"stream_event","parent_tool_use_id":null,"event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"main"}}}"#;
+    let absent = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" ok"}}}"#;
+    let sub = r#"{"type":"stream_event","parent_tool_use_id":"toolu_synthetic","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"SUBAGENT"}}}"#;
+    let evs: Vec<AgentEvent> = [main, sub, absent]
+        .iter()
+        .flat_map(|l| parse_line(ProviderKind::Claude, l))
+        .collect();
+    assert_eq!(text(&evs), "main ok");
+}

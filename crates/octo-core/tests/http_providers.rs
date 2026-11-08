@@ -106,6 +106,23 @@ async fn or_chat(State(seen): State<Seen>, h: HeaderMap, body: Bytes) -> Respons
         )
             .into_response();
     }
+    if prompt_of(&seen.chats.lock().unwrap().last().unwrap().1).contains("CUTOFF") {
+        // connection closed mid-answer: no finish_reason, no [DONE]
+        return streaming(
+            vec!["data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n"],
+            false,
+        );
+    }
+    if prompt_of(&seen.chats.lock().unwrap().last().unwrap().1).contains("NODONE") {
+        // finished (finish_reason) but closed without [DONE]
+        return streaming(
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"all\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            ],
+            false,
+        );
+    }
     streaming(
         vec![
             ": OPENROUTER PROCESSING\n\n",
@@ -205,11 +222,12 @@ async fn ollama_streams_persists_and_resends_history() {
     let e = env(&url, "", None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("llama3:8b"),
+            None,
         )
         .unwrap();
     let evs = collect(e.hub.send_message(&t.id, "hi", &[]).await.unwrap()).await;
@@ -244,11 +262,12 @@ async fn history_budget_drops_oldest() {
     let e = env(&url, "", None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Public,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     collect(
@@ -281,11 +300,12 @@ async fn ollama_error_is_streamed_and_stored_as_error() {
     let e = env(&url, "", None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("missing"),
+            None,
         )
         .unwrap();
     let evs = collect(e.hub.send_message(&t.id, "hi", &[]).await.unwrap()).await;
@@ -305,11 +325,12 @@ async fn unreachable_ollama_reports_error_event() {
     let e = env("http://127.0.0.1:1", "", None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let evs = collect(e.hub.send_message(&t.id, "hi", &[]).await.unwrap()).await;
@@ -324,11 +345,12 @@ async fn openrouter_streams_with_bearer_key_and_ignores_comments() {
     let e = env("http://127.0.0.1:1", &url, Some(KEY));
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::OpenRouter,
             Space::Public,
             Approval::Confirm,
             Some("openai/gpt-x"),
+            None,
         )
         .unwrap();
     let evs = collect(e.hub.send_message(&t.id, "yo", &[]).await.unwrap()).await;
@@ -346,11 +368,12 @@ async fn openrouter_auth_failure_is_an_error_without_leaking_the_key() {
     let e = env("http://127.0.0.1:1", &url, Some("sk-or-wrong-key-0000"));
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::OpenRouter,
             Space::Public,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let evs = collect(e.hub.send_message(&t.id, "yo", &[]).await.unwrap()).await;
@@ -371,11 +394,12 @@ async fn openrouter_without_key_fails_fast_and_stores_nothing() {
     let e = env("http://127.0.0.1:1", &url, None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::OpenRouter,
             Space::Public,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let r = e.hub.send_message(&t.id, "yo", &[]).await;
@@ -394,7 +418,7 @@ async fn policy_private_thread_rejects_openrouter_at_create() {
     ] {
         let r = e
             .hub
-            .create_thread(p, Space::Private, Approval::Confirm, Some("m"));
+            .create_thread_in(p, Space::Private, Approval::Confirm, Some("m"), None);
         assert!(matches!(r, Err(CoreError::Policy(_))), "{p:?}");
     }
 }
@@ -403,11 +427,12 @@ async fn policy_private_thread_rejects_openrouter_at_create() {
 async fn http_provider_requires_a_model() {
     let e = env("http://127.0.0.1:1", "http://127.0.0.1:1", Some(KEY));
     for model in [None, Some(""), Some("  ")] {
-        let r = e.hub.create_thread(
+        let r = e.hub.create_thread_in(
             ProviderKind::Ollama,
             Space::Public,
             Approval::Confirm,
             model,
+            None,
         );
         assert!(matches!(r, Err(CoreError::Invalid(_))), "{model:?}");
     }
@@ -460,11 +485,12 @@ async fn cancel_stops_http_stream_keeps_partial_and_never_reports_done() {
     let e = env(&url, "", None);
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Public,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let mut rx = e.hub.send_message(&t.id, "SLOW", &[]).await.unwrap();
@@ -498,11 +524,12 @@ async fn attachments_are_inlined_and_stored_as_refs() {
         .unwrap();
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let refs = vec![AttachmentRef {
@@ -534,11 +561,12 @@ async fn attachment_policy_and_media_checks_happen_before_anything_is_sent_or_st
         .unwrap();
     let t = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Public,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let cross = [AttachmentRef {
@@ -570,11 +598,12 @@ async fn attachment_policy_and_media_checks_happen_before_anything_is_sent_or_st
     // a private thread cannot pull in public files either
     let pt = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     let pubref = [AttachmentRef {
@@ -625,4 +654,30 @@ async fn settings_persist_with_0600_and_reload() {
         ..Default::default()
     });
     assert!(matches!(bad, Err(CoreError::Settings(_))));
+}
+
+#[tokio::test]
+async fn openrouter_eof_without_finish_is_an_error_but_finish_without_done_is_done() {
+    let (url, _seen) = fake_openrouter().await;
+    let e = env("http://127.0.0.1:1", &url, Some(KEY));
+    let t = e
+        .hub
+        .create_thread_in(
+            ProviderKind::OpenRouter,
+            Space::Public,
+            Approval::Confirm,
+            Some("m"),
+            None,
+        )
+        .unwrap();
+    let evs = collect(e.hub.send_message(&t.id, "CUTOFF", &[]).await.unwrap()).await;
+    assert!(
+        matches!(evs.last(), Some(AgentEvent::Error { .. })),
+        "{evs:?}"
+    );
+    assert!(!evs.contains(&AgentEvent::Done));
+    wait_idle(&e.hub, &t.id).await;
+    let evs = collect(e.hub.send_message(&t.id, "NODONE", &[]).await.unwrap()).await;
+    assert_eq!(text(&evs), "all");
+    assert_eq!(evs.last(), Some(&AgentEvent::Done));
 }

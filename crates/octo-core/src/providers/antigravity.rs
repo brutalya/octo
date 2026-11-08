@@ -1,4 +1,4 @@
-use super::{AgentEvent, CliExtra};
+use super::{AgentEvent, CliExtra, str_of};
 use crate::storage::Approval;
 use serde_json::Value;
 
@@ -43,19 +43,15 @@ pub fn stdin(prompt: &str) -> String {
     format!("{msg}\n")
 }
 
-fn s(v: &Value) -> Option<String> {
-    v.as_str().map(str::to_string)
-}
-
 pub fn parse(v: &Value) -> Vec<AgentEvent> {
     match v["event"].as_str() {
-        Some("init") => s(&v["conversation_id"])
+        Some("init") => str_of(&v["conversation_id"])
             .map(|id| vec![AgentEvent::Session { id }])
             .unwrap_or_default(),
         Some("step_update") => {
             let u = &v["step_update"];
             match u["step_type"].as_str() {
-                Some("agent_response") => s(&u["text_delta"])
+                Some("agent_response") => str_of(&u["text_delta"])
                     .filter(|t| !t.is_empty())
                     .map(|text| vec![AgentEvent::TextDelta { text }])
                     .unwrap_or_default(),
@@ -72,7 +68,7 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
         }
         Some("result") if v["result"]["status"] == "SUCCESS" => vec![AgentEvent::Done],
         Some("result") => {
-            let message = s(&v["result"]["error"]).unwrap_or_else(|| "error".into());
+            let message = str_of(&v["result"]["error"]).unwrap_or_else(|| "error".into());
             vec![AgentEvent::Error { message }]
         }
         _ => vec![],

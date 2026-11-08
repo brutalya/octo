@@ -166,7 +166,13 @@ fn new_cli_threads_default_to_the_public_dir() {
     let e = env();
     let t = e
         .hub
-        .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
+        .create_thread_in(
+            ProviderKind::Claude,
+            Space::Public,
+            Approval::Confirm,
+            None,
+            None,
+        )
         .unwrap();
     let public = e.hub.files().public_dir().to_string_lossy().into_owned();
     assert_eq!(t.cwd.as_deref(), Some(public.as_str()));
@@ -183,11 +189,12 @@ fn new_cli_threads_default_to_the_public_dir() {
     assert_eq!(own.cwd.as_deref(), Some("/x/y"));
     let http = e
         .hub
-        .create_thread(
+        .create_thread_in(
             ProviderKind::Ollama,
             Space::Private,
             Approval::Confirm,
             Some("m"),
+            None,
         )
         .unwrap();
     assert_eq!(http.cwd, None);
@@ -244,7 +251,13 @@ mod runs {
     async fn run_defaults_to_the_public_dir() {
         let (hub, _root) = pwd_hub();
         let t = hub
-            .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
+            .create_thread_in(
+                ProviderKind::Claude,
+                Space::Public,
+                Approval::Confirm,
+                None,
+                None,
+            )
             .unwrap();
         let public = hub.files().public_dir().canonicalize().unwrap();
         assert_eq!(run(&hub, &t.id).await, public.to_string_lossy());

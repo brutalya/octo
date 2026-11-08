@@ -1,7 +1,8 @@
 use crate::providers::{AgentEvent, ProviderKind, parse_line};
-use crate::registry::{ProcEvent, RunHandle};
+use crate::registry::{ProcEvent, ProcessRegistry, RunHandle};
 use crate::storage::{Role, Storage};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
 
 /// Cancel switch of one running thread.
@@ -27,8 +28,17 @@ impl RunCtl {
     }
 }
 
-/// Turns the raw process output of a CLI provider into agent events.
-pub fn cli_events(kind: ProviderKind, mut handle: RunHandle) -> mpsc::Receiver<AgentEvent> {
+/// How long a process may linger after its terminal event before it is cancelled.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// Turns the raw process output of a CLI provider into agent events. After a terminal
+/// event the process gets `EXIT_GRACE` to exit on its own, then `key` is cancelled.
+pub fn cli_events(
+    kind: ProviderKind,
+    mut handle: RunHandle,
+    registry: ProcessRegistry,
+    key: String,
+) -> mpsc::Receiver<AgentEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
         let mut finished = false;
@@ -58,6 +68,13 @@ pub fn cli_events(kind: ProviderKind, mut handle: RunHandle) -> mpsc::Receiver<A
                     return;
                 }
             }
+            if finished {
+                let drain = async { while handle.events.recv().await.is_some() {} };
+                if tokio::time::timeout(EXIT_GRACE, drain).await.is_err() {
+                    registry.cancel(&key);
+                }
+                return;
+            }
         }
     });
     rx
@@ -75,7 +92,7 @@ pub async fn drive(
 ) {
     let mut text = String::new();
     let mut finished = false;
-    while let Some(e) = events.recv().await {
+    while let Some(mut e) = events.recv().await {
         if finished {
             break;
         }
@@ -84,30 +101,44 @@ pub async fn drive(
         }
         match &e {
             AgentEvent::Session { id } if !session_saved => {
-                session_saved = storage.set_external_session(thread_id, id).is_ok();
+                match storage.set_external_session(thread_id, id) {
+                    Ok(()) => session_saved = true,
+                    Err(err) => eprintln!("octo: cannot save session id: {err}"),
+                }
             }
             AgentEvent::TextDelta { text: t } => text.push_str(t),
             AgentEvent::Done => {
                 finished = true;
-                persist(storage, thread_id, Role::Assistant, &text);
+                if let Err(err) = persist(storage, thread_id, Role::Assistant, &text) {
+                    e = save_failed(&err);
+                }
             }
             AgentEvent::Error { message } => {
                 finished = true;
-                persist(storage, thread_id, Role::Error, message);
+                if let Err(err) = persist(storage, thread_id, Role::Error, message) {
+                    eprintln!("octo: cannot save error message: {err}");
+                }
             }
             _ => {}
         }
         let _ = out.send(e).await;
     }
-    if !finished {
+    if !finished && let Err(err) = persist(storage, thread_id, Role::Assistant, &text) {
         // cancelled (or the source vanished): keep what was streamed so far
-        persist(storage, thread_id, Role::Assistant, &text);
+        let _ = out.send(save_failed(&err)).await;
     }
 }
 
-fn persist(storage: &Storage, thread_id: &str, role: Role, content: &str) {
+fn save_failed(err: &rusqlite::Error) -> AgentEvent {
+    AgentEvent::Error {
+        message: format!("could not save the reply: {err}"),
+    }
+}
+
+fn persist(storage: &Storage, thread_id: &str, role: Role, content: &str) -> rusqlite::Result<()> {
     let content = content.trim_end();
     if !content.is_empty() {
-        let _ = storage.add_message(thread_id, role, content);
+        storage.add_message(thread_id, role, content)?;
     }
+    Ok(())
 }

@@ -35,3 +35,6 @@ Goal: sessions started in a terminal (Antigravity, Claude Code) appear in Octo a
 - Config: `claude_projects_dir` and `agy_dir` default to `<home>/.claude/projects` and `<home>/.gemini/antigravity-cli` (home via the platform home dir, so `%USERPROFILE%` on Windows); server flags `--claude-projects-dir`, `--agy-dir`.
 - Session ids from the API are validated (`[A-Za-z0-9_-]`) before any file lookup.
 - Web: each CLI provider row in the "+" menu has a "sessions" item opening the search list (server-side `q`, debounced).
+- CLI agents are not sandboxed: in `auto` approval they can read and write the whole user account, whatever the working directory. Octo only refuses a thread `cwd` that is, or is inside, the data directory (canonicalized), except the public space dir, so the CLI does not start next to private blobs, keys or the database.
+- After a terminal event the CLI process gets 2 s to exit, then it is cancelled. Stderr kept for error messages is capped at 64 KB. Claude stream events from sub-agents (`parent_tool_use_id` set) are not shown as reply text.
+

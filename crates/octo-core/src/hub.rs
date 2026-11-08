@@ -3,10 +3,11 @@ use crate::config::Config;
 use crate::error::CoreError;
 use crate::files::Files;
 use crate::import::{self, SessionData, SessionSummary};
-use crate::policy::{check_attachment, check_provider};
+use crate::policy::PolicyError;
+use crate::policy::{check_attachment, check_thread};
 use crate::providers::{
-    AgentEvent, ChatMessage, CliExtra, ModelInfo, ProviderKind, ProviderStatus, build_invocation,
-    detect, history, ollama, openrouter,
+    AgentEvent, ChatMessage, CliExtra, Invocation, ModelInfo, ProviderKind, ProviderStatus,
+    build_invocation, detect, history, ollama, openrouter,
 };
 use crate::registry::ProcessRegistry;
 use crate::run::{RunCtl, cli_events, drive};
@@ -15,7 +16,7 @@ use crate::storage::{
     Approval, AttachmentRef, Message, NewImport, Origin, Role, Space, Storage, Thread,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -45,7 +46,7 @@ impl Hub {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .map_err(|_| CoreError::Invalid("cannot build http client"))?;
+            .map_err(|_| CoreError::Internal("cannot build http client"))?;
         Ok(Self {
             config,
             storage,
@@ -91,11 +92,11 @@ impl Hub {
 
     pub async fn providers(&self) -> Vec<ProviderStatus> {
         let settings = self.settings_snapshot();
-        let mut out = vec![];
-        for k in ProviderKind::ALL {
-            out.push(detect(k, &self.config, &settings, &self.http).await);
-        }
-        out
+        futures_util::future::join_all(
+            ProviderKind::ALL
+                .map(|k| detect(k, &self.config, &settings, &self.http, &self.registry)),
+        )
+        .await
     }
 
     /// Models of an HTTP provider; CLI providers have no model list.
@@ -113,7 +114,6 @@ impl Hub {
             }
             ProviderKind::Claude | ProviderKind::Antigravity => Ok(vec![]),
         }
-        .map_err(CoreError::Upstream)
     }
 
     pub fn list_threads(&self) -> Result<Vec<Thread>, CoreError> {
@@ -125,16 +125,6 @@ impl Hub {
         Ok(self.storage.get_thread(id)?.map(|t| t.space))
     }
 
-    pub fn create_thread(
-        &self,
-        provider: ProviderKind,
-        space: Space,
-        approval: Approval,
-        model: Option<&str>,
-    ) -> Result<Thread, CoreError> {
-        self.create_thread_in(provider, space, approval, model, None)
-    }
-
     /// CLI threads run in `cwd`, by default the public space dir. HTTP providers have none.
     pub fn create_thread_in(
         &self,
@@ -144,7 +134,7 @@ impl Hub {
         model: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Thread, CoreError> {
-        check_provider(space, provider)?;
+        check_thread(space, provider, &self.settings_snapshot().ollama_url)?;
         let model = model.map(str::trim).filter(|m| !m.is_empty());
         if provider.is_http() && model.is_none() {
             return Err(CoreError::Invalid("model is required"));
@@ -155,9 +145,27 @@ impl Hub {
                 .map(str::to_string)
                 .unwrap_or_else(|| self.files.public_dir().to_string_lossy().into_owned())
         });
+        if let Some(c) = &cwd {
+            self.check_cwd(Path::new(c))?;
+        }
         Ok(self
             .storage
             .create_thread_in(provider, space, approval, model, cwd.as_deref())?)
+    }
+
+    /// CLI agents are not sandboxed, so their working directory must not expose Octo's own
+    /// data (private blobs, keys, database). Only the public space dir is allowed inside
+    /// the data directory. A directory that does not exist yet is checked again at run time.
+    fn check_cwd(&self, cwd: &Path) -> Result<(), CoreError> {
+        let Ok(cwd) = cwd.canonicalize() else {
+            return Ok(());
+        };
+        let data = self.config.data_dir.canonicalize()?;
+        let public = self.files.public_dir().canonicalize()?;
+        if cwd.starts_with(&data) && !cwd.starts_with(&public) {
+            return Err(PolicyError::CwdInDataDir.into());
+        }
+        Ok(())
     }
 
     /// Applies from the next run on; a running process keeps its flags.
@@ -344,7 +352,7 @@ impl Hub {
             Ok::<_, CoreError>(files)
         })
         .await
-        .map_err(|_| CoreError::Invalid("file task failed"))??;
+        .map_err(|_| CoreError::Internal("file task failed"))??;
         Ok(build_prompt(content, &files))
     }
 
@@ -389,8 +397,8 @@ impl Hub {
             return Err(CoreError::Invalid("empty message"));
         }
         let thread = self.storage.get_thread(id)?.ok_or(CoreError::NotFound)?;
-        check_provider(thread.space, thread.provider)?;
         let settings = self.settings_snapshot();
+        check_thread(thread.space, thread.provider, &settings.ollama_url)?;
         let model = thread.model.clone();
         if thread.provider.is_http() && model.is_none() {
             return Err(CoreError::Invalid("model is required"));
@@ -411,14 +419,16 @@ impl Hub {
             }
             runs.insert(id.to_string(), ctl.clone());
         }
-        let started = self
-            .start(&thread, &settings, &prompt, key, model, &ctl)
-            .and_then(|rx| {
-                self.storage
-                    .add_message_with(id, Role::User, content, attachments)?;
-                self.storage.set_title_if_empty(id, content)?;
-                Ok(rx)
-            });
+        let started = self.begin(
+            &thread,
+            &settings,
+            &prompt,
+            key,
+            model,
+            &ctl,
+            content,
+            attachments,
+        );
         let events = match started {
             Ok(rx) => rx,
             Err(e) => {
@@ -444,8 +454,10 @@ impl Hub {
         Ok(rx)
     }
 
-    /// Spawns the provider and returns its event source.
-    fn start(
+    /// Validates, stores the user message, then spawns. Nothing stays stored when the
+    /// spawn fails; a cancel that landed before the spawn is honoured right after it.
+    #[allow(clippy::too_many_arguments)]
+    fn begin(
         &self,
         thread: &Thread,
         settings: &Settings,
@@ -453,40 +465,103 @@ impl Hub {
         key: Option<String>,
         model: Option<String>,
         ctl: &Arc<RunCtl>,
+        content: &str,
+        attachments: &[AttachmentRef],
+    ) -> Result<mpsc::Receiver<AgentEvent>, CoreError> {
+        let plan = self.prepare(thread, settings, prompt)?;
+        let msg = self
+            .storage
+            .add_message_with(&thread.id, Role::User, content, attachments)?;
+        let launched = self
+            .storage
+            .set_title_if_empty(&thread.id, content)
+            .map_err(CoreError::from)
+            .and_then(|()| self.launch(thread, plan, key, model, ctl));
+        match launched {
+            Ok(rx) => {
+                if ctl.is_cancelled() {
+                    // cancel arrived after the run was registered but before the spawn
+                    self.registry.cancel(&thread.id);
+                }
+                Ok(rx)
+            }
+            Err(e) => {
+                let _ = self.storage.delete_message(&msg.id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Everything that can fail before a process or request exists.
+    fn prepare(
+        &self,
+        thread: &Thread,
+        settings: &Settings,
+        prompt: &str,
+    ) -> Result<Plan, CoreError> {
+        let kind = thread.provider;
+        if kind.is_http() {
+            let h = self.history(&thread.id, prompt.to_string(), settings.history_char_budget)?;
+            return Ok(Plan::Http {
+                history: h,
+                ollama_url: settings.ollama_url.clone(),
+            });
+        }
+        let cwd: PathBuf = thread
+            .cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.files.public_dir().to_path_buf());
+        if !cwd.is_dir() {
+            return Err(CoreError::Invalid("working directory does not exist"));
+        }
+        self.check_cwd(&cwd)?;
+        let extra = CliExtra {
+            model: thread.model.as_deref(),
+            add_dir: (thread.space == Space::Public).then(|| self.files.public_dir()),
+        };
+        let inv = build_invocation(
+            kind,
+            &self.config,
+            prompt,
+            thread.external_session_id.as_deref(),
+            thread.approval,
+            extra,
+            &cwd,
+        )
+        .ok_or(CoreError::Internal("not a CLI provider"))?;
+        Ok(Plan::Cli(inv))
+    }
+
+    /// Spawns the provider and returns its event source.
+    fn launch(
+        &self,
+        thread: &Thread,
+        plan: Plan,
+        key: Option<String>,
+        model: Option<String>,
+        ctl: &Arc<RunCtl>,
     ) -> Result<mpsc::Receiver<AgentEvent>, CoreError> {
         let kind = thread.provider;
-        if !kind.is_http() {
-            let cwd: PathBuf = thread
-                .cwd
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.files.public_dir().to_path_buf());
-            if !cwd.is_dir() {
-                return Err(CoreError::Invalid("working directory does not exist"));
+        let (history, ollama_url) = match plan {
+            Plan::Cli(inv) => {
+                let handle = self.registry.spawn(&thread.id, inv.command, inv.stdin)?;
+                return Ok(cli_events(
+                    kind,
+                    handle,
+                    self.registry.clone(),
+                    thread.id.clone(),
+                ));
             }
-            let extra = CliExtra {
-                model: model.as_deref(),
-                add_dir: (thread.space == Space::Public).then(|| self.files.public_dir()),
-            };
-            let inv = build_invocation(
-                kind,
-                &self.config,
-                prompt,
-                thread.external_session_id.as_deref(),
-                thread.approval,
-                extra,
-                &cwd,
-            )
-            .ok_or(CoreError::Invalid("not a CLI provider"))?;
-            let handle = self.registry.spawn(&thread.id, inv.command, inv.stdin)?;
-            return Ok(cli_events(kind, handle));
-        }
-        let history = self.history(&thread.id, prompt.to_string(), settings.history_char_budget)?;
+            Plan::Http {
+                history,
+                ollama_url,
+            } => (history, ollama_url),
+        };
         let (tx, rx) = mpsc::channel(64);
         let http = self.http.clone();
         let ctl = ctl.clone();
         let model = model.unwrap_or_default();
-        let ollama_url = settings.ollama_url.clone();
         let or_base = self.config.openrouter_base.clone();
         tokio::spawn(async move {
             let run = async {
@@ -505,4 +580,12 @@ impl Hub {
         });
         Ok(rx)
     }
+}
+
+enum Plan {
+    Cli(Invocation),
+    Http {
+        history: Vec<ChatMessage>,
+        ollama_url: String,
+    },
 }

@@ -85,3 +85,30 @@ fn key_file_with_wrong_length_is_an_error_not_overwritten() {
 fn key_debug_does_not_leak() {
     assert!(!format!("{:?}", key()).contains('7'));
 }
+
+#[test]
+fn concurrent_load_or_create_agrees_and_leaves_no_temp_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keys").join("k.key");
+    let keys: Vec<Vec<u8>> = (0..16)
+        .map(|_| {
+            let p = path.clone();
+            std::thread::spawn(move || {
+                let k = Key::load_or_create(&p).unwrap();
+                encrypt(&k, b"probe", b"").unwrap()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .collect();
+    let k = Key::load_or_create(&path).unwrap();
+    for ct in keys {
+        assert_eq!(decrypt(&k, &ct, b"").unwrap(), b"probe");
+    }
+    let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+}

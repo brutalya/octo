@@ -161,13 +161,15 @@ impl IntoResponse for ApiError {
                 | FilesError::NotDir
                 | FilesError::HashMismatch
                 | FilesError::Invalid => StatusCode::BAD_REQUEST,
-                FilesError::Crypto(_) | FilesError::Corrupt | FilesError::Io(_) => {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                }
+                FilesError::Crypto(_)
+                | FilesError::Corrupt
+                | FilesError::Serialize
+                | FilesError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
             },
-            CoreError::Settings(_) | CoreError::Storage(_) | CoreError::Io(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+            CoreError::Settings(_)
+            | CoreError::Storage(_)
+            | CoreError::Internal(_)
+            | CoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error": err.to_string()}))).into_response()
     }
@@ -445,7 +447,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|_| ApiError::Core(CoreError::Invalid("task failed")))?
+        .map_err(|_| ApiError::Core(CoreError::Internal("task failed")))?
         .map_err(ApiError::from)
 }
 
@@ -484,7 +486,7 @@ async fn patch_settings(
 ) -> ApiResult<impl IntoResponse> {
     let view = tokio::task::spawn_blocking(move || h.update_settings(b))
         .await
-        .map_err(|_| CoreError::Invalid("settings task failed"))??;
+        .map_err(|_| CoreError::Internal("settings task failed"))??;
     Ok(Json(view))
 }
 
@@ -497,7 +499,7 @@ where
     let files = h.files().clone();
     tokio::task::spawn_blocking(move || f(&files))
         .await
-        .map_err(|_| ApiError::Core(CoreError::Invalid("file task failed")))?
+        .map_err(|_| ApiError::Core(CoreError::Internal("file task failed")))?
         .map_err(ApiError::from)
 }
 

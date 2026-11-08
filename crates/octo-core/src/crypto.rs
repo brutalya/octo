@@ -2,6 +2,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use std::io::Write;
 use std::path::Path;
+use zeroize::Zeroize;
 
 const NONCE_LEN: usize = 24;
 
@@ -17,14 +18,28 @@ pub enum CryptoError {
     Io(#[from] std::io::Error),
 }
 
-/// 32-byte symmetric key. `Debug` never prints the bytes.
-#[derive(Clone)]
+/// 32-byte symmetric key, zeroized on drop. Not `Clone`; `Debug` never prints the bytes.
 pub struct Key([u8; 32]);
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl std::fmt::Debug for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Key(..)")
     }
+}
+
+fn read_key(path: &Path) -> std::io::Result<Result<Key, CryptoError>> {
+    let mut bytes = std::fs::read(path)?;
+    let key = <[u8; 32]>::try_from(bytes.as_slice())
+        .map(Key)
+        .map_err(|_| CryptoError::BadKeyFile);
+    bytes.zeroize();
+    Ok(key)
 }
 
 impl Key {
@@ -33,13 +48,13 @@ impl Key {
     }
 
     /// Reads the key file, or creates it (mode 0600) with 32 random bytes.
-    /// An existing file of the wrong size is never overwritten.
+    /// An existing file of the wrong size is never overwritten. Creation is atomic and
+    /// race-free: the key is written to a temp file and hard-linked into place (the link
+    /// fails if the file exists), so a reader never sees a partial key and concurrent
+    /// creators all end up with the same key.
     pub fn load_or_create(path: &Path) -> Result<Self, CryptoError> {
-        match std::fs::read(path) {
-            Ok(bytes) => {
-                let arr: [u8; 32] = bytes.try_into().map_err(|_| CryptoError::BadKeyFile)?;
-                return Ok(Self(arr));
-            }
+        match read_key(path) {
+            Ok(k) => return k,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
@@ -48,10 +63,26 @@ impl Key {
         }
         let mut bytes = [0u8; 32];
         rand::fill(&mut bytes[..]);
-        let mut f = crate::fsutil::create_new_private(path)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
-        Ok(Self(bytes))
+        let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
+        let written = (|| {
+            let mut f = crate::fsutil::create_new_private(&tmp)?;
+            f.write_all(&bytes)?;
+            f.sync_all()
+        })();
+        let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+        let _ = std::fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(Self(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                bytes.zeroize();
+                // another creator won: its file is complete
+                read_key(path)?
+            }
+            Err(e) => {
+                bytes.zeroize();
+                Err(e.into())
+            }
+        }
     }
 }
 

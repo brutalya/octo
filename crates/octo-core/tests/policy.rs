@@ -50,3 +50,47 @@ fn attachment_space_must_equal_thread_space() {
         }
     }
 }
+
+#[test]
+fn ollama_is_local_only_for_loopback_or_private_hosts() {
+    use octo_core::policy::{check_thread, is_local_url};
+    for u in [
+        "http://127.0.0.1:11434",
+        "http://127.9.9.9:1",
+        "http://localhost:11434",
+        "http://LOCALHOST:1",
+        "http://[::1]:11434",
+        "http://10.1.2.3:1",
+        "http://172.16.0.1:1",
+        "http://172.31.255.255:1",
+        "http://192.168.1.5:1",
+        "http://169.254.1.1:1",
+        "http://[fd00::1]:1",
+        "http://[fe80::1]:1",
+        "https://192.168.0.2",
+    ] {
+        assert!(is_local_url(u), "{u}");
+        assert!(check_thread(Space::Private, ProviderKind::Ollama, u).is_ok());
+    }
+    for u in [
+        "http://172.32.0.1:1",
+        "http://172.15.0.1:1",
+        "http://8.8.8.8:1",
+        "http://example.com:11434",
+        "http://localhost.evil.com:1",
+        "http://127.0.0.1.evil.com:1",
+        "http://[2001:db8::1]:1",
+        "http://box:11434",
+        "ftp://127.0.0.1",
+        "nope",
+        "",
+    ] {
+        assert!(!is_local_url(u), "{u}");
+        assert_eq!(
+            check_thread(Space::Private, ProviderKind::Ollama, u),
+            Err(PolicyError::PrivateNonLocal),
+            "{u}"
+        );
+        assert!(check_thread(Space::Public, ProviderKind::Ollama, u).is_ok());
+    }
+}

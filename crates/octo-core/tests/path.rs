@@ -61,3 +61,31 @@ fn percent_encoded_is_literal() {
     // decoding is the HTTP layer's job; a literal "%2e%2e" is just a name
     assert_eq!(normalize("%2e%2e/x").unwrap(), "%2e%2e/x");
 }
+
+#[test]
+fn rejects_colon_and_windows_reserved_names() {
+    for p in [
+        "ab:c",
+        "dir/file:stream",
+        "CON",
+        "con",
+        "a/NUL",
+        "nul.txt",
+        "x/Aux.tar.gz",
+        "COM1",
+        "lpt9.log",
+        "prn",
+    ] {
+        assert_eq!(normalize(p), Err(PathError::Invalid), "{p}");
+    }
+    for p in [
+        "console",
+        "com0",
+        "com10",
+        "nullable.txt",
+        "a/communal",
+        "lpt",
+    ] {
+        assert!(normalize(p).is_ok(), "{p}");
+    }
+}

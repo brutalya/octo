@@ -24,7 +24,13 @@ async fn no_done_once_cancel_requested() {
     .unwrap();
     for _ in 0..20 {
         let t = hub
-            .create_thread(ProviderKind::Claude, Space::Public, Approval::Confirm, None)
+            .create_thread_in(
+                ProviderKind::Claude,
+                Space::Public,
+                Approval::Confirm,
+                None,
+                None,
+            )
             .unwrap();
         let mut rx = hub.send_message(&t.id, "hello", &[]).await.unwrap();
         hub.cancel(&t.id);

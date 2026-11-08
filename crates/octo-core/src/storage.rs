@@ -1,9 +1,9 @@
+use crate::fsutil::now_ms;
 use crate::providers::ProviderKind;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 const MIGRATIONS: &[&str] = &[
@@ -42,11 +42,11 @@ impl Space {
             Space::Public => "public",
         }
     }
-    fn parse(s: &str) -> Self {
-        if s == "private" {
-            Space::Private
-        } else {
-            Space::Public
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "private" => Some(Space::Private),
+            "public" => Some(Space::Public),
+            _ => None,
         }
     }
 }
@@ -69,11 +69,11 @@ impl Approval {
             Approval::Confirm => "confirm",
         }
     }
-    fn parse(s: &str) -> Self {
-        if s == "auto" {
-            Approval::Auto
-        } else {
-            Approval::Confirm
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Approval::Auto),
+            "confirm" => Some(Approval::Confirm),
+            _ => None,
         }
     }
 }
@@ -88,11 +88,11 @@ pub enum Origin {
 }
 
 impl Origin {
-    fn parse(s: &str) -> Self {
-        if s == "imported" {
-            Origin::Imported
-        } else {
-            Origin::Octo
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "octo" => Some(Origin::Octo),
+            "imported" => Some(Origin::Imported),
+            _ => None,
         }
     }
 }
@@ -122,11 +122,12 @@ impl Role {
             Role::Error => "error",
         }
     }
-    fn parse(s: &str) -> Self {
+    fn parse(s: &str) -> Option<Self> {
         match s {
-            "assistant" => Role::Assistant,
-            "error" => Role::Error,
-            _ => Role::User,
+            "user" => Some(Role::User),
+            "assistant" => Some(Role::Assistant),
+            "error" => Some(Role::Error),
+            _ => None,
         }
     }
 }
@@ -186,11 +187,19 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+/// A stored value that is not valid for column `idx`: a corrupt row is an error, never
+/// silently mapped to some default.
+fn corrupt(idx: usize, what: &str, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        idx,
+        rusqlite::types::Type::Text,
+        format!("invalid {what}: {value:?}").into(),
+    )
+}
+
+fn column<T>(r: &Row, idx: usize, what: &str, parse: fn(&str) -> Option<T>) -> rusqlite::Result<T> {
+    let v: String = r.get(idx)?;
+    parse(&v).ok_or_else(|| corrupt(idx, what, &v))
 }
 
 fn new_id() -> String {
@@ -201,20 +210,18 @@ const THREAD_COLS: &str =
     "id,title,provider,space,external_session_id,created_at,updated_at,approval,model,cwd,origin";
 
 fn thread_row(r: &Row) -> rusqlite::Result<Thread> {
-    let provider: String = r.get(2)?;
-    let space: String = r.get(3)?;
     Ok(Thread {
         id: r.get(0)?,
         title: r.get(1)?,
-        provider: ProviderKind::parse(&provider),
-        space: Space::parse(&space),
+        provider: column(r, 2, "provider", ProviderKind::parse)?,
+        space: column(r, 3, "space", Space::parse)?,
         external_session_id: r.get(4)?,
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
-        approval: Approval::parse(&r.get::<_, String>(7)?),
+        approval: column(r, 7, "approval", Approval::parse)?,
         model: r.get(8)?,
         cwd: r.get(9)?,
-        origin: Origin::parse(&r.get::<_, String>(10)?),
+        origin: column(r, 10, "origin", Origin::parse)?,
     })
 }
 
@@ -250,6 +257,17 @@ impl Storage {
     fn init(conn: Connection) -> rusqlite::Result<Self> {
         conn.pragma_update(None, "foreign_keys", true)?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let known = MIGRATIONS.len() as i64;
+        if !(0..=known).contains(&v) {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                format!(
+                    "database schema version {v} is not supported (this build knows up to {known})"
+                )
+                .into(),
+            ));
+        }
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(v as usize) {
             let tx = conn.unchecked_transaction()?;
             tx.execute_batch(sql)?;
@@ -268,16 +286,6 @@ impl Storage {
     pub fn user_version(&self) -> rusqlite::Result<i64> {
         self.conn()
             .pragma_query_value(None, "user_version", |r| r.get(0))
-    }
-
-    pub fn create_thread(
-        &self,
-        provider: ProviderKind,
-        space: Space,
-        approval: Approval,
-        model: Option<&str>,
-    ) -> rusqlite::Result<Thread> {
-        self.create_thread_in(provider, space, approval, model, None)
     }
 
     pub fn create_thread_in(
@@ -447,17 +455,27 @@ impl Storage {
             created_at: now_ms(),
         };
         let json = (!attachments.is_empty())
-            .then(|| serde_json::to_string(attachments).unwrap_or_default());
+            .then(|| serde_json::to_string(attachments))
+            .transpose()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let c = self.conn();
-        c.execute(
+        let tx = c.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO messages(id,thread_id,role,content,attachments,created_at) VALUES(?,?,?,?,?,?)",
             params![m.id, m.thread_id, role.as_str(), m.content, json, m.created_at],
         )?;
-        c.execute(
+        tx.execute(
             "UPDATE threads SET updated_at=MAX(?, (SELECT MAX(updated_at)+1 FROM threads)) WHERE id=?",
             params![m.created_at, thread_id],
         )?;
+        tx.commit()?;
         Ok(m)
+    }
+
+    pub fn delete_message(&self, id: &str) -> rusqlite::Result<()> {
+        self.conn()
+            .execute("DELETE FROM messages WHERE id=?", [id])?;
+        Ok(())
     }
 
     pub fn list_messages(&self, thread_id: &str) -> rusqlite::Result<Vec<Message>> {
@@ -467,17 +485,18 @@ impl Storage {
              WHERE thread_id=? ORDER BY created_at, rowid",
         )?;
         st.query_map([thread_id], |r| {
-            let role: String = r.get(2)?;
+            let attachments = match r.get::<_, Option<String>>(5)? {
+                None => vec![],
+                Some(j) => serde_json::from_str(&j)
+                    .map_err(|e| corrupt(5, "attachments", &e.to_string()))?,
+            };
             Ok(Message {
                 id: r.get(0)?,
                 thread_id: r.get(1)?,
-                role: Role::parse(&role),
+                role: column(r, 2, "role", Role::parse)?,
                 content: r.get(3)?,
                 created_at: r.get(4)?,
-                attachments: r
-                    .get::<_, Option<String>>(5)?
-                    .and_then(|j| serde_json::from_str(&j).ok())
-                    .unwrap_or_default(),
+                attachments,
             })
         })?
         .collect()

@@ -1,4 +1,4 @@
-use super::{AgentEvent, CliExtra};
+use super::{AgentEvent, CliExtra, str_of};
 use crate::storage::Approval;
 use serde_json::Value;
 
@@ -37,17 +37,16 @@ pub fn args(
     a
 }
 
-fn s(v: &Value) -> Option<String> {
-    v.as_str().map(str::to_string)
-}
-
 pub fn parse(v: &Value) -> Vec<AgentEvent> {
     match v["type"].as_str() {
-        Some("system") if v["subtype"] == "init" => s(&v["session_id"])
+        Some("system") if v["subtype"] == "init" => str_of(&v["session_id"])
             .map(|id| vec![AgentEvent::Session { id }])
             .unwrap_or_default(),
-        Some("stream_event") if v["event"]["delta"]["type"] == "text_delta" => {
-            s(&v["event"]["delta"]["text"])
+        // Output of sub-agents (non-null parent_tool_use_id) is not part of the reply.
+        Some("stream_event")
+            if v["event"]["delta"]["type"] == "text_delta" && v["parent_tool_use_id"].is_null() =>
+        {
+            str_of(&v["event"]["delta"]["text"])
                 .map(|text| vec![AgentEvent::TextDelta { text }])
                 .unwrap_or_default()
         }
@@ -57,13 +56,13 @@ pub fn parse(v: &Value) -> Vec<AgentEvent> {
             .flatten()
             .filter(|b| b["type"] == "tool_use")
             .map(|b| AgentEvent::Tool {
-                name: s(&b["name"]).unwrap_or_default(),
+                name: str_of(&b["name"]).unwrap_or_default(),
                 summary: tool_summary(&b["input"]),
             })
             .collect(),
         Some("result") if v["is_error"] == true => {
             vec![AgentEvent::Error {
-                message: s(&v["result"]).unwrap_or_else(|| "error".into()),
+                message: str_of(&v["result"]).unwrap_or_else(|| "error".into()),
             }]
         }
         Some("result") => vec![AgentEvent::Done],

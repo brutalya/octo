@@ -126,3 +126,17 @@ fn relay_url_and_node_name_patch() {
     .unwrap();
     assert_eq!((s.relay_url, s.node_name), (None, None));
 }
+
+#[test]
+fn urls_are_parsed_not_prefix_matched() {
+    for body in [
+        r#"{"ollama_url":"http://"}"#,
+        r#"{"ollama_url":"http:// host"}"#,
+        r#"{"ollama_url":"http://user:pw@host:1"}"#,
+        r#"{"relay_url":"ws://"}"#,
+        r#"{"relay_url":"wss://u:p@h/relay"}"#,
+    ] {
+        let p: SettingsPatch = serde_json::from_str(body).unwrap();
+        assert!(Settings::default().apply(p).is_err(), "{body}");
+    }
+}

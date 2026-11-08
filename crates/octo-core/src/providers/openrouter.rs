@@ -1,11 +1,18 @@
-use super::lines::pump;
-use super::{AgentEvent, ChatMessage, ModelInfo};
-use serde_json::{Value, json};
+use super::lines::{Pumped, pump};
+use super::{AgentEvent, ChatMessage, ModelInfo, chat_body, join_url};
+use crate::error::CoreError;
+use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-fn url(base: &str, path: &str) -> String {
-    format!("{}{path}", base.trim_end_matches('/'))
+/// True for a data line that carries a `finish_reason`: the model finished, even if the
+/// gateway then closes the stream without `[DONE]`.
+fn is_finish(line: &str) -> bool {
+    let Some(data) = line.strip_prefix("data:") else {
+        return false;
+    };
+    serde_json::from_str::<Value>(data.trim())
+        .is_ok_and(|v| v["choices"][0]["finish_reason"].as_str().is_some())
 }
 
 /// One SSE line of `/chat/completions`. Comments (`: ...`) and other fields are ignored.
@@ -61,17 +68,13 @@ pub fn error_message(status: u16, body: &str) -> String {
         .unwrap_or_else(|| format!("HTTP {status}"))
 }
 
-pub fn chat_body(model: &str, history: &[ChatMessage]) -> Value {
-    json!({"model": model, "messages": history, "stream": true})
-}
-
 pub async fn models(
     http: &reqwest::Client,
     base: &str,
     key: Option<&str>,
-) -> Result<Vec<ModelInfo>, String> {
+) -> Result<Vec<ModelInfo>, CoreError> {
     let mut req = http
-        .get(url(base, "/models"))
+        .get(join_url(base, "/models"))
         .timeout(Duration::from_secs(15));
     if let Some(k) = key {
         req = req.bearer_auth(k);
@@ -79,11 +82,15 @@ pub async fn models(
     let resp = req
         .send()
         .await
-        .map_err(|_| "cannot reach OpenRouter".to_string())?;
+        .map_err(|_| CoreError::Upstream("cannot reach OpenRouter".into()))?;
+    let ok = resp.status().is_success();
     let code = resp.status().as_u16();
-    let body = resp.text().await.map_err(|e| e.without_url().to_string())?;
-    if code >= 300 {
-        return Err(error_message(code, &body));
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| CoreError::Upstream(e.without_url().to_string()))?;
+    if !ok {
+        return Err(CoreError::Upstream(error_message(code, &body)));
     }
     Ok(parse_models(&body))
 }
@@ -98,7 +105,7 @@ pub async fn stream_chat(
     tx: &mpsc::Sender<AgentEvent>,
 ) {
     let sent = http
-        .post(url(base, "/chat/completions"))
+        .post(join_url(base, "/chat/completions"))
         .bearer_auth(key)
         .json(&chat_body(model, history))
         .send()
@@ -118,8 +125,16 @@ pub async fn stream_chat(
         let _ = tx.send(AgentEvent::Error { message }).await;
         return;
     }
-    if !pump(resp, parse_line, tx).await {
-        // Some gateways close the stream without [DONE].
-        let _ = tx.send(AgentEvent::Done).await;
+    // Some gateways close the stream without [DONE]; that is complete only after a
+    // finish_reason, otherwise the connection was cut.
+    match pump(resp, parse_line, is_finish, tx).await {
+        Pumped::Terminal => {}
+        Pumped::Eof { complete: true } => {
+            let _ = tx.send(AgentEvent::Done).await;
+        }
+        Pumped::Eof { complete: false } => {
+            let message = "stream ended before completion".to_string();
+            let _ = tx.send(AgentEvent::Error { message }).await;
+        }
     }
 }

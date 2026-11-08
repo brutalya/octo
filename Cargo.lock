@@ -3083,8 +3083,10 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "ts-rs",
+ "url",
  "uuid",
  "which",
+ "zeroize",
 ]
 
 [[package]]

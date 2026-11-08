@@ -157,7 +157,10 @@ fn walk(dir: &Path, prefix: &str, out: &mut Vec<FileEntry>) -> Result<(), FilesE
         if md.file_type().is_symlink() {
             continue;
         }
-        let name = e.file_name().to_string_lossy().into_owned();
+        // names that are not valid UTF-8 cannot be addressed through the API
+        let Ok(name) = e.file_name().into_string() else {
+            continue;
+        };
         let path = if prefix.is_empty() {
             name
         } else {

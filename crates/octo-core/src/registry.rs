@@ -60,6 +60,28 @@ async fn kill_group(child: &mut tokio::process::Child, pg: Option<Group>) {
     let _ = child.wait().await;
 }
 
+const STDERR_CAP: usize = 64 * 1024;
+
+/// Reads stderr up to `STDERR_CAP` bytes; the rest is drained and dropped so the child
+/// never blocks on a full pipe.
+async fn read_capped(pipe: Option<tokio::process::ChildStderr>) -> String {
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = STDERR_CAP.saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 /// Owns every child process: one per key, cancellable, always reaped.
 #[derive(Default, Clone)]
 pub struct ProcessRegistry {
@@ -114,42 +136,54 @@ impl ProcessRegistry {
 
         tokio::spawn(async move {
             let _guard = GroupGuard(pgid);
-            if let Some(mut si) = stdin_pipe {
+            let stdin_task = stdin_pipe.map(|mut si| {
                 tokio::spawn(async move {
                     let _ = si.write_all(stdin.as_bytes()).await;
-                });
-            }
-            let stderr_task = tokio::spawn(async move {
-                let mut buf = String::new();
-                if let Some(mut e) = stderr_pipe {
-                    let _ = e.read_to_string(&mut buf).await;
-                }
-                buf
+                })
             });
-            let Some(stdout) = stdout else {
-                kill_group(&mut child, pgid).await;
-                registry.map().remove(&key);
-                return;
-            };
-            let mut lines = BufReader::new(stdout).lines();
+            let mut stderr_task = tokio::spawn(read_capped(stderr_pipe));
             let mut cancelled = false;
-            loop {
-                tokio::select! {
-                    _ = &mut cancel_rx => { cancelled = true; break; }
-                    _ = tx.closed() => { cancelled = true; break; }
-                    line = lines.next_line() => match line {
-                        Ok(Some(l)) => {
-                            if tx.send(ProcEvent::Line(l)).await.is_err() { cancelled = true; break; }
-                        }
-                        _ => break,
-                    },
+            if let Some(stdout) = stdout {
+                let mut lines = BufReader::new(stdout).lines();
+                loop {
+                    tokio::select! {
+                        _ = &mut cancel_rx => { cancelled = true; break; }
+                        _ = tx.closed() => { cancelled = true; break; }
+                        line = lines.next_line() => match line {
+                            Ok(Some(l)) => {
+                                if tx.send(ProcEvent::Line(l)).await.is_err() { cancelled = true; break; }
+                            }
+                            _ => break,
+                        },
+                    }
                 }
+            }
+            // stdout is done (EOF or error); the process may still run: wait for it, but
+            // stay cancellable.
+            let mut status = None;
+            if !cancelled {
+                tokio::select! {
+                    _ = &mut cancel_rx => cancelled = true,
+                    _ = tx.closed() => cancelled = true,
+                    s = child.wait() => status = Some(s.map(|s| s.success()).unwrap_or(false)),
+                }
+            }
+            if let Some(t) = &stdin_task {
+                t.abort();
             }
             if cancelled {
                 kill_group(&mut child, pgid).await;
+                stderr_task.abort();
             } else {
-                let success = child.wait().await.map(|s| s.success()).unwrap_or(false);
-                let stderr = stderr_task.await.unwrap_or_default();
+                // a grandchild may keep stderr open: do not wait for it forever
+                let stderr = match tokio::time::timeout(TERM_GRACE, &mut stderr_task).await {
+                    Ok(r) => r.unwrap_or_default(),
+                    Err(_) => {
+                        stderr_task.abort();
+                        String::new()
+                    }
+                };
+                let success = status.unwrap_or(false);
                 let _ = tx.send(ProcEvent::Exit { success, stderr }).await;
             }
             registry.map().remove(&key);
