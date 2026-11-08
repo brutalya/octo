@@ -1,24 +1,25 @@
 use crate::{Server, init_script, start_server};
 use anyhow::{Context, Result};
 use octo_core::Config;
-use std::path::PathBuf;
+use octo_server::WebAssets;
+use std::sync::Arc;
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
-fn web_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let bundled = app.path().resource_dir().ok().map(|d| d.join("web"));
-    bundled
-        .into_iter()
-        .chain([PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../web/dist"
-        ))])
-        .find(|p| p.join("index.html").is_file())
+/// The UI embedded by Tauri (`frontendDist`); same lookup on every platform.
+fn embedded_web(app: &tauri::AppHandle) -> WebAssets {
+    let handle = app.clone();
+    WebAssets::Embedded(Arc::new(move |path| {
+        handle
+            .asset_resolver()
+            .get(path.to_string())
+            .map(|a| (a.bytes, a.mime_type))
+    }))
 }
 
 fn setup(app: &mut tauri::App) -> Result<()> {
     let handle = app.handle().clone();
-    let web = web_dir(&handle);
+    let web = Some(embedded_web(&handle));
     let data_dir = app.path().app_data_dir().context("app data dir")?;
     std::fs::create_dir_all(&data_dir).context("create app data dir")?;
     let server = tauri::async_runtime::block_on(start_server(Config::new(Some(data_dir)), web))?;

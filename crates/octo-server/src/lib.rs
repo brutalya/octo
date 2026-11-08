@@ -222,13 +222,13 @@ struct RenameBody {
 /// Uploads are limited to 50 MB (plus multipart framing).
 const UPLOAD_LIMIT: usize = 50 * 1024 * 1024 + 64 * 1024;
 
-pub fn app(hub: Shared, web_dir: Option<PathBuf>) -> Router {
-    app_with_token(hub, web_dir, None)
+pub fn app(hub: Shared, web: Option<WebAssets>) -> Router {
+    app_with_token(hub, web, None)
 }
 
 /// Same as [`app`]; when `token` is set, `/api/*` requires `Authorization: Bearer <token>`.
-pub fn app_with_token(hub: Shared, web_dir: Option<PathBuf>, token: Option<String>) -> Router {
-    build(hub, None, web_dir, token)
+pub fn app_with_token(hub: Shared, web: Option<WebAssets>, token: Option<String>) -> Router {
+    build(hub, None, web, token)
 }
 
 /// Same as [`app_with_token`], plus the node endpoints (`/api/nodes`, `/api/pairing/*`).
@@ -237,16 +237,16 @@ pub fn app_with_token(hub: Shared, web_dir: Option<PathBuf>, token: Option<Strin
 pub fn app_with_node(
     hub: Shared,
     node: Arc<Node>,
-    web_dir: Option<PathBuf>,
+    web: Option<WebAssets>,
     token: Option<String>,
 ) -> Router {
-    build(hub, Some(node), web_dir, token)
+    build(hub, Some(node), web, token)
 }
 
 fn build(
     hub: Shared,
     node: Option<Arc<Node>>,
-    web_dir: Option<PathBuf>,
+    web: Option<WebAssets>,
     token: Option<String>,
 ) -> Router {
     let local = local_api(hub);
@@ -288,12 +288,37 @@ fn build(
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api);
-    match web_dir {
-        Some(dir) => {
+    match web {
+        Some(WebAssets::Dir(dir)) => {
             let index = ServeFile::new(dir.join("index.html"));
             router.fallback_service(ServeDir::new(dir).fallback(index))
         }
+        Some(WebAssets::Embedded(lookup)) => router.fallback(get(move |uri: axum::http::Uri| {
+            let lookup = lookup.clone();
+            async move { serve_embedded(&lookup, uri.path()) }
+        })),
         None => router,
+    }
+}
+
+/// Where the web UI comes from.
+#[derive(Clone)]
+pub enum WebAssets {
+    /// A built `web/dist` directory on disk.
+    Dir(PathBuf),
+    /// Assets embedded in the binary: path (no leading slash) to bytes and mime type.
+    Embedded(EmbeddedLookup),
+}
+
+pub type EmbeddedLookup = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
+
+/// Exact asset, else `index.html` (SPA fallback).
+fn serve_embedded(lookup: &EmbeddedLookup, path: &str) -> axum::response::Response {
+    let path = path.trim_start_matches('/');
+    let found = if path.is_empty() { None } else { lookup(path) }.or_else(|| lookup("index.html"));
+    match found {
+        Some((bytes, mime)) => ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

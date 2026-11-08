@@ -6,7 +6,6 @@ pub use app::run;
 use anyhow::Result;
 use octo_core::{Config, Hub};
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -43,13 +42,13 @@ impl Server {
 }
 
 /// Binds `127.0.0.1:0` and serves the API (token required) plus the built web UI.
-pub async fn start_server(config: Config, web_dir: Option<PathBuf>) -> Result<Server> {
+pub async fn start_server(config: Config, web: Option<octo_server::WebAssets>) -> Result<Server> {
     let token = new_token();
     let hub = Arc::new(Hub::new(
         config.clone(),
         &octo_server::node::node_id(&config.data_dir)?,
     )?);
-    let app = octo_server::app_with_token(hub.clone(), web_dir, Some(token.clone()));
+    let app = octo_server::app_with_token(hub.clone(), web, Some(token.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let (stop, rx) = oneshot::channel::<()>();

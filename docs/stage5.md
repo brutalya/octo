@@ -25,3 +25,5 @@ Goal: the phone is a full Octo node (own identity, pairing, relay link, private 
 - `gen/android` is not committed (the whole `crates/octo-desktop/gen/` is gitignored); `android.yml` runs `cargo tauri android init --ci` before building.
 - The APK is built with `--debug` (debug-signed, no keystore); the debug manifest also permits cleartext HTTP to the loopback server. Release signing is a later step.
 - Entry point lives in the lib (`octo_desktop::run`, crate types `staticlib`/`cdylib`/`rlib`); `main.rs` only calls it. Desktop-only plugins (single-instance, updater, window-state) are target-gated dependencies, and capabilities are split into `default.json` (desktop) and `mobile.json`.
+- The UI is served from Tauri's embedded assets (`frontendDist`) on all desktop/mobile builds via `asset_resolver()`, through `octo_server::WebAssets::Embedded`; the `web` resource bundling was removed. The server binary keeps `WebAssets::Dir`.
+- Cleartext: the webview loads `http://127.0.0.1:<port>`; Android release builds block cleartext by default, so the APK stays a `--debug` build until a network-security config allowing loopback is added.

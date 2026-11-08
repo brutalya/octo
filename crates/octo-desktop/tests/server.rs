@@ -23,7 +23,9 @@ async fn embedded_server_serves_ui_and_guards_api() {
     std::fs::create_dir(&web).unwrap();
     std::fs::write(web.join("index.html"), "<html>octo-ui</html>").unwrap();
     let cfg = Config::new(Some(tmp.path().join("data")));
-    let server = start_server(cfg, Some(web)).await.unwrap();
+    let server = start_server(cfg, Some(octo_server::WebAssets::Dir(web)))
+        .await
+        .unwrap();
 
     assert_ne!(server.addr.port(), 0);
     assert!(server.addr.ip().is_loopback());

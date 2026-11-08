@@ -95,6 +95,7 @@ async fn main() -> Result<()> {
         ])
         .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
+    let web_dir = web_dir.map(octo_server::WebAssets::Dir);
     let data_dir = config.data_dir.clone();
     let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
     let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;

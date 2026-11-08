@@ -226,13 +226,42 @@ async fn serves_web_dir_with_index_fallback() {
     };
     let app = octo_server::app(
         Arc::new(Hub::new(cfg, "test-node").unwrap()),
-        Some(tmp.path().to_path_buf()),
+        Some(octo_server::WebAssets::Dir(tmp.path().to_path_buf())),
     );
     for uri in ["/", "/some/client/route"] {
         let r = call(&app, "GET", uri, None).await;
         assert_eq!(r.status(), StatusCode::OK, "{uri}");
         assert_eq!(text(r).await, "<html>octo</html>");
     }
+    let r = call(&app, "GET", "/api/threads", None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn serves_embedded_assets_with_index_fallback() {
+    let (_, d) = app();
+    let cfg = Config {
+        data_dir: d.path().to_path_buf(),
+        claude_bin: "x".into(),
+        agy_bin: "x".into(),
+        openrouter_base: String::new(),
+        ..Config::new(None)
+    };
+    let assets = octo_server::WebAssets::Embedded(Arc::new(|path: &str| match path {
+        "index.html" => Some((b"<html>octo</html>".to_vec(), "text/html".to_string())),
+        "assets/app.js" => Some((b"console.log(1)".to_vec(), "text/javascript".to_string())),
+        _ => None,
+    }));
+    let app = octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), Some(assets));
+    for uri in ["/", "/some/client/route"] {
+        let r = call(&app, "GET", uri, None).await;
+        assert_eq!(r.status(), StatusCode::OK, "{uri}");
+        assert_eq!(text(r).await, "<html>octo</html>");
+    }
+    let r = call(&app, "GET", "/assets/app.js", None).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["content-type"], "text/javascript");
+    assert_eq!(text(r).await, "console.log(1)");
     let r = call(&app, "GET", "/api/threads", None).await;
     assert_eq!(r.status(), StatusCode::OK);
 }
