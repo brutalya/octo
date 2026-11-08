@@ -244,3 +244,96 @@ async fn dropping_the_mux_fails_pending_reads_at_once() {
         .unwrap();
     assert!(r.is_err(), "{r:?}");
 }
+
+fn f(id: u32, kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut v = id.to_be_bytes().to_vec();
+    v.push(kind);
+    v.extend_from_slice(body);
+    v
+}
+
+/// A responder mux driven by hand: returns (mux, frames it sends, frames to feed it).
+fn manual(cap: usize) -> (Mux, mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>) {
+    let (out_tx, out_rx) = mpsc::channel(cap);
+    let (in_tx, in_rx) = mpsc::channel(64);
+    (Mux::new(out_tx, in_rx, false), out_rx, in_tx)
+}
+
+async fn next_frame(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("frame")
+        .expect("open")
+}
+
+#[tokio::test]
+async fn zero_length_data_resets_the_stream() {
+    let (mut m, mut out, inb) = manual(16);
+    inb.send(f(1, 0, &[])).await.unwrap();
+    let mut s = m.accept().await.unwrap();
+    inb.send(f(1, 1, &[])).await.unwrap();
+    assert_eq!(next_frame(&mut out).await, f(1, 3, &[]));
+    assert!(s.read().await.is_err());
+}
+
+#[tokio::test]
+async fn unknown_stream_frames_get_one_reset_per_id() {
+    let (_m, mut out, inb) = manual(16);
+    for _ in 0..3 {
+        inb.send(f(7, 1, b"x")).await.unwrap();
+    }
+    inb.send(f(7, 2, &[])).await.unwrap();
+    inb.send(f(9, 4, &[0, 0, 0, 1])).await.unwrap();
+    assert_eq!(next_frame(&mut out).await, f(7, 3, &[]));
+    assert_eq!(next_frame(&mut out).await, f(9, 3, &[]));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), out.recv())
+            .await
+            .is_err(),
+        "no repeated resets"
+    );
+    // A RESET for an unknown id is never answered.
+    inb.send(f(11, 3, &[])).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), out.recv())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn control_frames_never_block_the_read_loop() {
+    // Outgoing queue of 1, never drained: RESET replies must not stall reading.
+    let (mut m, _out, inb) = manual(1);
+    for id in [1u32, 3, 5, 7] {
+        inb.send(f(id + 100, 1, b"x")).await.unwrap();
+    }
+    inb.send(f(1, 0, &[])).await.unwrap();
+    let s = tokio::time::timeout(Duration::from_secs(2), m.accept())
+        .await
+        .expect("read loop must keep running")
+        .unwrap();
+    assert_eq!(s.id(), 1);
+}
+
+#[tokio::test]
+async fn dropping_mux_wakes_blocked_writers() {
+    // Blocked on peer credit.
+    let (a, _b) = pair();
+    let s = a.open().await.unwrap();
+    let w = tokio::spawn(async move { s.write(&vec![0u8; INITIAL_WINDOW as usize + 1000]).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(a);
+    let r = tokio::time::timeout(Duration::from_secs(2), w).await;
+    assert!(matches!(r, Ok(Ok(Err(_)))), "{r:?}");
+    // Blocked on a full outgoing queue nobody drains.
+    let (out_tx, _out_rx) = mpsc::channel(1);
+    let (_in_tx, in_rx) = mpsc::channel(1);
+    let a = Mux::new(out_tx, in_rx, true);
+    let s = a.open().await.unwrap(); // OPEN fills the queue
+    let w = tokio::spawn(async move { s.write(b"hello").await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(a);
+    let r = tokio::time::timeout(Duration::from_secs(2), w).await;
+    assert!(matches!(r, Ok(Ok(Err(_)))), "{r:?}");
+}

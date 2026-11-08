@@ -1070,10 +1070,10 @@ impl Actor {
                     let g = self.sh.members.read().unwrap_or_else(|e| e.into_inner());
                     (g.private_epoch(), g.private_key().map(|k| *k.as_bytes()))
                 };
-                if let (true, true, Some(key)) = (full, epoch > theirs, key) {
-                    if let Ok(msg) = pairing::private_key_message(epoch, &key) {
-                        self.send_ctl(from, &msg).await;
-                    }
+                if let (true, true, Some(key)) = (full, epoch > theirs, key)
+                    && let Ok(msg) = pairing::private_key_message(epoch, &key)
+                {
+                    self.send_ctl(from, &msg).await;
                 }
             }
             _ => {
