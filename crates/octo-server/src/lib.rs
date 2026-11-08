@@ -1,3 +1,4 @@
+mod mcp;
 pub mod node;
 pub mod policy;
 mod tunnel;
@@ -289,6 +290,9 @@ pub fn app(hub: Shared, cfg: AppConfig) -> Router {
         node,
         allowed_host,
     } = cfg;
+    let mcp = Router::new()
+        .route("/mcp/{token}", post(mcp::handle))
+        .with_state(hub.clone());
     let local = local_api(hub);
     let api = match node {
         Some(n) => {
@@ -322,8 +326,11 @@ pub fn app(hub: Shared, cfg: AppConfig) -> Router {
         )),
         None => api,
     };
+    // The MCP route authenticates by its per-run token, not by the bearer token; it is not
+    // reachable through the tunnel (only `/api` is dispatched there).
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .merge(mcp)
         .nest("/api", api);
     let router = match web {
         Some(WebAssets::Dir(dir)) => router.fallback(get(serve_dir).with_state(Arc::new(dir))),
@@ -478,6 +485,8 @@ fn local_api(hub: Shared) -> Router {
             get(list_messages).post(send_message),
         )
         .route("/threads/{id}/cancel", post(cancel))
+        .route("/threads/{id}/approvals", get(list_approvals))
+        .route("/threads/{id}/approvals/{aid}", post(decide_approval))
         .route("/providers/{kind}/models", get(models))
         .route("/import/{kind}/sessions", get(import_sessions))
         .route("/import/{kind}", post(import_session))
@@ -495,6 +504,27 @@ fn local_api(hub: Shared) -> Router {
         .route("/sync/private/manifest", get(sync_manifest))
         .route("/sync/private/blob/{hash}", get(sync_blob))
         .with_state(hub)
+}
+
+async fn list_approvals(
+    State(hub): State<Shared>,
+    Path(id): Path<String>,
+) -> Json<Vec<octo_core::approvals::PendingApproval>> {
+    Json(hub.pending_approvals(&id))
+}
+
+#[derive(Deserialize)]
+struct Decision {
+    allow: bool,
+}
+
+async fn decide_approval(
+    State(hub): State<Shared>,
+    Path((id, aid)): Path<(String, String)>,
+    Json(d): Json<Decision>,
+) -> ApiResult<StatusCode> {
+    hub.resolve_approval(&id, &aid, d.allow)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn require_token(State(token): State<Arc<str>>, req: Request, next: Next) -> Response {

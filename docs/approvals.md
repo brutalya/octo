@@ -33,3 +33,25 @@ Alternative: `--input-format stream-json` keeps one long-lived process and a per
 - agy via ACP: ~3-4 days (spike 0.5d, new ACP client provider with its own event mapping, session resume via ACP, tests).
 - Fallback-replay for agy: ~0.5 day.
 Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so octo uses Claude `auto` mode for `auto` approval instead.
+
+## Spec, step 1: Claude (decided)
+- `confirm` for Claude becomes interactive; `auto` unchanged. agy `confirm` stays non-interactive deny until step 2.
+- MCP endpoint in octo-server: `POST /mcp/:run_token`, minimal JSON-RPC over Streamable HTTP with single JSON responses (`initialize`, `notifications/initialized` -> 202, `tools/list`, `tools/call`; anything else -> JSON-RPC error). One tool `approve` (input `{tool_name, input, tool_use_id}`). No new dependency.
+- Auth: `run_token` = 32 random bytes hex, one per run, compared in constant time, invalid after the run ends. The route is outside the bearer-token layer, refused through the tunnel (not in the allow-list) and subject to the Host check.
+- Claude gets `--permission-prompt-tool mcp__octo__approve --mcp-config <json> --strict-mcp-config` (config JSON in argv is fine: no prompt, no secret beyond the per-run token). The URL uses the actually bound API address: the server binds first, then builds the hub with `Config.local_api` set (one config source).
+- Core `ApprovalBroker` (per hub): `request(thread, tool, input) -> oneshot<bool>`, `resolve(thread, id, allow) -> bool`, `cancel_thread(thread)` (deny all). Timeout 10 min -> deny. Run cancel/finish -> deny pending.
+- `AgentEvent::Approval {id, tool, summary}` on the thread SSE (summary = tool name + short input: command / file path / url, max 200 chars). Decision recorded in the assistant message as `> Allowed: <summary>` / `> Denied: <summary>`.
+- `POST /api/threads/:id/approvals/:aid {allow: bool}` -> 204, 404 if unknown. Through the tunnel it requires the `agents` permission (policy + test).
+- SSE responses send a keep-alive comment every 15 s (mux idle timeout is 60 s; waiting for a decision is silent).
+- `GET /api/threads/:id/approvals` -> pending list, so a reopened UI (or another device) sees open requests.
+- UI: inline row under the streaming message: summary + Allow (Check) / Deny (X) icon buttons, no text. Disappears when resolved.
+- Tests first: MCP protocol unit tests (initialize, tools/list, tools/call allow/deny, bad token 401/404, after-run token rejected); broker (resolve, timeout, cancel); fake-claude fixture script that calls the MCP endpoint with curl-free Rust? -> use a small test helper acting as the MCP client plus the existing fake CLI; tunnel policy; web vitest for the approval row.
+
+### Deviations from the spec (as built)
+- The run token exists only for runs that get the MCP flags (Claude, `confirm`, `Config.local_api` set). Other runs have none.
+- `CliExtra.mcp_url` carries the endpoint into the argument builder (no extra parameter).
+- Decisions are injected into the run's event stream and saved as part of the assistant text, as `> Allowed: <summary>` / `> Denied: <summary>` on their own lines.
+- `GET /api/threads/:id/approvals` also requires the `agents` permission through the tunnel.
+- A wildcard bind address (`0.0.0.0`) is dialed on loopback by Claude.
+- The UI loads open requests when a thread is opened; it learns about later ones only from its own stream.
+- E2E tests use `tests/fixtures/fake_claude_mcp.sh` (bash `/dev/tcp`, unix only) instead of a Rust helper.

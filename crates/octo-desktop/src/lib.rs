@@ -59,8 +59,15 @@ pub fn is_app_url(url: &tauri::Url, addr: SocketAddr) -> bool {
 
 /// Binds `127.0.0.1:0` and serves the API (token required, node service included) plus the
 /// built web UI.
-pub async fn start_server(config: Config, web: Option<octo_server::WebAssets>) -> Result<Server> {
+pub async fn start_server(
+    mut config: Config,
+    web: Option<octo_server::WebAssets>,
+) -> Result<Server> {
     let token = new_token();
+    // Bind first: Claude's approval prompts call back to the address actually bound.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    config.local_api = Some(addr);
     let data_dir = config.data_dir.clone();
     let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
     let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
@@ -73,8 +80,6 @@ pub async fn start_server(config: Config, web: Option<octo_server::WebAssets>) -
             allowed_host: None,
         },
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
     let (stop, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(octo_server::serve(listener, app, async {
         let _ = rx.await;

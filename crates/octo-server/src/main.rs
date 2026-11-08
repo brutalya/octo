@@ -69,6 +69,17 @@ async fn stopped(mut stop: tokio::sync::watch::Receiver<bool>) {
     let _ = stop.wait_for(|s| *s).await;
 }
 
+/// Where a local client reaches a listener: a wildcard bind is dialed on loopback.
+fn callback_addr(mut a: std::net::SocketAddr) -> std::net::SocketAddr {
+    if a.ip().is_unspecified() {
+        a.set_ip(match a {
+            std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+            std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    a
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
@@ -126,7 +137,10 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    // Bind first: Claude's approval prompts call back to the address actually bound.
+    let listener = tokio::net::TcpListener::bind(api_addr).await?;
     let mut config = Config::new(args.data_dir);
+    config.local_api = Some(callback_addr(listener.local_addr()?));
     if let Some(p) = args.claude_bin {
         config.claude_bin = p;
     }
@@ -157,7 +171,6 @@ async fn main() -> Result<()> {
             allowed_host,
         },
     );
-    let listener = tokio::net::TcpListener::bind(api_addr).await?;
     println!("Octo: http://{}", listener.local_addr()?);
     if !web_built {
         println!("web UI not built: cd web && npm ci && npm run build");

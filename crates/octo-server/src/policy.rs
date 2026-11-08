@@ -58,7 +58,12 @@ pub fn tunnel_allows(trust: Trust, agents: bool, req: &TunnelReq) -> bool {
         let cli_thread = req.thread_provider.is_some_and(is_cli);
         let sends = req.method == "POST" && seg.get(2) == Some(&"messages");
         let patches = req.method == "PATCH";
-        if seg.first() == Some(&"import") || req.body_agents || (cli_thread && (sends || patches)) {
+        let approvals = seg.get(2) == Some(&"approvals");
+        if seg.first() == Some(&"import")
+            || approvals
+            || req.body_agents
+            || (cli_thread && (sends || patches))
+        {
             return false;
         }
     }
