@@ -161,7 +161,7 @@ fn env(ollama: &str, openrouter: &str, key: Option<&str>) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::new(Some(dir.path().to_path_buf()));
     cfg.openrouter_base = openrouter.to_string();
-    let hub = Hub::new(cfg).unwrap();
+    let hub = Hub::new(cfg, "test-node").unwrap();
     hub.update_settings(SettingsPatch {
         ollama_url: Some(ollama.to_string()),
         openrouter_api_key: key.map(String::from),
@@ -598,7 +598,7 @@ async fn settings_persist_with_0600_and_reload() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(dir.path().to_path_buf()));
-    let hub = Hub::new(cfg.clone()).unwrap();
+    let hub = Hub::new(cfg.clone(), "test-node").unwrap();
     let v = hub
         .update_settings(SettingsPatch {
             openrouter_api_key: Some(KEY.into()),
@@ -615,7 +615,7 @@ async fn settings_persist_with_0600_and_reload() {
         0o600
     );
     drop(hub);
-    let again = Hub::new(cfg).unwrap();
+    let again = Hub::new(cfg, "test-node").unwrap();
     assert_eq!(
         again.settings().openrouter_api_key.as_deref(),
         Some("sk-...1234")

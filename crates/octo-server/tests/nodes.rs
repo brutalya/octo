@@ -48,7 +48,7 @@ async fn start(relay_url: &str, name: &str, token: Option<&str>, seed: Option<&s
         openrouter_base: String::new(),
         ..Config::new(None)
     };
-    let hub = Arc::new(Hub::new(cfg).unwrap());
+    let hub = Arc::new(Hub::new(cfg, "test-node").unwrap());
     let node = Node::start(
         hub.clone(),
         dir.path(),

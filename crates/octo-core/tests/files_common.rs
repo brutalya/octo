@@ -190,5 +190,5 @@ common_tests!(public, |root| Store::Public(
     PublicFiles::open(root).unwrap()
 ));
 common_tests!(private, |root| Store::Private(
-    PrivateFiles::open(root, Key::from_bytes([3u8; 32])).unwrap()
+    PrivateFiles::open(root, Key::from_bytes([3u8; 32]), "n0").unwrap()
 ));

@@ -11,13 +11,16 @@ async fn no_done_once_cancel_requested() {
         "{}/../../tests/fixtures/fake_cli.sh",
         env!("CARGO_MANIFEST_DIR")
     ));
-    let hub = Hub::new(Config {
-        data_dir: dir.path().to_path_buf(),
-        claude_bin: fake.clone(),
-        agy_bin: fake,
-        openrouter_base: String::new(),
-        ..Config::new(None)
-    })
+    let hub = Hub::new(
+        Config {
+            data_dir: dir.path().to_path_buf(),
+            claude_bin: fake.clone(),
+            agy_bin: fake,
+            openrouter_base: String::new(),
+            ..Config::new(None)
+        },
+        "test-node",
+    )
     .unwrap();
     for _ in 0..20 {
         let t = hub

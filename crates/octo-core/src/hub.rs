@@ -36,11 +36,12 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub fn new(config: Config) -> Result<Self, CoreError> {
+    /// `node_id` stamps the revisions of local private-file changes.
+    pub fn new(config: Config, node_id: &str) -> Result<Self, CoreError> {
         std::fs::create_dir_all(&config.data_dir)?;
         let storage = Arc::new(Storage::open(&config.data_dir.join("octo.db"))?);
         let settings = Settings::load(&config.settings_path())?;
-        let files = Files::open(&config.data_dir)?;
+        let files = Files::open(&config.data_dir, node_id)?;
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()

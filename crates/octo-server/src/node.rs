@@ -204,6 +204,15 @@ impl Shared {
     }
 }
 
+/// The id of this node (derived from `keys/node.key`, created if missing).
+pub fn node_id(data_dir: &Path) -> Result<String, NetError> {
+    Ok(
+        NodeKey::load_or_create(&data_dir.join("keys").join("node.key"))?
+            .node_id()
+            .to_string(),
+    )
+}
+
 impl Node {
     /// Loads (or creates) identity and membership under `data_dir` and starts the actor.
     /// Needs a tokio runtime.

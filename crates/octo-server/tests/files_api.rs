@@ -11,7 +11,7 @@ fn app() -> (Router, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(tmp.path().to_path_buf()));
     (
-        octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None),
+        octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None),
         tmp,
     )
 }

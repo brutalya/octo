@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum FileKind {
@@ -46,6 +46,8 @@ pub enum FilesError {
     IsDir,
     #[error("a parent is not a directory")]
     NotDir,
+    #[error("content hash mismatch")]
+    HashMismatch,
     #[error("invalid operation")]
     Invalid,
     #[error("private store: {0}")]
@@ -63,15 +65,17 @@ pub struct Files {
     key_path: PathBuf,
     /// Opened (and the key created) on first use.
     private: Mutex<Option<Arc<PrivateFiles>>>,
+    node_id: String,
 }
 
 impl Files {
-    pub fn open(data_dir: &std::path::Path) -> Result<Self, FilesError> {
+    pub fn open(data_dir: &std::path::Path, node_id: &str) -> Result<Self, FilesError> {
         Ok(Self {
             public: PublicFiles::open(&data_dir.join("public"))?,
             private_root: data_dir.join("private"),
             key_path: data_dir.join("keys").join("private.key"),
             private: Mutex::new(None),
+            node_id: node_id.into(),
         })
     }
 
@@ -85,7 +89,7 @@ impl Files {
             return Ok(p.clone());
         }
         let key = Key::load_or_create(&self.key_path)?;
-        let p = Arc::new(PrivateFiles::open(&self.private_root, key)?);
+        let p = Arc::new(PrivateFiles::open(&self.private_root, key, &self.node_id)?);
         *slot = Some(p.clone());
         Ok(p)
     }

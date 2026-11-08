@@ -159,6 +159,7 @@ impl IntoResponse for ApiError {
                 FilesError::Path(_)
                 | FilesError::IsDir
                 | FilesError::NotDir
+                | FilesError::HashMismatch
                 | FilesError::Invalid => StatusCode::BAD_REQUEST,
                 FilesError::Crypto(_) | FilesError::Corrupt | FilesError::Io(_) => {
                     StatusCode::INTERNAL_SERVER_ERROR

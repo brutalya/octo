@@ -42,7 +42,10 @@ impl Server {
 /// Binds `127.0.0.1:0` and serves the API (token required) plus the built web UI.
 pub async fn start_server(config: Config, web_dir: Option<PathBuf>) -> Result<Server> {
     let token = new_token();
-    let hub = Arc::new(Hub::new(config)?);
+    let hub = Arc::new(Hub::new(
+        config.clone(),
+        &octo_server::node::node_id(&config.data_dir)?,
+    )?);
     let app = octo_server::app_with_token(hub.clone(), web_dir, Some(token.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

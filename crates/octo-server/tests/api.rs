@@ -25,7 +25,7 @@ fn app() -> (Router, tempfile::TempDir) {
         ..Config::new(None)
     };
     (
-        octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None),
+        octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None),
         tmp,
     )
 }
@@ -225,7 +225,7 @@ async fn serves_web_dir_with_index_fallback() {
         ..Config::new(None)
     };
     let app = octo_server::app(
-        Arc::new(Hub::new(cfg).unwrap()),
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
         Some(tmp.path().to_path_buf()),
     );
     for uri in ["/", "/some/client/route"] {

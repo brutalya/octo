@@ -49,7 +49,7 @@ fn env() -> Env {
     cfg.claude_projects_dir = root.path().join("projects");
     cfg.agy_dir = root.path().join("agy");
     Env {
-        hub: Hub::new(cfg).unwrap(),
+        hub: Hub::new(cfg, "test-node").unwrap(),
         root,
     }
 }
@@ -206,7 +206,7 @@ mod runs {
         ));
         cfg.claude_projects_dir = root.path().join("none");
         cfg.agy_dir = root.path().join("none");
-        (Hub::new(cfg).unwrap(), root)
+        (Hub::new(cfg, "test-node").unwrap(), root)
     }
 
     async fn run(hub: &Hub, id: &str) -> String {

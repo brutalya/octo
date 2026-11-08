@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
     let data_dir = config.data_dir.clone();
-    let hub = Arc::new(Hub::new(config)?);
+    let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
     let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
     let app = octo_server::app_with_node(hub, node, web_dir, args.token);
     if let Some((l, relay_app)) = relay_listener {

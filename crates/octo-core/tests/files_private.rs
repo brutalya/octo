@@ -26,7 +26,7 @@ fn all_files(root: &Path) -> Vec<std::path::PathBuf> {
 #[test]
 fn nothing_readable_on_disk_names_blobs_or_index() {
     let d = tempfile::tempdir().unwrap();
-    let s = PrivateFiles::open(d.path(), key()).unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
     s.write("diary/secret-name.txt", b"TOP-SECRET-CONTENT")
         .unwrap();
     s.mkdir("hidden-folder").unwrap();
@@ -61,18 +61,18 @@ fn nothing_readable_on_disk_names_blobs_or_index() {
 #[test]
 fn wrong_key_cannot_open_index() {
     let d = tempfile::tempdir().unwrap();
-    PrivateFiles::open(d.path(), key())
+    PrivateFiles::open(d.path(), key(), "n0")
         .unwrap()
         .write("a", b"1")
         .unwrap();
-    let r = PrivateFiles::open(d.path(), Key::from_bytes([1u8; 32]));
+    let r = PrivateFiles::open(d.path(), Key::from_bytes([1u8; 32]), "n0");
     assert!(matches!(r, Err(FilesError::Crypto(_))));
 }
 
 #[test]
 fn tampered_index_is_detected() {
     let d = tempfile::tempdir().unwrap();
-    PrivateFiles::open(d.path(), key())
+    PrivateFiles::open(d.path(), key(), "n0")
         .unwrap()
         .write("a", b"1")
         .unwrap();
@@ -82,7 +82,7 @@ fn tampered_index_is_detected() {
     b[last] ^= 1;
     std::fs::write(&p, b).unwrap();
     assert!(matches!(
-        PrivateFiles::open(d.path(), key()),
+        PrivateFiles::open(d.path(), key(), "n0"),
         Err(FilesError::Crypto(_))
     ));
 }
@@ -90,7 +90,7 @@ fn tampered_index_is_detected() {
 #[test]
 fn tampered_blob_is_detected() {
     let d = tempfile::tempdir().unwrap();
-    let s = PrivateFiles::open(d.path(), key()).unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
     s.write("a", b"content").unwrap();
     let blob = all_files(d.path())
         .into_iter()
@@ -105,7 +105,7 @@ fn tampered_blob_is_detected() {
 #[test]
 fn blobs_cannot_be_swapped_between_files() {
     let d = tempfile::tempdir().unwrap();
-    let s = PrivateFiles::open(d.path(), key()).unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
     s.write("a", b"AAAA").unwrap();
     s.write("b", b"BBBB").unwrap();
     let blobs: Vec<_> = all_files(d.path())
@@ -125,7 +125,7 @@ fn blobs_cannot_be_swapped_between_files() {
 #[test]
 fn delete_and_overwrite_remove_old_blobs() {
     let d = tempfile::tempdir().unwrap();
-    let s = PrivateFiles::open(d.path(), key()).unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
     s.write("a", b"1").unwrap();
     s.write("a", b"22").unwrap();
     assert_eq!(all_files(d.path()).len(), 2);
@@ -136,7 +136,7 @@ fn delete_and_overwrite_remove_old_blobs() {
 #[test]
 fn rename_does_not_touch_blobs() {
     let d = tempfile::tempdir().unwrap();
-    let s = PrivateFiles::open(d.path(), key()).unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
     s.write("a", b"1").unwrap();
     let before = all_files(d.path());
     s.rename("a", "dir/b").unwrap();

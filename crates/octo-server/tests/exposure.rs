@@ -17,7 +17,7 @@ async fn status(app: &axum::Router, path: &str) -> StatusCode {
 async fn api_router_has_no_relay() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(tmp.path().to_path_buf()));
-    let app = octo_server::app(Arc::new(Hub::new(cfg).unwrap()), None);
+    let app = octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None);
     assert_eq!(status(&app, "/relay").await, StatusCode::NOT_FOUND);
 }
 
@@ -25,7 +25,11 @@ async fn api_router_has_no_relay() {
 async fn api_healthz_is_open_even_with_token() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(tmp.path().to_path_buf()));
-    let app = octo_server::app_with_token(Arc::new(Hub::new(cfg).unwrap()), None, Some("t".into()));
+    let app = octo_server::app_with_token(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        None,
+        Some("t".into()),
+    );
     assert_eq!(status(&app, "/healthz").await, StatusCode::OK);
     assert_eq!(status(&app, "/api/threads").await, StatusCode::UNAUTHORIZED);
 }
