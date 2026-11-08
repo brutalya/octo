@@ -167,7 +167,7 @@ function NewThreadMenu() {
       <button
         aria-label="New thread"
         onClick={() => (open ? close() : setOpen(true))}
-        className="p-1.5 rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+        className="p-1.5 max-md:p-3 rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
       >
         <Plus size={16} />
       </button>
@@ -226,7 +226,7 @@ function NewThreadMenu() {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
   const threads = useThreadsStore((s) => s.threads);
   const activeId = useThreadsStore((s) => s.activeId);
   const select = useThreadsStore((s) => s.select);
@@ -235,7 +235,7 @@ export function Sidebar() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
+    <aside className="flex h-full w-64 max-w-[85vw] shrink-0 flex-col border-r border-slate-200 bg-white">
       <div className="flex justify-end p-2">
         <NewThreadMenu />
       </div>
@@ -243,8 +243,11 @@ export function Sidebar() {
         {threads.map((t) => (
           <li key={t.id} className="group relative">
             <button
-              onClick={() => select(t.id)}
-              className={`flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left ${
+              onClick={() => {
+                select(t.id);
+                onNavigate?.();
+              }}
+              className={`flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left max-md:min-h-12 ${
                 t.id === activeId ? 'bg-slate-100' : 'hover:bg-slate-100/60'
               }`}
             >
@@ -262,7 +265,7 @@ export function Sidebar() {
             <button
               aria-label="Delete thread"
               onClick={() => void remove(t.id)}
-              className="absolute right-1 top-1.5 rounded-md p-1 text-slate-400 opacity-0 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
+              className="absolute right-1 top-1.5 rounded-md p-1 text-slate-400 opacity-0 max-md:p-2.5 max-md:opacity-100 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
             >
               <Trash2 size={14} />
             </button>
@@ -274,7 +277,7 @@ export function Sidebar() {
         <button
           aria-label="Settings"
           onClick={() => setSettingsOpen(true)}
-          className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+          className="rounded-md p-1.5 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
         >
           <Settings size={16} />
         </button>

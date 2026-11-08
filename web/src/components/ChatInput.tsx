@@ -90,7 +90,7 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
       data-testid="chat-input"
       onDragOver={onDragOver}
       onDrop={onDrop}
-      className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4"
+      className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4 max-md:px-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
     >
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1">

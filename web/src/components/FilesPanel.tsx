@@ -1,5 +1,5 @@
-import { useEffect, useState, type DragEvent } from 'react';
-import { FolderPlus, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
+import { FolderPlus, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { useThreadsStore } from '../stores/threads';
 import { FileTree } from './FileTree';
@@ -10,22 +10,23 @@ const TABS: { space: Space; label: string }[] = [
   { space: 'public', label: 'Public' },
 ];
 
-export function FilesPanel() {
+export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClose?: () => void } = {}) {
   const threadSpace = useThreadsStore((s) => s.threads.find((t) => t.id === s.activeId)?.space ?? null);
   const preview = useFilesStore((s) => s.preview);
   const [collapsed, setCollapsed] = useState(false);
   const [choice, setChoice] = useState<{ forThread: Space | null; space: Space } | null>(null);
   const [newRoot, setNewRoot] = useState(false);
   const [over, setOver] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   // An explicit tab pick is kept until the active thread's space changes.
   const space: Space = choice && choice.forThread === threadSpace ? choice.space : (threadSpace ?? 'public');
 
   useEffect(() => {
-    if (!collapsed) void useFilesStore.getState().load(space).catch(() => {});
-  }, [space, collapsed]);
+    if (sheet || !collapsed) void useFilesStore.getState().load(space).catch(() => {});
+  }, [space, collapsed, sheet]);
 
-  if (collapsed) {
+  if (collapsed && !sheet) {
     return (
       <aside className="flex h-full shrink-0 flex-col border-l border-slate-200 bg-white p-2">
         <button
@@ -47,7 +48,13 @@ export function FilesPanel() {
   };
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-l border-slate-200 bg-white">
+    <aside
+      className={
+        sheet
+          ? 'fixed inset-0 z-30 flex flex-col bg-white pb-[env(safe-area-inset-bottom)]'
+          : 'flex h-full w-72 shrink-0 flex-col border-l border-slate-200 bg-white'
+      }
+    >
       <div className="flex items-center justify-between border-b border-slate-200 px-2 py-1.5">
         <div role="tablist" className="flex gap-1">
           {TABS.map((t) => (
@@ -68,16 +75,39 @@ export function FilesPanel() {
           <button
             aria-label="New folder"
             onClick={() => setNewRoot(true)}
-            className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
             <FolderPlus size={14} />
           </button>
+          {sheet && (
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                multiple
+                aria-label="Upload file"
+                className="hidden"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  if (files.length) void useFilesStore.getState().upload(space, '', files);
+                  e.target.value = '';
+                }}
+              />
+              <button
+                aria-label="Upload"
+                onClick={() => fileInput.current?.click()}
+                className="rounded-md p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              >
+                <Upload size={16} />
+              </button>
+            </>
+          )}
           <button
-            aria-label="Collapse files"
-            onClick={() => setCollapsed(true)}
-            className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            aria-label={sheet ? 'Close files' : 'Collapse files'}
+            onClick={() => (sheet ? onClose?.() : setCollapsed(true))}
+            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
-            <PanelRightClose size={14} />
+            {sheet ? <X size={16} /> : <PanelRightClose size={14} />}
           </button>
         </div>
       </div>
