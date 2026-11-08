@@ -13,6 +13,11 @@ pub struct Config {
     pub claude_projects_dir: PathBuf,
     /// Antigravity CLI storage (`<home>/.gemini/antigravity-cli`).
     pub agy_dir: PathBuf,
+    /// Address the local API is actually bound to; Claude's approval prompts call back here
+    /// (`/mcp/<run token>`). `None`: no callback, `confirm` stays non-interactive.
+    pub local_api: Option<std::net::SocketAddr>,
+    /// How long an approval request waits for a decision before it is denied.
+    pub approval_timeout: std::time::Duration,
 }
 
 impl Config {
@@ -37,6 +42,8 @@ impl Config {
             claude_bin: "claude".into(),
             agy_bin: "agy".into(),
             openrouter_base: "https://openrouter.ai/api/v1".into(),
+            local_api: None,
+            approval_timeout: std::time::Duration::from_secs(600),
         }
     }
 }

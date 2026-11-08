@@ -80,11 +80,26 @@ impl ProviderKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum AgentEvent {
-    Session { id: String },
-    TextDelta { text: String },
-    Tool { name: String, summary: String },
+    Session {
+        id: String,
+    },
+    TextDelta {
+        text: String,
+    },
+    Tool {
+        name: String,
+        summary: String,
+    },
+    /// Waiting for the user's decision on a tool use (Claude, `confirm` mode).
+    Approval {
+        id: String,
+        tool: String,
+        summary: String,
+    },
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl AgentEvent {
@@ -126,6 +141,9 @@ pub struct CliExtra<'a> {
     pub model: Option<&'a str>,
     /// Public space dir, only for public threads.
     pub add_dir: Option<&'a Path>,
+    /// Approval endpoint of this run (`http://<addr>/mcp/<run token>`). Claude in `confirm`
+    /// mode uses it for interactive permission prompts; ignored otherwise.
+    pub mcp_url: Option<&'a str>,
 }
 
 /// Command line plus the bytes to write on stdin. The prompt never goes in argv.

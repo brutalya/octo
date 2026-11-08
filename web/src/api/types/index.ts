@@ -1,6 +1,7 @@
 export type { Approval } from './Approval';
 export type { AgentEvent } from './AgentEvent';
 export type { Message } from './Message';
+export type { PendingApproval } from './PendingApproval';
 export type { ProviderKind } from './ProviderKind';
 export type { ProviderStatus } from './ProviderStatus';
 export type { Role } from './Role';

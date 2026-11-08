@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod attachments;
 pub mod config;
 pub mod crypto;

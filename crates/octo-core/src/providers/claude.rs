@@ -24,6 +24,17 @@ pub fn args(
     ]
     .map(String::from)
     .to_vec();
+    if let (Approval::Confirm, Some(url)) = (approval, extra.mcp_url) {
+        let cfg = serde_json::json!({"mcpServers": {"octo": {"type": "http", "url": url}}});
+        a.extend([
+            "--permission-prompt-tool".into(),
+            "mcp__octo__approve".into(),
+            // variadic: must be followed by another flag
+            "--mcp-config".into(),
+            cfg.to_string(),
+            "--strict-mcp-config".into(),
+        ]);
+    }
     if let Some(m) = extra.model {
         a.extend(["--model".into(), m.into()]);
     }

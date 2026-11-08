@@ -1,3 +1,4 @@
+use crate::approvals::{ApprovalBroker, PendingApproval};
 use crate::attachments::{build_prompt, decode_text};
 use crate::config::Config;
 use crate::error::CoreError;
@@ -32,6 +33,9 @@ pub struct Hub {
     http: reqwest::Client,
     /// One entry per running thread (CLI and HTTP providers alike).
     runs: Arc<Mutex<HashMap<String, Arc<RunCtl>>>>,
+    approvals: ApprovalBroker,
+    /// Approval endpoint secrets of runs that use it: token -> (thread, event injector).
+    run_tokens: Arc<Mutex<HashMap<String, RunApproval>>>,
     /// Serializes imports so the same session is never imported twice.
     import_lock: Mutex<()>,
 }
@@ -48,13 +52,15 @@ impl Hub {
             .build()
             .map_err(|_| CoreError::Internal("cannot build http client"))?;
         Ok(Self {
-            config,
+            config: config.clone(),
             storage,
             registry: ProcessRegistry::default(),
             files: Arc::new(files),
             net: tokio::sync::watch::channel(settings.net()).0,
             settings: RwLock::new(settings),
             http,
+            approvals: ApprovalBroker::new(config.approval_timeout),
+            run_tokens: Arc::default(),
             runs: Arc::default(),
             import_lock: Mutex::new(()),
         })
@@ -297,6 +303,102 @@ impl Hub {
         })?)
     }
 
+    /// Secret of the thread's approval endpoint; `None` unless the current run was started
+    /// with it (Claude, `confirm`, API address known). For tests and diagnostics.
+    pub fn run_token(&self, thread: &str) -> Option<String> {
+        self.run_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(_, r)| r.thread == thread)
+            .map(|(t, _)| t.clone())
+    }
+
+    /// Open approval requests of a thread.
+    pub fn pending_approvals(&self, thread: &str) -> Vec<PendingApproval> {
+        self.approvals.pending(thread)
+    }
+
+    /// Decides an open request; `NotFound` if it is unknown (or belongs to another thread).
+    pub fn resolve_approval(&self, thread: &str, id: &str, allow: bool) -> Result<(), CoreError> {
+        if self.approvals.resolve(thread, id, allow) {
+            Ok(())
+        } else {
+            Err(CoreError::NotFound)
+        }
+    }
+
+    /// The `approve` MCP tool: blocks until the user decides (or timeout / run end = deny).
+    /// `NotFound` for an unknown or finished run token.
+    pub async fn mcp_approve(
+        &self,
+        token: &str,
+        tool: &str,
+        input: &serde_json::Value,
+    ) -> Result<bool, CoreError> {
+        let (thread, events) = self.lookup_token(token).ok_or(CoreError::NotFound)?;
+        let (p, rx) = self.approvals.request(&thread, tool, input);
+        let _ = events
+            .send(AgentEvent::Approval {
+                id: p.id,
+                tool: p.tool,
+                summary: p.summary.clone(),
+            })
+            .await;
+        let allow = rx.await.unwrap_or(false);
+        let word = if allow { "Allowed" } else { "Denied" };
+        let _ = events
+            .send(AgentEvent::TextDelta {
+                text: format!("\n\n> {word}: {}\n\n", p.summary),
+            })
+            .await;
+        Ok(allow)
+    }
+
+    /// Whether `token` belongs to a run in progress.
+    pub fn run_token_valid(&self, token: &str) -> bool {
+        self.lookup_token(token).is_some()
+    }
+
+    fn lookup_token(&self, token: &str) -> Option<(String, mpsc::Sender<AgentEvent>)> {
+        let g = self.run_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        // compare against every token: no early exit on the first differing byte
+        g.iter().fold(None, |found, (t, r)| {
+            if ct_eq(t.as_bytes(), token.as_bytes()) {
+                Some((r.thread.clone(), r.events.clone()))
+            } else {
+                found
+            }
+        })
+    }
+
+    /// Mints the run token when this run will use the approval endpoint. Returns the
+    /// endpoint URL and the receiver of injected events.
+    fn mint_approval(
+        &self,
+        thread: &Thread,
+    ) -> Option<(String, String, mpsc::Receiver<AgentEvent>)> {
+        let addr = self.config.local_api?;
+        if thread.provider != ProviderKind::Claude || thread.approval != Approval::Confirm {
+            return None;
+        }
+        let mut raw = [0u8; 32];
+        rand::fill(&mut raw[..]);
+        let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+        let (tx, rx) = mpsc::channel(16);
+        self.run_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                token.clone(),
+                RunApproval {
+                    thread: thread.id.clone(),
+                    events: tx,
+                },
+            );
+        Some((format!("http://{addr}/mcp/{token}"), token, rx))
+    }
+
     pub fn is_running(&self, id: &str) -> bool {
         self.runs
             .lock()
@@ -314,6 +416,7 @@ impl Hub {
         if let Some(ctl) = ctl {
             ctl.cancel();
         }
+        self.approvals.cancel_thread(id);
         self.registry.cancel(id);
     }
 
@@ -419,6 +522,7 @@ impl Hub {
             }
             runs.insert(id.to_string(), ctl.clone());
         }
+        let approval = self.mint_approval(&thread);
         let started = self.begin(
             &thread,
             &settings,
@@ -428,30 +532,52 @@ impl Hub {
             &ctl,
             content,
             attachments,
+            approval.as_ref().map(|a| a.0.as_str()),
         );
         let events = match started {
             Ok(rx) => rx,
             Err(e) => {
-                self.runs
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(id);
+                self.forget_run(id, approval.as_ref().map(|a| a.1.as_str()));
                 return Err(e);
             }
+        };
+        let token = approval.as_ref().map(|a| a.1.clone());
+        let events = match approval {
+            Some((_, _, injected)) => merge(events, injected),
+            None => events,
         };
 
         let (out, rx) = mpsc::channel(64);
         let storage = self.storage.clone();
         let runs = self.runs.clone();
+        let tokens = self.run_tokens.clone();
+        let broker = self.approvals.clone_handle();
         let id = id.to_string();
         let has_session = thread.external_session_id.is_some();
         tokio::spawn(async move {
             drive(&storage, &id, &ctl, has_session, events, &out).await;
             // release the thread before the client sees the stream end
+            broker.cancel_thread(&id);
+            if let Some(t) = token {
+                tokens.lock().unwrap_or_else(|e| e.into_inner()).remove(&t);
+            }
             runs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
             drop(out);
         });
         Ok(rx)
+    }
+
+    fn forget_run(&self, id: &str, token: Option<&str>) {
+        if let Some(t) = token {
+            self.run_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(t);
+        }
+        self.runs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
     }
 
     /// Validates, stores the user message, then spawns. Nothing stays stored when the
@@ -467,8 +593,9 @@ impl Hub {
         ctl: &Arc<RunCtl>,
         content: &str,
         attachments: &[AttachmentRef],
+        mcp_url: Option<&str>,
     ) -> Result<mpsc::Receiver<AgentEvent>, CoreError> {
-        let plan = self.prepare(thread, settings, prompt)?;
+        let plan = self.prepare(thread, settings, prompt, mcp_url)?;
         let msg = self
             .storage
             .add_message_with(&thread.id, Role::User, content, attachments)?;
@@ -498,6 +625,7 @@ impl Hub {
         thread: &Thread,
         settings: &Settings,
         prompt: &str,
+        mcp_url: Option<&str>,
     ) -> Result<Plan, CoreError> {
         let kind = thread.provider;
         if kind.is_http() {
@@ -519,6 +647,7 @@ impl Hub {
         let extra = CliExtra {
             model: thread.model.as_deref(),
             add_dir: (thread.space == Space::Public).then(|| self.files.public_dir()),
+            mcp_url,
         };
         let inv = build_invocation(
             kind,
@@ -580,6 +709,40 @@ impl Hub {
         });
         Ok(rx)
     }
+}
+
+/// Events of the process plus events injected by the approval endpoint, in arrival order.
+/// Ends when the process events end.
+fn merge(
+    mut events: mpsc::Receiver<AgentEvent>,
+    mut injected: mpsc::Receiver<AgentEvent>,
+) -> mpsc::Receiver<AgentEvent> {
+    let (tx, rx) = mpsc::channel(64);
+    tokio::spawn(async move {
+        loop {
+            let e = tokio::select! {
+                biased;
+                Some(e) = injected.recv() => e,
+                e = events.recv() => match e {
+                    Some(e) => e,
+                    None => return,
+                },
+            };
+            if tx.send(e).await.is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+struct RunApproval {
+    thread: String,
+    events: mpsc::Sender<AgentEvent>,
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 enum Plan {
