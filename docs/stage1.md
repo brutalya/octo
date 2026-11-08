@@ -48,8 +48,11 @@ Path validation: relative, no `..`, no absolute, normalized — pure fn with tes
 - Downloads are served as `application/octet-stream` with `nosniff` and `CSP: sandbox` so user files cannot run script in the app origin.
 - Attachments are inlined only into the turn that carries them; earlier turns are re-sent as their plain message text (token economy). The stored message keeps `attachments` refs, the `content` stays the user's text.
 - CLI providers: `--model` is passed when the thread has a model; `--add-dir <data>/public` only for public threads (both CLIs accept it; verified via `--help`, not run against the real services). Private threads never use CLI providers.
-- OpenRouter streams that close without `[DONE]` are completed with `done`; an interrupted connection yields `error`. Ollama `done:true` lines may carry text, which is emitted first.
+- OpenRouter streams that close without `[DONE]` are completed with `done` only after a `finish_reason` was seen; otherwise (and for an interrupted connection) the result is `error`. HTTP streams are cut with `error` after 120 s without data, and a line over 8 MB is an error. Ollama `done:true` lines may carry text, which is emitted first.
 - A run is released (thread no longer busy) before the SSE stream closes, so a client may send the next message right after `done`.
 - Upstream failures of `GET /providers/:kind/models` are `502`; CLI kinds return `[]`. `openrouter_base` is a `Config` field (tests point it at a fake server), not a user setting.
 - Settings: keys shorter than 12 chars are masked as `...`. `PATCH` validates the whole body before applying; `openrouter_api_key: ""` clears the key.
 - File I/O in handlers (and attachment reads) runs in `tokio::task::spawn_blocking`.
+- Ollama counts as local only if `ollama_url` has a loopback host (127.0.0.0/8, `::1`, `localhost`) or a private/link-local IP literal (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7, fe80::/10); any other host makes private threads refuse it (policy error at create and send). `ollama_url` and `relay_url` are parsed as URLs (scheme, host, no credentials).
+- Stored enum values (space, provider, role, approval, origin) and a newer database `user_version` are errors, never defaulted.
+- The user message is stored before the provider is spawned; if the start fails it is removed again. A cancel that arrives between registering a run and the spawn is applied right after the spawn.

@@ -1,16 +1,13 @@
-use super::lines::pump;
-use super::{AgentEvent, ChatMessage, ModelInfo};
-use serde_json::{Value, json};
+use super::lines::{Pumped, pump};
+use super::{AgentEvent, ChatMessage, ModelInfo, chat_body, join_url};
+use crate::error::CoreError;
+use serde_json::Value;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-fn url(base: &str, path: &str) -> String {
-    format!("{}{path}", base.trim_end_matches('/'))
-}
-
 /// Detect: the tags endpoint answers within 1s.
 pub async fn reachable(http: &reqwest::Client, base: &str) -> bool {
-    http.get(url(base, "/api/tags"))
+    http.get(join_url(base, "/api/tags"))
         .timeout(Duration::from_secs(1))
         .send()
         .await
@@ -33,17 +30,21 @@ pub fn parse_models(body: &str) -> Vec<ModelInfo> {
         .collect()
 }
 
-pub async fn models(http: &reqwest::Client, base: &str) -> Result<Vec<ModelInfo>, String> {
+pub async fn models(http: &reqwest::Client, base: &str) -> Result<Vec<ModelInfo>, CoreError> {
     let resp = http
-        .get(url(base, "/api/tags"))
+        .get(join_url(base, "/api/tags"))
         .timeout(Duration::from_secs(5))
         .send()
         .await
-        .map_err(|_| format!("cannot reach Ollama at {base}"))?;
+        .map_err(|_| CoreError::Upstream(format!("cannot reach Ollama at {base}")))?;
     if !resp.status().is_success() {
-        return Err(format!("Ollama answered HTTP {}", resp.status().as_u16()));
+        let code = resp.status().as_u16();
+        return Err(CoreError::Upstream(format!("Ollama answered HTTP {code}")));
     }
-    let body = resp.text().await.map_err(|e| e.without_url().to_string())?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| CoreError::Upstream(e.without_url().to_string()))?;
     Ok(parse_models(&body))
 }
 
@@ -67,10 +68,6 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
     out
 }
 
-pub fn chat_body(model: &str, history: &[ChatMessage]) -> Value {
-    json!({"model": model, "messages": history, "stream": true})
-}
-
 /// Streams a chat turn. Always ends with `Done` or `Error` unless the receiver is gone.
 pub async fn stream_chat(
     http: &reqwest::Client,
@@ -80,7 +77,7 @@ pub async fn stream_chat(
     tx: &mpsc::Sender<AgentEvent>,
 ) {
     let sent = http
-        .post(url(base, "/api/chat"))
+        .post(join_url(base, "/api/chat"))
         .json(&chat_body(model, history))
         .send()
         .await;
@@ -102,7 +99,8 @@ pub async fn stream_chat(
         let _ = tx.send(AgentEvent::Error { message }).await;
         return;
     }
-    if !pump(resp, parse_line, tx).await {
+    let end = pump(resp, parse_line, |_| false, tx).await;
+    if end == (Pumped::Eof { complete: false }) {
         let message = "stream ended before completion".to_string();
         let _ = tx.send(AgentEvent::Error { message }).await;
     }

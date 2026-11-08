@@ -16,7 +16,10 @@ pub fn normalize(path: &str) -> Result<String, PathError> {
     if path.starts_with('/') || has_drive_prefix(path) {
         return Err(PathError::Absolute);
     }
-    if path.chars().any(|c| c == '\\' || c.is_control()) {
+    if path
+        .chars()
+        .any(|c| matches!(c, '\\' | ':') || c.is_control())
+    {
         return Err(PathError::Invalid);
     }
     let mut parts = vec![];
@@ -24,7 +27,7 @@ pub fn normalize(path: &str) -> Result<String, PathError> {
         match c {
             "" | "." => {}
             ".." => return Err(PathError::Traversal),
-            c if c.len() > MAX_COMPONENT => return Err(PathError::Invalid),
+            c if c.len() > MAX_COMPONENT || is_reserved(c) => return Err(PathError::Invalid),
             c => parts.push(c),
         }
     }
@@ -34,4 +37,17 @@ pub fn normalize(path: &str) -> Result<String, PathError> {
 fn has_drive_prefix(p: &str) -> bool {
     let b = p.as_bytes();
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+/// Windows device names (`CON`, `NUL`, `COM1`, ... also with an extension) cannot be used
+/// as file names there; refusing them everywhere keeps synced data portable.
+fn is_reserved(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or("").trim_end();
+    let u = stem.to_ascii_uppercase();
+    matches!(
+        u.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || (u.len() == 4
+        && (u.starts_with("COM") || u.starts_with("LPT"))
+        && matches!(u.as_bytes()[3], b'1'..=b'9'))
 }

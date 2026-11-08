@@ -6,6 +6,7 @@ pub mod ollama;
 pub mod openrouter;
 
 use crate::config::Config;
+use crate::registry::{ProcEvent, ProcessRegistry};
 use crate::settings::Settings;
 use crate::storage::Approval;
 use serde::{Deserialize, Serialize};
@@ -43,13 +44,14 @@ impl ProviderKind {
         }
     }
 
-    pub fn parse(s: &str) -> Self {
-        match s {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "claude" => ProviderKind::Claude,
             "antigravity" => ProviderKind::Antigravity,
             "ollama" => ProviderKind::Ollama,
             "openrouter" => ProviderKind::OpenRouter,
-            _ => ProviderKind::Claude,
-        }
+            _ => return None,
+        })
     }
 
     /// Only Ollama keeps data on the device; the CLIs and OpenRouter use a cloud service.
@@ -86,15 +88,12 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
-    /// SSE event name (variant in snake_case).
-    pub fn name(&self) -> &'static str {
-        match self {
-            AgentEvent::Session { .. } => "session",
-            AgentEvent::TextDelta { .. } => "text_delta",
-            AgentEvent::Tool { .. } => "tool",
-            AgentEvent::Done => "done",
-            AgentEvent::Error { .. } => "error",
-        }
+    /// SSE event name: the serde tag (variant in snake_case).
+    pub fn name(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v["type"].as_str().map(str::to_string))
+            .unwrap_or_default()
     }
 }
 
@@ -162,7 +161,7 @@ pub fn build_invocation(
     cwd: &Path,
 ) -> Option<Invocation> {
     let mut command = Command::new(kind.bin(cfg)?);
-    command.kill_on_drop(true).current_dir(cwd);
+    command.current_dir(cwd);
     command.args(build_args(
         kind,
         approval,
@@ -182,31 +181,59 @@ pub async fn detect(
     cfg: &Config,
     settings: &Settings,
     http: &reqwest::Client,
+    registry: &ProcessRegistry,
 ) -> ProviderStatus {
     let (installed, version) = match kind {
         ProviderKind::Ollama => (ollama::reachable(http, &settings.ollama_url).await, None),
         ProviderKind::OpenRouter => (settings.openrouter_api_key.is_some(), None),
-        _ => detect_cli(kind, cfg).await,
+        _ => detect_cli(kind, cfg, registry).await,
+    };
+    let is_local = match kind {
+        ProviderKind::Ollama => crate::policy::is_local_url(&settings.ollama_url),
+        _ => kind.is_local(),
     };
     ProviderStatus {
         kind,
         installed,
         version,
-        is_local: kind.is_local(),
+        is_local,
     }
 }
 
-async fn detect_cli(kind: ProviderKind, cfg: &Config) -> (bool, Option<String>) {
+/// Runs `<bin> --version` as a managed process (own group, killed on timeout).
+async fn detect_cli(
+    kind: ProviderKind,
+    cfg: &Config,
+    registry: &ProcessRegistry,
+) -> (bool, Option<String>) {
     let Some(bin) = kind.bin(cfg) else {
         return (false, None);
     };
     let mut cmd = Command::new(bin);
-    cmd.arg("--version")
-        .kill_on_drop(true)
-        .stdin(std::process::Stdio::null());
-    match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
-        Ok(Ok(o)) => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    cmd.arg("--version");
+    // unique key: concurrent detections of the same kind must not collide
+    let key = format!("detect:{}:{}", kind.as_str(), uuid::Uuid::new_v4());
+    let Ok(mut handle) = registry.spawn(&key, cmd, String::new()) else {
+        return (false, None);
+    };
+    let read = async {
+        let mut out = String::new();
+        while let Some(ev) = handle.events.recv().await {
+            match ev {
+                ProcEvent::Line(l) => {
+                    out.push_str(&l);
+                    out.push('\n');
+                }
+                ProcEvent::Exit { .. } => return Some(out),
+            }
+        }
+        None
+    };
+    let result = tokio::time::timeout(Duration::from_secs(10), read).await;
+    registry.cancel(&key);
+    match result {
+        Ok(Some(out)) => {
+            let v = out.trim().to_string();
             (true, (!v.is_empty()).then_some(v))
         }
         _ => (false, None),
@@ -223,4 +250,19 @@ pub fn parse_line(kind: ProviderKind, line: &str) -> Vec<AgentEvent> {
         ProviderKind::Antigravity => antigravity::parse(&v),
         ProviderKind::Ollama | ProviderKind::OpenRouter => vec![],
     }
+}
+
+/// `base` + `path` without a doubled slash.
+pub(crate) fn join_url(base: &str, path: &str) -> String {
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
+/// Request body shared by the OpenAI-style and Ollama chat endpoints.
+pub(crate) fn chat_body(model: &str, history: &[ChatMessage]) -> serde_json::Value {
+    serde_json::json!({"model": model, "messages": history, "stream": true})
+}
+
+/// A JSON string field as an owned `String`.
+pub(crate) fn str_of(v: &serde_json::Value) -> Option<String> {
+    v.as_str().map(str::to_string)
 }

@@ -154,3 +154,52 @@ async fn dropping_handle_kills_group() {
     drop(h);
     assert!(all_gone(&[pid, gc]).await);
 }
+
+#[tokio::test]
+async fn cancel_works_after_stdout_closed() {
+    let r = ProcessRegistry::default();
+    let mut h = r
+        .spawn("c", sh("exec 1>&-; exec sleep 300"), String::new())
+        .unwrap();
+    let pid = h.pid.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(alive(pid), "child keeps running after closing stdout");
+    assert!(r.cancel("c"));
+    assert_eq!(h.events.recv().await, None);
+    assert!(all_gone(&[pid]).await, "cancel must kill after stdout EOF");
+    assert!(!r.is_running("c"));
+}
+
+#[tokio::test]
+async fn dropping_receiver_kills_after_stdout_closed() {
+    let r = ProcessRegistry::default();
+    let h = r
+        .spawn("d", sh("exec 1>&-; exec sleep 300"), String::new())
+        .unwrap();
+    let pid = h.pid.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(h);
+    assert!(all_gone(&[pid]).await);
+}
+
+#[tokio::test]
+async fn stderr_is_capped() {
+    let r = ProcessRegistry::default();
+    let mut h = r
+        .spawn(
+            "e",
+            sh("head -c 300000 /dev/zero | tr '\\0' x >&2; exit 1"),
+            String::new(),
+        )
+        .unwrap();
+    let mut last = None;
+    while let Some(e) = h.events.recv().await {
+        last = Some(e);
+    }
+    let Some(ProcEvent::Exit { success, stderr }) = last else {
+        panic!("expected exit");
+    };
+    assert!(!success);
+    assert!(stderr.len() <= 64 * 1024, "stderr was {}", stderr.len());
+    assert!(stderr.len() > 1000);
+}

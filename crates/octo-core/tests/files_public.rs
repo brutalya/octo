@@ -36,3 +36,16 @@ fn symlinks_cannot_escape_the_root() {
     assert!(matches!(s.delete("flink"), Err(FilesError::Path(_))));
     assert!(s.list().unwrap().is_empty(), "symlinks are not listed");
 }
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_names_are_skipped_in_listing() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = tempfile::tempdir().unwrap();
+    let s = PublicFiles::open(d.path()).unwrap();
+    s.write("ok.txt", b"x").unwrap();
+    let bad = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+    std::fs::write(d.path().join(bad), b"y").unwrap();
+    let names: Vec<String> = s.list().unwrap().into_iter().map(|e| e.path).collect();
+    assert_eq!(names, vec!["ok.txt"]);
+}

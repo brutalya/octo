@@ -54,6 +54,8 @@ pub enum FilesError {
     Crypto(#[from] CryptoError),
     #[error("private index is corrupted")]
     Corrupt,
+    #[error("cannot serialize the private index")]
+    Serialize,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -129,6 +131,20 @@ impl Files {
     /// Applies a remote private entry (see `PrivateFiles::apply`).
     pub fn private_apply(&self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<(), FilesError> {
         self.private()?.apply(entry, data)
+    }
+
+    /// Applies many remote private entries with one index save (see
+    /// `PrivateFiles::apply_batch`).
+    pub fn private_apply_batch(
+        &self,
+        items: &[(SyncEntry, Option<Vec<u8>>)],
+    ) -> Result<Vec<Result<(), FilesError>>, FilesError> {
+        self.private()?.apply_batch(items)
+    }
+
+    /// Paths of private files whose content could not be read when the store was opened.
+    pub fn private_unreadable(&self) -> Result<Vec<String>, FilesError> {
+        Ok(self.private()?.unreadable().to_vec())
     }
 
     pub fn mkdir(&self, space: Space, path: &str) -> Result<(), FilesError> {

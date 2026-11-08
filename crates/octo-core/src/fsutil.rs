@@ -13,3 +13,11 @@ pub fn create_new_private(path: &Path) -> std::io::Result<File> {
     }
     opts.open(path)
 }
+
+/// Current unix time in milliseconds (0 if the clock is before the epoch).
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}

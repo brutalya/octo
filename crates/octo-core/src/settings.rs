@@ -93,6 +93,18 @@ pub enum SettingsError {
     Io(#[from] std::io::Error),
     #[error("settings file is not valid JSON")]
     Parse,
+    #[error("cannot serialize settings")]
+    Serialize,
+}
+
+/// A parseable URL with one of `schemes`, a host and no credentials.
+fn valid_url(u: &str, schemes: &[&str]) -> bool {
+    url::Url::parse(u).is_ok_and(|p| {
+        schemes.contains(&p.scheme())
+            && p.host().is_some()
+            && p.username().is_empty()
+            && p.password().is_none()
+    })
 }
 
 pub fn mask_key(key: &str) -> String {
@@ -128,7 +140,7 @@ impl Settings {
         let url = match p.ollama_url {
             Some(u) => {
                 let u = u.trim().trim_end_matches('/').to_string();
-                if !(u.starts_with("http://") || u.starts_with("https://")) || u.len() < 9 {
+                if !valid_url(&u, &["http", "https"]) {
                     return Err(SettingsError::BadUrl);
                 }
                 Some(u)
@@ -143,7 +155,7 @@ impl Settings {
                 let u = u.trim().to_string();
                 if u.is_empty() {
                     Some(None)
-                } else if (u.starts_with("ws://") || u.starts_with("wss://")) && u.len() > 6 {
+                } else if valid_url(&u, &["ws", "wss"]) {
                     Some(Some(u))
                 } else {
                     return Err(SettingsError::BadRelayUrl);
@@ -182,7 +194,7 @@ impl Settings {
     /// Writes atomically (temp file with mode 0600, then rename).
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
         let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_vec_pretty(self).map_err(|_| SettingsError::Parse)?;
+        let json = serde_json::to_vec_pretty(self).map_err(|_| SettingsError::Serialize)?;
         let _ = std::fs::remove_file(&tmp);
         let mut f = crate::fsutil::create_new_private(&tmp)?;
         f.write_all(&json)?;

@@ -358,3 +358,172 @@ fn plan_skips_malformed_remote_entries() {
     assert_eq!(p.len(), 1);
     assert!(matches!(&p[0], Action::Fetch(e) if e.path == "good.txt"));
 }
+
+/// Runs one sync round the way the server does: plan, then apply each action (fetching
+/// content from `blobs`); apply errors are ignored.
+fn round(s: &PrivateFiles, remote: &[SyncEntry], blobs: &[(&str, &[u8])]) -> usize {
+    let actions = plan(&s.manifest(), remote);
+    let n = actions.len();
+    for a in actions {
+        match a {
+            Action::Adopt(e) => {
+                let _ = s.apply(&e, None);
+            }
+            Action::Fetch(e) => {
+                let data = blobs.iter().find(|(p, _)| *p == e.path).map(|(_, d)| *d);
+                let _ = s.apply(&e, data);
+            }
+        }
+    }
+    n
+}
+
+#[test]
+fn converges_when_remote_entry_has_locally_tombstoned_parent() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "a");
+    s.mkdir("d").unwrap();
+    s.delete("d").unwrap();
+    let tomb_rev = find(&s.manifest(), "d").rev.clone();
+    let remote = [
+        dir("d", rev(0, "b")),
+        file("d/f", b"data", rev(tomb_rev.clock + 5, "b")),
+    ];
+    assert_eq!(round(&s, &remote, &[("d/f", b"data")]), 1);
+    assert_eq!(round(&s, &remote, &[("d/f", b"data")]), 0, "converged");
+    assert_eq!(s.read("d/f").unwrap(), b"data");
+    let m = s.manifest();
+    let parent = find(&m, "d");
+    assert!(!parent.deleted);
+    assert!(
+        parent.rev > tomb_rev,
+        "revived dir must outrank the tombstone"
+    );
+}
+
+#[test]
+fn converges_when_remote_file_is_under_newer_local_file() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "a");
+    s.write("d", b"i am a file").unwrap();
+    let remote = [dir("d", rev(0, "b")), file("d/f", b"x", rev(7, "b"))];
+    round(&s, &remote, &[("d/f", b"x")]);
+    assert_eq!(round(&s, &remote, &[("d/f", b"x")]), 0, "converged");
+    assert_eq!(s.read("d").unwrap(), b"i am a file");
+    assert!(s.manifest().iter().all(|m| m.path != "d/f"));
+}
+
+#[test]
+fn converges_when_remote_tombstone_hits_nonempty_local_dir() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "a");
+    s.write("d/x", b"keep").unwrap();
+    let remote = [tomb("d", rev(99, "b"))];
+    round(&s, &remote, &[]);
+    assert_eq!(round(&s, &remote, &[]), 0, "converged");
+    assert_eq!(s.read("d/x").unwrap(), b"keep");
+}
+
+#[test]
+fn remote_tombstones_for_dir_and_children_apply_children_first() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "a");
+    s.write("d/x", b"gone").unwrap();
+    let remote = [tomb("d", rev(50, "b")), tomb("d/x", rev(51, "b"))];
+    round(&s, &remote, &[]);
+    assert_eq!(round(&s, &remote, &[]), 0);
+    assert!(s.list().unwrap().is_empty());
+}
+
+#[test]
+fn apply_batch_applies_in_order_and_reports_each_result() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "a");
+    let items = vec![
+        (file("a/b.txt", b"one", rev(5, "p")), Some(b"one".to_vec())),
+        (
+            file("bad.txt", b"x", rev(5, "p")),
+            Some(b"tampered".to_vec()),
+        ),
+        (dir("c", rev(5, "p")), None),
+    ];
+    let r = s.apply_batch(&items).unwrap();
+    assert!(r[0].is_ok() && r[1].is_err() && r[2].is_ok());
+    assert_eq!(s.read("a/b.txt").unwrap(), b"one");
+    assert!(s.manifest().iter().all(|m| m.path != "bad.txt"));
+    assert!(find(&s.manifest(), "c").rev == rev(5, "p"));
+}
+
+#[test]
+fn unreadable_legacy_blob_is_reported_and_kept_out_of_manifest() {
+    let d = tempfile::tempdir().unwrap();
+    let good = "0123456789abcdef0123456789abcdef";
+    let bad = "fedcba9876543210fedcba9876543210";
+    std::fs::write(
+        d.path().join(good),
+        encrypt(&key(), b"legacy", good.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let idx = serde_json::json!({"entries": [
+        {"id": good, "path": "good.txt", "kind": "file", "size": 6, "created_at": 5, "modified": 5},
+        {"id": bad, "path": "bad.txt", "kind": "file", "size": 6, "created_at": 5, "modified": 5},
+    ]});
+    let ct = encrypt(
+        &key(),
+        &serde_json::to_vec(&idx).unwrap(),
+        b"octo-private-index-v1",
+    )
+    .unwrap();
+    std::fs::write(d.path().join("index.bin"), ct).unwrap();
+    let s = open(d.path(), "n");
+    assert_eq!(s.unreadable(), ["bad.txt"]);
+    let m = s.manifest();
+    assert!(m.iter().all(|e| e.path != "bad.txt"));
+    assert!(m.iter().filter(|e| !e.deleted).all(|e| !e.hash.is_empty()));
+    assert_eq!(find(&m, "good.txt").hash, content_hash(b"legacy"));
+}
+
+#[test]
+fn open_sweeps_orphan_blobs_and_stale_temp_index() {
+    let d = tempfile::tempdir().unwrap();
+    let s = open(d.path(), "n");
+    s.write("keep.txt", b"keep").unwrap();
+    drop(s);
+    let orphan = d.path().join("00112233445566778899aabbccddeeff");
+    std::fs::write(&orphan, b"junk").unwrap();
+    std::fs::write(d.path().join("index.bin.tmp"), b"partial").unwrap();
+    std::fs::write(d.path().join("notes.txt"), b"not ours").unwrap();
+    let s = open(d.path(), "n");
+    assert!(!orphan.exists());
+    assert!(!d.path().join("index.bin.tmp").exists());
+    assert!(d.path().join("notes.txt").exists(), "unknown files stay");
+    assert_eq!(s.read("keep.txt").unwrap(), b"keep");
+}
+
+#[test]
+fn reads_survive_concurrent_overwrites() {
+    let d = tempfile::tempdir().unwrap();
+    let s = std::sync::Arc::new(open(d.path(), "n"));
+    s.write("f", b"0").unwrap();
+    let w = {
+        let s = s.clone();
+        std::thread::spawn(move || {
+            for i in 0..300u32 {
+                s.write("f", i.to_string().as_bytes()).unwrap();
+            }
+        })
+    };
+    for _ in 0..600 {
+        let v = s.read("f").expect("read must retry after the blob moved");
+        assert!(!v.is_empty());
+        if let Some(h) = s
+            .manifest()
+            .iter()
+            .find(|e| e.path == "f")
+            .map(|e| e.hash.clone())
+        {
+            let _ = s.read_by_hash(&h);
+        }
+    }
+    w.join().unwrap();
+}

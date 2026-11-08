@@ -10,6 +10,8 @@ pub enum CoreError {
     Busy,
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("internal error: {0}")]
+    Internal(&'static str),
     #[error("{0}")]
     UnsupportedMedia(String),
     #[error("{0}")]

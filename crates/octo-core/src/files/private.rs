@@ -1,13 +1,13 @@
 use super::path::normalize;
 use super::{FileEntry, FileKind, FilesError};
 use crate::crypto::{Key, decrypt, encrypt};
+use crate::fsutil::now_ms;
 use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const INDEX_AAD: &[u8] = b"octo-private-index-v1";
 
@@ -23,7 +23,7 @@ struct Entry {
     /// Random blob name for files; empty for directories and tombstones.
     id: String,
     path: String,
-    kind: Kind,
+    kind: FileKind,
     size: u64,
     created_at: i64,
     modified: i64,
@@ -34,29 +34,6 @@ struct Entry {
     rev: Rev,
     #[serde(default)]
     deleted: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Kind {
-    File,
-    Dir,
-}
-
-impl Kind {
-    fn from_file_kind(k: FileKind) -> Self {
-        match k {
-            FileKind::File => Kind::File,
-            FileKind::Dir => Kind::Dir,
-        }
-    }
-
-    fn file_kind(self) -> FileKind {
-        match self {
-            Kind::File => FileKind::File,
-            Kind::Dir => FileKind::Dir,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -94,23 +71,35 @@ impl Index {
         Some(self.entries.remove(i))
     }
 
-    /// Adds the missing ancestor directories of `path` (tombstoned ones are revived).
-    fn ensure_parents(&mut self, path: &str, now: i64, rev: &Rev) -> Result<(), FilesError> {
+    /// Adds the missing ancestor directories of `path`. Nothing changes on error.
+    /// A tombstoned ancestor is revived with `revive`, any other missing one gets `fresh`.
+    fn ensure_parents(
+        &mut self,
+        path: &str,
+        now: i64,
+        fresh: &Rev,
+        revive: &Rev,
+    ) -> Result<(), FilesError> {
         let mut cur = String::new();
         let parts: Vec<&str> = path.split('/').collect();
+        let mut missing = vec![];
         for part in &parts[..parts.len() - 1] {
             if !cur.is_empty() {
                 cur.push('/');
             }
             cur.push_str(part);
             match self.find(&cur) {
-                Some(e) if e.kind == Kind::File => return Err(FilesError::NotDir),
+                Some(e) if e.kind == FileKind::File => return Err(FilesError::NotDir),
                 Some(_) => {}
-                None => {
-                    self.take(&cur);
-                    self.entries.push(dir_entry(&cur, now, rev.clone()));
-                }
+                None => missing.push(cur.clone()),
             }
+        }
+        for m in missing {
+            let rev = match self.take(&m) {
+                Some(_) => revive,
+                None => fresh,
+            };
+            self.entries.push(dir_entry(&m, now, rev.clone()));
         }
         Ok(())
     }
@@ -120,7 +109,7 @@ fn dir_entry(path: &str, now: i64, rev: Rev) -> Entry {
     Entry {
         id: String::new(),
         path: path.into(),
-        kind: Kind::Dir,
+        kind: FileKind::Dir,
         size: 0,
         created_at: now,
         modified: now,
@@ -144,13 +133,6 @@ fn tombstone(old: &Entry, now: i64, rev: Rev) -> Entry {
     }
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// BLAKE2s-256 hex of plaintext.
 pub fn content_hash(data: &[u8]) -> String {
     Blake2s256::digest(data)
@@ -166,10 +148,13 @@ pub struct PrivateFiles {
     key: Key,
     node_id: String,
     index: Mutex<Index>,
+    /// Live files whose blob could not be read during the hash migration.
+    unreadable: Vec<String>,
 }
 
 impl PrivateFiles {
-    /// `node_id` stamps the revision of every local change.
+    /// `node_id` stamps the revision of every local change. Opening also removes leftovers
+    /// of interrupted writes: a stale `index.bin.tmp` and blobs no index entry refers to.
     pub fn open(root: &Path, key: Key, node_id: &str) -> Result<Self, FilesError> {
         std::fs::create_dir_all(root)?;
         let mut index: Index = match std::fs::read(root.join("index.bin")) {
@@ -180,29 +165,41 @@ impl PrivateFiles {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Index::default(),
             Err(e) => return Err(e.into()),
         };
-        // v1 indexes have no hashes: compute them from the blobs.
+        // v1 indexes have no hashes: compute them from the blobs. A blob that cannot be
+        // read keeps its (empty) hash, stays out of the sync manifest and is reported.
         let mut migrated = false;
+        let mut unreadable = vec![];
         for e in &mut index.entries {
-            if e.kind == Kind::File && !e.deleted && e.hash.is_empty() {
+            if e.kind == FileKind::File && !e.deleted && e.hash.is_empty() {
                 let plain = std::fs::read(root.join(&e.id))
                     .map_err(FilesError::from)
                     .and_then(|ct| Ok(decrypt(&key, &ct, e.id.as_bytes())?));
-                if let Ok(plain) = plain {
-                    e.hash = content_hash(&plain);
-                    migrated = true;
+                match plain {
+                    Ok(plain) => {
+                        e.hash = content_hash(&plain);
+                        migrated = true;
+                    }
+                    Err(_) => unreadable.push(e.path.clone()),
                 }
             }
         }
+        sweep(root, &index);
         let s = Self {
             root: root.into(),
             key,
             node_id: node_id.into(),
             index: Mutex::new(index),
+            unreadable,
         };
         if migrated {
             s.save_index(&s.lock())?;
         }
         Ok(s)
+    }
+
+    /// Paths of live files whose content could not be read when the store was opened.
+    pub fn unreadable(&self) -> &[String] {
+        &self.unreadable
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Index> {
@@ -217,7 +214,7 @@ impl PrivateFiles {
     }
 
     fn save_index(&self, index: &Index) -> Result<(), FilesError> {
-        let plain = serde_json::to_vec(index).map_err(|_| FilesError::Corrupt)?;
+        let plain = serde_json::to_vec(index).map_err(|_| FilesError::Serialize)?;
         let ct = encrypt(&self.key, &plain, INDEX_AAD)?;
         let tmp = self.root.join("index.bin.tmp");
         let _ = std::fs::remove_file(&tmp);
@@ -257,7 +254,7 @@ impl PrivateFiles {
             .filter(|e| !e.deleted)
             .map(|e| FileEntry {
                 path: e.path.clone(),
-                kind: e.kind.file_kind(),
+                kind: e.kind,
                 size: e.size,
                 modified: e.modified,
             })
@@ -269,7 +266,7 @@ impl PrivateFiles {
     pub fn write(&self, path: &str, data: &[u8]) -> Result<FileEntry, FilesError> {
         let path = non_root(path)?;
         let mut index = self.lock();
-        if matches!(index.find(&path), Some(e) if e.kind == Kind::Dir) {
+        if matches!(index.find(&path), Some(e) if e.kind == FileKind::Dir) {
             return Err(FilesError::IsDir);
         }
         let now = now_ms();
@@ -277,7 +274,7 @@ impl PrivateFiles {
         let mut next = Index {
             entries: index.entries.clone(),
         };
-        next.ensure_parents(&path, now, &rev)?;
+        next.ensure_parents(&path, now, &rev, &rev)?;
         let old = next.take(&path);
         let created_at = old.as_ref().map(|e| e.created_at).unwrap_or(now);
         let old_id = old.map(|e| e.id).unwrap_or_default();
@@ -285,7 +282,7 @@ impl PrivateFiles {
         next.entries.push(Entry {
             id: id.clone(),
             path: path.clone(),
-            kind: Kind::File,
+            kind: FileKind::File,
             size: data.len() as u64,
             created_at,
             modified: now,
@@ -309,22 +306,34 @@ impl PrivateFiles {
 
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FilesError> {
         let path = non_root(path)?;
-        let id = {
-            let index = self.lock();
-            let e = index.find(&path).ok_or(FilesError::NotFound)?;
-            if e.kind == Kind::Dir {
-                return Err(FilesError::IsDir);
+        let mut attempt = 0;
+        loop {
+            let id = {
+                let index = self.lock();
+                let e = index.find(&path).ok_or(FilesError::NotFound)?;
+                if e.kind == FileKind::Dir {
+                    return Err(FilesError::IsDir);
+                }
+                e.id.clone()
+            };
+            match self.read_blob(&id) {
+                // The file was replaced between lookup and read (its old blob is gone):
+                // look it up again once.
+                Err(FilesError::Io(e))
+                    if e.kind() == std::io::ErrorKind::NotFound && attempt == 0 =>
+                {
+                    attempt += 1;
+                }
+                r => return r,
             }
-            e.id.clone()
-        };
-        self.read_blob(&id)
+        }
     }
 
     pub fn mkdir(&self, path: &str) -> Result<(), FilesError> {
         let path = non_root(path)?;
         let mut index = self.lock();
         match index.find(&path) {
-            Some(e) if e.kind == Kind::File => return Err(FilesError::Exists),
+            Some(e) if e.kind == FileKind::File => return Err(FilesError::Exists),
             Some(_) => return Ok(()),
             None => {}
         }
@@ -333,7 +342,7 @@ impl PrivateFiles {
         let mut next = Index {
             entries: index.entries.clone(),
         };
-        next.ensure_parents(&path, now, &rev)?;
+        next.ensure_parents(&path, now, &rev, &rev)?;
         next.take(&path);
         next.entries.push(dir_entry(&path, now, rev));
         self.save_index(&next)?;
@@ -359,7 +368,7 @@ impl PrivateFiles {
         let mut next = Index {
             entries: index.entries.clone(),
         };
-        next.ensure_parents(&to, now, &rev)?;
+        next.ensure_parents(&to, now, &rev, &rev)?;
         let prefix = format!("{from}/");
         let moving: Vec<Entry> = next
             .entries
@@ -390,7 +399,7 @@ impl PrivateFiles {
         let path = non_root(path)?;
         let mut index = self.lock();
         let e = index.find(&path).ok_or(FilesError::NotFound)?;
-        if e.kind == Kind::Dir && index.has_children(&path) {
+        if e.kind == FileKind::Dir && index.has_children(&path) {
             return Err(FilesError::NotEmpty);
         }
         let old = e.clone();
@@ -406,15 +415,17 @@ impl PrivateFiles {
         Ok(())
     }
 
-    /// All entries including tombstones, ordered by path.
+    /// All entries including tombstones, ordered by path. Live files without a content
+    /// hash (unreadable legacy blobs) are left out.
     pub fn manifest(&self) -> Vec<SyncEntry> {
         let mut out: Vec<SyncEntry> = self
             .lock()
             .entries
             .iter()
+            .filter(|e| e.deleted || e.kind != FileKind::File || !e.hash.is_empty())
             .map(|e| SyncEntry {
                 path: e.path.clone(),
-                kind: e.kind.file_kind(),
+                kind: e.kind,
                 size: e.size,
                 modified: e.modified,
                 hash: e.hash.clone(),
@@ -428,32 +439,93 @@ impl PrivateFiles {
 
     /// Plaintext of any live file with this content hash.
     pub fn read_by_hash(&self, hash: &str) -> Option<Vec<u8>> {
-        if hash.is_empty() {
-            return None;
+        for attempt in 0..2 {
+            let id = find_by_hash(&self.lock(), hash)?.id.clone();
+            match self.read_blob(&id) {
+                Ok(v) => return Some(v),
+                // replaced between lookup and read: look the hash up again once
+                Err(FilesError::Io(e))
+                    if e.kind() == std::io::ErrorKind::NotFound && attempt == 0 => {}
+                Err(_) => return None,
+            }
         }
-        let id = self
-            .lock()
-            .entries
-            .iter()
-            .find(|e| !e.deleted && e.kind == Kind::File && e.hash == hash)?
-            .id
-            .clone();
-        self.read_blob(&id).ok()
+        None
     }
 
     /// Applies a remote entry, keeping its revision. `data` is the file content, or
     /// `None` when it is a directory, a tombstone, or already present locally by hash.
     /// Nothing changes on error.
     pub fn apply(&self, entry: &SyncEntry, data: Option<&[u8]>) -> Result<(), FilesError> {
+        self.apply_refs(&[(entry, data)])?
+            .into_iter()
+            .next()
+            .unwrap_or(Err(FilesError::Invalid))
+    }
+
+    /// Like `apply` for many entries, in order, with a single index save. The outer error
+    /// means the index could not be saved (nothing was applied); otherwise each entry has
+    /// its own result and a failed entry changes nothing.
+    pub fn apply_batch(
+        &self,
+        items: &[(SyncEntry, Option<Vec<u8>>)],
+    ) -> Result<Vec<Result<(), FilesError>>, FilesError> {
+        let refs: Vec<(&SyncEntry, Option<&[u8]>)> =
+            items.iter().map(|(e, d)| (e, d.as_deref())).collect();
+        self.apply_refs(&refs)
+    }
+
+    fn apply_refs(
+        &self,
+        items: &[(&SyncEntry, Option<&[u8]>)],
+    ) -> Result<Vec<Result<(), FilesError>>, FilesError> {
+        let mut index = self.lock();
+        let mut next = Index {
+            entries: index.entries.clone(),
+        };
+        let mut results = Vec::with_capacity(items.len());
+        let (mut created, mut dropped) = (vec![], vec![]);
+        let mut changed = false;
+        for (entry, data) in items {
+            match self.apply_into(&mut next, entry, *data, &mut created, &mut dropped) {
+                Ok(c) => {
+                    changed |= c;
+                    results.push(Ok(()));
+                }
+                Err(e) => results.push(Err(e)),
+            }
+        }
+        if changed {
+            if let Err(e) = self.save_index(&next) {
+                created.iter().for_each(|id| self.remove_blob(id));
+                return Err(e);
+            }
+            *index = next;
+            dropped.iter().for_each(|id| self.remove_blob(id));
+        } else {
+            created.iter().for_each(|id| self.remove_blob(id));
+        }
+        Ok(results)
+    }
+
+    /// Applies one entry to the working index. Returns whether anything changed; on error
+    /// the index is untouched. New blob ids go to `created`, replaced ones to `dropped`.
+    fn apply_into(
+        &self,
+        next: &mut Index,
+        entry: &SyncEntry,
+        data: Option<&[u8]>,
+        created: &mut Vec<String>,
+        dropped: &mut Vec<String>,
+    ) -> Result<bool, FilesError> {
         let path = non_root(&entry.path)?;
         let live_file = !entry.deleted && entry.kind == FileKind::File;
-        if !well_formed(entry) || path != entry.path || (!live_file && data.is_some()) {
+        if !well_formed(entry) || (!live_file && data.is_some()) {
             return Err(FilesError::Invalid);
         }
         let plain: Option<Vec<u8>> = if live_file {
             let bytes = match data {
                 Some(d) => d.to_vec(),
-                None => self.read_by_hash(&entry.hash).ok_or(FilesError::NotFound)?,
+                None => blob_by_hash(self, next, &entry.hash)?.ok_or(FilesError::NotFound)?,
             };
             if content_hash(&bytes) != entry.hash {
                 return Err(FilesError::HashMismatch);
@@ -462,33 +534,44 @@ impl PrivateFiles {
         } else {
             None
         };
-        let mut index = self.lock();
-        let any = index.entries.iter().find(|e| e.path == path);
-        if matches!(any, Some(e) if e.rev >= entry.rev) {
-            return Ok(());
+        if matches!(next.entries.iter().find(|e| e.path == path), Some(e) if e.rev >= entry.rev) {
+            return Ok(false);
         }
-        if index.find(&path).is_some_and(|e| e.kind == Kind::Dir)
+        if next.find(&path).is_some_and(|e| e.kind == FileKind::Dir)
             && (live_file || entry.deleted)
-            && index.has_children(&path)
+            && next.has_children(&path)
         {
             return Err(FilesError::NotEmpty);
         }
         let now = now_ms();
-        let mut next = Index {
-            entries: index.entries.clone(),
+        let new_blob = match &plain {
+            Some(bytes) => Some(self.store_blob(bytes)?),
+            None => None,
         };
         if !entry.deleted {
-            next.ensure_parents(&path, now, &Rev::default())?;
+            // A tombstoned ancestor is revived with a revision newer than everything seen,
+            // so the revival propagates over the tombstone on the other nodes.
+            let revive = Rev {
+                clock: next.max_clock().max(entry.rev.clock) + 1,
+                node: self.node_id.clone(),
+            };
+            if let Err(e) = next.ensure_parents(&path, now, &Rev::default(), &revive) {
+                if let Some(id) = &new_blob {
+                    self.remove_blob(id);
+                }
+                return Err(e);
+            }
         }
         let old = next.take(&path);
         let created_at = old.as_ref().map(|e| e.created_at).unwrap_or(now);
-        let old_id = old.as_ref().map(|e| e.id.clone()).unwrap_or_default();
-        let mut new_id = String::new();
+        if let Some(old) = old {
+            dropped.push(old.id);
+        }
         let new = if entry.deleted {
             Entry {
                 id: String::new(),
-                path: path.clone(),
-                kind: Kind::from_file_kind(entry.kind),
+                path,
+                kind: entry.kind,
                 size: 0,
                 created_at,
                 modified: entry.modified,
@@ -496,12 +579,12 @@ impl PrivateFiles {
                 rev: entry.rev.clone(),
                 deleted: true,
             }
-        } else if let Some(bytes) = &plain {
-            new_id = self.store_blob(bytes)?;
+        } else if let (Some(bytes), Some(id)) = (&plain, new_blob) {
+            created.push(id.clone());
             Entry {
-                id: new_id.clone(),
-                path: path.clone(),
-                kind: Kind::File,
+                id,
+                path,
+                kind: FileKind::File,
                 size: bytes.len() as u64,
                 created_at,
                 modified: entry.modified,
@@ -516,13 +599,51 @@ impl PrivateFiles {
             }
         };
         next.entries.push(new);
-        if let Err(e) = self.save_index(&next) {
-            self.remove_blob(&new_id);
-            return Err(e);
+        Ok(true)
+    }
+}
+
+fn find_by_hash<'a>(index: &'a Index, hash: &str) -> Option<&'a Entry> {
+    if hash.is_empty() {
+        return None;
+    }
+    index
+        .entries
+        .iter()
+        .find(|e| !e.deleted && e.kind == FileKind::File && e.hash == hash)
+}
+
+/// Plaintext of a live file with this content hash in `index`.
+fn blob_by_hash(
+    store: &PrivateFiles,
+    index: &Index,
+    hash: &str,
+) -> Result<Option<Vec<u8>>, FilesError> {
+    find_by_hash(index, hash)
+        .map(|e| store.read_blob(&e.id))
+        .transpose()
+}
+
+/// Removes leftovers of interrupted writes: a stale `index.bin.tmp` and blob files (32 hex
+/// chars) that no index entry refers to. Unknown files are left alone.
+fn sweep(root: &Path, index: &Index) {
+    let _ = std::fs::remove_file(root.join("index.bin.tmp"));
+    let used: HashSet<&str> = index
+        .entries
+        .iter()
+        .filter(|e| !e.id.is_empty())
+        .map(|e| e.id.as_str())
+        .collect();
+    let Ok(dir) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in dir.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let blob_like = name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit());
+        if blob_like && !used.contains(name) && e.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(e.path());
         }
-        *index = next;
-        self.remove_blob(&old_id);
-        Ok(())
     }
 }
 
@@ -567,6 +688,14 @@ pub enum Action {
 
 /// What to do with the remote entries given the local manifest. Per path the remote
 /// wins iff its revision is newer; a path missing locally loses to anything.
+///
+/// Entries that `apply` would reject forever are left out, so a plan converges:
+/// - a remote tombstone (or file) over a directory that keeps live children: the local
+///   directory stays; when the remote later receives a child, it revives the directory
+///   with a newer revision, which then propagates here;
+/// - a remote entry below a path that stays a live file.
+///
+/// Tombstones come after the other actions, deepest first, so children go before parents.
 pub fn plan(local: &[SyncEntry], remote: &[SyncEntry]) -> Vec<Action> {
     let by_path: HashMap<&str, &SyncEntry> = local.iter().map(|e| (e.path.as_str(), e)).collect();
     let have: HashSet<&str> = local
@@ -574,18 +703,61 @@ pub fn plan(local: &[SyncEntry], remote: &[SyncEntry]) -> Vec<Action> {
         .filter(|e| !e.deleted && e.kind == FileKind::File)
         .map(|e| e.hash.as_str())
         .collect();
-    remote
+    let winners: Vec<&SyncEntry> = remote
         .iter()
         .filter(|r| well_formed(r))
         .filter(|r| by_path.get(r.path.as_str()).is_none_or(|l| r.rev > l.rev))
+        .collect();
+    // live paths after all winners are applied
+    let mut live: HashMap<&str, FileKind> = local
+        .iter()
+        .filter(|e| !e.deleted)
+        .map(|e| (e.path.as_str(), e.kind))
+        .collect();
+    for r in &winners {
+        if r.deleted {
+            live.remove(r.path.as_str());
+        } else {
+            live.insert(r.path.as_str(), r.kind);
+        }
+    }
+    let parents: HashSet<&str> = live
+        .keys()
+        .flat_map(|p| p.match_indices('/').map(|(i, _)| &p[..i]))
+        .collect();
+    let blocked = |r: &SyncEntry| {
+        let local_dir = by_path
+            .get(r.path.as_str())
+            .is_some_and(|l| !l.deleted && l.kind == FileKind::Dir);
+        let keeps_children = local_dir
+            && (r.deleted || r.kind == FileKind::File)
+            && parents.contains(r.path.as_str());
+        let under_file = !r.deleted
+            && r.path
+                .match_indices('/')
+                .any(|(i, _)| live.get(&r.path[..i]) == Some(&FileKind::File));
+        keeps_children || under_file
+    };
+    let mut actions: Vec<(&SyncEntry, Action)> = winners
+        .into_iter()
+        .filter(|r| !blocked(r))
         .map(|r| {
             let needs_data =
                 !r.deleted && r.kind == FileKind::File && !have.contains(r.hash.as_str());
-            if needs_data {
+            let a = if needs_data {
                 Action::Fetch(r.clone())
             } else {
                 Action::Adopt(r.clone())
-            }
+            };
+            (r, a)
         })
-        .collect()
+        .collect();
+    actions.sort_by_key(|(r, _)| {
+        if r.deleted {
+            (1, usize::MAX - r.path.matches('/').count())
+        } else {
+            (0, 0)
+        }
+    });
+    actions.into_iter().map(|(_, a)| a).collect()
 }
