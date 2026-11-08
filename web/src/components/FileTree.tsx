@@ -1,6 +1,7 @@
-import { useEffect, useState, type KeyboardEvent } from 'react';
-import { ChevronDown, ChevronRight, File as FileIcon, Folder } from 'lucide-react';
+import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
+import { ChevronDown, ChevronRight, File as FileIcon, Folder, MoreHorizontal } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
+import { useClickOutside } from '../lib/useClickOutside';
 import { buildTree, type TreeNode } from '../lib/tree';
 import type { FileEntry, Space } from '../api/types';
 
@@ -13,9 +14,15 @@ type Editing = { kind: 'rename'; path: string } | { kind: 'mkdir'; dir: string }
 
 function NameInput({ initial, onDone }: { initial: string; onDone: (name: string | null) => void }) {
   const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (name: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    onDone(name);
+  };
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') onDone(value.trim() || null);
-    else if (e.key === 'Escape') onDone(null);
+    if (e.key === 'Enter') finish(value.trim() || null);
+    else if (e.key === 'Escape') finish(null);
   };
   return (
     <input
@@ -23,7 +30,7 @@ function NameInput({ initial, onDone }: { initial: string; onDone: (name: string
       value={value}
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={onKeyDown}
-      onBlur={() => onDone(null)}
+      onBlur={() => finish(null)}
       className="min-w-0 flex-1 rounded border border-indigo-500 bg-transparent px-1 text-sm text-slate-800 outline-none"
     />
   );
@@ -35,12 +42,9 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FileEntry } | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
 
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [menu]);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useClickOutside(menuRef, menu !== null, closeMenu);
 
   const toggle = (path: string) =>
     setExpanded((prev) => {
@@ -76,13 +80,30 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
             e.preventDefault();
             setMenu({ x: e.clientX, y: e.clientY, entry });
           }}
+          role="button"
+          tabIndex={0}
+          aria-expanded={isDir ? open : undefined}
+          onKeyDown={(e) => {
+            if (e.target === e.currentTarget && e.key === 'Enter') e.currentTarget.click();
+          }}
           onClick={() => (isDir ? toggle(entry.path) : void useFilesStore.getState().open(space, entry.path))}
           style={{ paddingLeft: depth * 12 + 4 }}
-          className="flex cursor-pointer items-center gap-1 rounded py-0.5 pr-1 text-sm text-slate-600 hover:bg-slate-100"
+          className="flex cursor-pointer items-center gap-1 rounded py-0.5 pr-1 text-sm text-slate-600 hover:bg-slate-100 max-md:min-h-10"
         >
           {isDir ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span className="w-3.5" />}
           {isDir ? <Folder size={14} className="shrink-0" /> : <FileIcon size={14} className="shrink-0" />}
           {renaming ? <NameInput initial={n.name} onDone={(v) => void finish(v)} /> : <span className="truncate">{n.name}</span>}
+          <button
+            aria-label="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = e.currentTarget.getBoundingClientRect();
+              setMenu({ x: r.left, y: r.bottom, entry });
+            }}
+            className="ml-auto hidden h-10 w-10 shrink-0 items-center justify-center rounded text-slate-400 max-md:flex"
+          >
+            <MoreHorizontal size={16} />
+          </button>
         </div>
         {isDir && open && (
           <ul>
@@ -98,7 +119,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
     );
   };
 
-  const item = 'block w-full px-3 py-1 text-left text-sm text-slate-700 hover:bg-slate-100';
+  const item = 'block w-full px-3 py-1 max-md:py-2.5 text-left text-sm text-slate-700 hover:bg-slate-100';
   return (
     <>
       <ul>
@@ -117,6 +138,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
       </ul>
       {menu && (
         <div
+          ref={menuRef}
           role="menu"
           style={{ position: 'fixed', left: menu.x, top: menu.y }}
           className="z-20 min-w-32 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"

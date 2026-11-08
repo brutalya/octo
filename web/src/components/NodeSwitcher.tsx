@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ChevronUp } from 'lucide-react';
 import { useNodesStore } from '../stores/nodes';
+import { useClickOutside } from '../lib/useClickOutside';
 
 export function NodeSwitcher() {
   const nodes = useNodesStore((s) => s.nodes);
@@ -8,14 +9,8 @@ export function NodeSwitcher() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+  useClickOutside(ref, open, close);
 
   const current = nodes.find((n) => (selectedId ? n.node_id === selectedId : n.is_self));
   const name = current?.name ?? 'Octo';
@@ -50,7 +45,11 @@ export function NodeSwitcher() {
               }}
               className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
             >
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+              <span
+                role="img"
+                aria-label={n.online ? 'online' : 'offline'}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-slate-300'}`}
+              />
               <span className="truncate">{n.name}</span>
             </button>
           ))}

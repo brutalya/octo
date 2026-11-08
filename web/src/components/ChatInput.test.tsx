@@ -101,3 +101,22 @@ describe('ChatInput disabled', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 });
+
+describe('ChatInput restore', () => {
+  it('restores the text when onSend resolves false', async () => {
+    const onSend = vi.fn(async () => false);
+    render(<ChatInput streaming={false} onSend={onSend} onStop={() => {}} />);
+    const box = screen.getByRole('textbox');
+    await userEvent.type(box, 'hello{Enter}');
+    await vi.waitFor(() => expect(box).toHaveValue('hello'));
+  });
+
+  it('attachment chip shows the basename with the full path as title', async () => {
+    useFilesStore.setState({ entries: { private: [], public: [{ path: 'docs/a.md', kind: 'file', size: 1, modified: 1 }] } });
+    render(<ChatInput space="public" streaming={false} onSend={() => {}} onStop={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'docs/a.md' }));
+    expect(screen.getByTitle('docs/a.md')).toHaveTextContent('a.md');
+    expect(screen.getByTitle('docs/a.md')).not.toHaveTextContent('docs');
+  });
+});

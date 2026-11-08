@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useCallback, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
 import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
+import { useClickOutside } from '../lib/useClickOutside';
 import type { AttachmentRef, Space } from '../api/types';
 
 interface Props {
   space?: Space;
   streaming: boolean;
   disabled?: boolean;
-  onSend: (text: string, attachments: AttachmentRef[]) => void;
+  /** Resolve false when the message was rejected before being appended. */
+  onSend: (text: string, attachments: AttachmentRef[]) => unknown;
   onStop: () => void;
 }
 
@@ -42,14 +44,8 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
   const [picking, setPicking] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!picking) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setPicking(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [picking]);
+  const closePicker = useCallback(() => setPicking(false), []);
+  useClickOutside(ref, picking, closePicker);
 
   const add = (a: AttachmentRef) =>
     setAttachments((cur) => (cur.some((x) => x.space === a.space && x.path === a.path) ? cur : [...cur, a]));
@@ -57,9 +53,14 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
   const submit = () => {
     const text = value.trim();
     if (!text || streaming || disabled) return;
-    onSend(text, attachments);
+    const sent = attachments;
     setValue('');
     setAttachments([]);
+    void Promise.resolve(onSend(text, sent)).then((ok) => {
+      if (ok !== false) return;
+      setValue((cur) => cur || text);
+      setAttachments((cur) => (cur.length ? cur : sent));
+    });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -99,11 +100,11 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
               key={`${a.space}:${a.path}`}
               className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
             >
-              {a.path}
+              <span title={a.path}>{a.path.split('/').pop() || a.path}</span>
               <button
                 aria-label={`Remove ${a.path}`}
                 onClick={() => setAttachments((cur) => cur.filter((x) => x !== a))}
-                className="text-slate-400 hover:text-slate-700"
+                className="text-slate-400 hover:text-slate-700 max-md:p-3"
               >
                 <X size={12} />
               </button>
@@ -117,7 +118,7 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
             <button
               aria-label="Attach"
               onClick={() => {
-                if (!picking) void useFilesStore.getState().load(space).catch(() => {});
+                if (!picking) void useFilesStore.getState().load(space);
                 setPicking((v) => !v);
               }}
               className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"

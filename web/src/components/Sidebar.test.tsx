@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sidebar } from './Sidebar';
 import { useThreadsStore } from '../stores/threads';
@@ -61,8 +61,33 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     await userEvent.click(screen.getByText('Second'));
     expect(select).toHaveBeenCalledWith('b');
-    await userEvent.click(screen.getAllByRole('button', { name: 'Delete thread' })[0]);
+    const del = screen.getAllByRole('button', { name: 'Delete thread' })[0];
+    await userEvent.click(del);
+    expect(remove).not.toHaveBeenCalled();
+    await userEvent.click(del);
     expect(remove).toHaveBeenCalledWith('a');
+  });
+
+  it('delete confirmation expires after 3 seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const remove = vi.fn(async () => {});
+    useThreadsStore.setState({ remove });
+    render(<Sidebar />);
+    const del = screen.getAllByRole('button', { name: 'Delete thread' })[0];
+    await userEvent.click(del);
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    await userEvent.click(del);
+    expect(remove).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('shows the store error at the bottom', () => {
+    useThreadsStore.setState({ error: 'boom' });
+    render(<Sidebar />);
+    expect(screen.getByText('boom')).toBeInTheDocument();
+    useThreadsStore.setState({ error: null });
   });
 
   it('approval toggle in the dropdown defaults to confirm and is passed on create', async () => {

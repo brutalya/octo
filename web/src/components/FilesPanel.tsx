@@ -13,6 +13,7 @@ const TABS: { space: Space; label: string }[] = [
 export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClose?: () => void } = {}) {
   const threadSpace = useThreadsStore((s) => s.threads.find((t) => t.id === s.activeId)?.space ?? null);
   const preview = useFilesStore((s) => s.preview);
+  const error = useFilesStore((s) => s.error);
   const [collapsed, setCollapsed] = useState(false);
   const [choice, setChoice] = useState<{ forThread: Space | null; space: Space } | null>(null);
   const [newRoot, setNewRoot] = useState(false);
@@ -23,7 +24,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   const space: Space = choice && choice.forThread === threadSpace ? choice.space : (threadSpace ?? 'public');
 
   useEffect(() => {
-    if (sheet || !collapsed) void useFilesStore.getState().load(space).catch(() => {});
+    if (sheet || !collapsed) void useFilesStore.getState().load(space);
   }, [space, collapsed, sheet]);
 
   if (collapsed && !sheet) {
@@ -125,6 +126,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
       >
         <FileTree space={space} newRoot={newRoot} onNewRootDone={() => setNewRoot(false)} />
       </div>
+      {error && <div className="px-2 py-1 text-xs text-red-500">{error}</div>}
       {preview && (
         <div className="flex max-h-[45%] flex-col border-t border-slate-200">
           <div className="flex items-center justify-between px-2 py-1">
@@ -132,7 +134,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
             <button
               aria-label="Close preview"
               onClick={() => useFilesStore.getState().closePreview()}
-              className="rounded p-0.5 text-slate-400 hover:text-slate-700"
+              className="rounded p-0.5 text-slate-400 hover:text-slate-700 max-md:p-3"
             >
               <X size={12} />
             </button>

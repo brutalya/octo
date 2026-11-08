@@ -22,8 +22,8 @@ export function App() {
 
   useEffect(() => {
     void useNodesStore.getState().load().finally(() => {
-      void useThreadsStore.getState().load().catch(() => {});
-      void useThreadsStore.getState().loadProviders().catch(() => {});
+      void useThreadsStore.getState().load();
+      void useThreadsStore.getState().loadProviders();
     });
     const poll = setInterval(() => void useNodesStore.getState().load(), 5000);
     return () => clearInterval(poll);
@@ -37,13 +37,13 @@ export function App() {
 
   const chat = activeId && (
     <>
-      <Feed threadId={activeId} />
+      <Feed key={activeId} threadId={activeId} />
       <ChatInput
         key={activeId}
         space={space}
         streaming={streaming}
         disabled={offline}
-        onSend={(text, att) => void useChatStore.getState().send(activeId, text, att)}
+        onSend={(text, att) => useChatStore.getState().send(activeId, text, att)}
         onStop={() => void useChatStore.getState().stop(activeId)}
       />
     </>

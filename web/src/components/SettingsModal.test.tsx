@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsModal } from './SettingsModal';
 
@@ -74,5 +74,27 @@ describe('SettingsModal', () => {
     render(<SettingsModal onClose={onClose} />);
     await userEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('Escape closes; backdrop closes only on a full click', async () => {
+    const onClose = vi.fn();
+    render(<SettingsModal onClose={onClose} />);
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
+    const dialog = screen.getByRole('dialog');
+    const backdrop = dialog.parentElement as HTMLElement;
+    fireEvent.mouseDown(dialog);
+    fireEvent.mouseUp(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.mouseDown(backdrop);
+    fireEvent.mouseUp(backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await userEvent.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders no inputs until settings loaded', async () => {
+    render(<SettingsModal onClose={() => {}} />);
+    expect(screen.queryByLabelText('Ollama URL')).toBeNull();
+    expect(await screen.findByLabelText('Ollama URL')).toBeInTheDocument();
   });
 });

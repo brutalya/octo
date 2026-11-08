@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { api } from '../api/client';
 import { Devices } from './Devices';
+import { errMsg } from '../lib/format';
 import type { ProviderKind, SettingsView, SettingsPatch } from '../api/types';
 
 type Result = { ok: true; count: number } | { ok: false; error: string };
@@ -59,59 +60,81 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const downOnBackdrop = useRef(false);
 
   useEffect(() => {
     api.settings().then((s) => {
       setSettings(s);
       setUrl(s.ollama_url);
-    }).catch(() => {});
+    }).catch((e: unknown) => setError(errMsg(e)));
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const run = async (patch: SettingsPatch, kind: ProviderKind): Promise<Result> => {
     try {
       if (Object.keys(patch).length) setSettings(await api.patchSettings(patch));
       return { ok: true, count: (await api.models(kind)).length };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return { ok: false, error: errMsg(e) };
     }
   };
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40" onMouseDown={onClose}>
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-black/40"
+      onMouseDown={(e) => (downOnBackdrop.current = e.target === e.currentTarget)}
+      onMouseUp={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose();
+        downOnBackdrop.current = false;
+      }}
+    >
       <div
         role="dialog"
+        aria-modal="true"
         aria-label="Settings"
-        onMouseDown={(e) => e.stopPropagation()}
         className="flex max-h-[90vh] w-96 max-w-[90vw] flex-col overflow-y-auto gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
       >
         <button
           aria-label="Close"
           onClick={onClose}
-          className="self-end rounded-md p-1 text-slate-400 hover:text-slate-700"
+          className="self-end rounded-md p-1 text-slate-400 hover:text-slate-700 max-md:p-3"
         >
           <X size={14} />
         </button>
-        <Section
-          title="Ollama"
-          label="Ollama URL"
-          type="text"
-          value={url}
-          onChange={setUrl}
-          onCheck={() => run(url !== settings?.ollama_url ? { ollama_url: url } : {}, 'ollama')}
-        />
-        <Section
-          title="OpenRouter"
-          label="OpenRouter key"
-          type="password"
-          value={key}
-          placeholder={settings?.openrouter_api_key ?? ''}
-          onChange={setKey}
-          onCheck={async () => {
-            const r = await run(key ? { openrouter_api_key: key } : {}, 'openrouter');
-            if (r.ok) setKey('');
-            return r;
-          }}
-        />
+        {settings && (
+          <>
+          <Section
+            title="Ollama"
+            label="Ollama URL"
+            type="text"
+            value={url}
+            onChange={setUrl}
+            onCheck={() => run(url !== settings?.ollama_url ? { ollama_url: url } : {}, 'ollama')}
+          />
+          <Section
+            title="OpenRouter"
+            label="OpenRouter key"
+            type="password"
+            value={key}
+            placeholder={settings?.openrouter_api_key ?? ''}
+            onChange={setKey}
+            onCheck={async () => {
+              const r = await run(key ? { openrouter_api_key: key } : {}, 'openrouter');
+              if (r.ok) setKey('');
+              return r;
+            }}
+          />
+          </>
+        )}
+        {error && <span className="text-xs text-red-500">{error}</span>}
         <Devices />
       </div>
     </div>

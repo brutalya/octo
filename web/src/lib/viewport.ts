@@ -19,7 +19,11 @@ function subscribeVv(cb: () => void) {
   const vv = window.visualViewport;
   if (!vv) return () => {};
   vv.addEventListener('resize', cb);
-  return () => vv.removeEventListener('resize', cb);
+  vv.addEventListener('scroll', cb);
+  return () => {
+    vv.removeEventListener('resize', cb);
+    vv.removeEventListener('scroll', cb);
+  };
 }
 
 /** Visible height (shrinks with the on-screen keyboard), or undefined when unsupported/disabled. */

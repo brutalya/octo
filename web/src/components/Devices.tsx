@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Lock, Plus, X } from 'lucide-react';
 import { api } from '../api/client';
-import type { NodeInfo, PairingPending, SettingsView } from '../api/types';
+import { useNodesStore } from '../stores/nodes';
+import { errMsg } from '../lib/format';
+import type { PairingPending, SettingsView } from '../api/types';
 
 type Mode =
   | { kind: 'idle' }
@@ -22,62 +24,70 @@ export function Devices() {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [name, setName] = useState('');
   const [relay, setRelay] = useState('');
-  const [nodes, setNodes] = useState<NodeInfo[]>([]);
+  const nodes = useNodesStore((s) => s.nodes);
   const [mode, setMode] = useState<Mode>({ kind: 'idle' });
   const [pending, setPending] = useState<PairingPending | null>(null);
   const [left, setLeft] = useState(0);
   const [trustPrivate, setTrustPrivate] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(() => {
-    api.nodes().then((n) => Array.isArray(n) && setNodes(n)).catch(() => {});
-  }, []);
+  const seen = useRef(false);
+
+  const reload = () => void useNodesStore.getState().load();
 
   useEffect(() => {
     api.settings().then((s) => {
       setSettings(s);
       setName(s.node_name ?? '');
       setRelay(s.relay_url ?? '');
-    }).catch(() => {});
-    reload();
-  }, [reload]);
+    }).catch((e: unknown) => setError(errMsg(e)));
+    void useNodesStore.getState().load();
+  }, []);
 
   const active = mode.kind === 'invite' || mode.kind === 'joining';
   const expires = mode.kind === 'invite' ? mode.expires : 0;
 
   useEffect(() => {
     if (!active) return;
-    let seen = false;
-    const tick = setInterval(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    seen.current = false;
+    const tick = async () => {
       if (expires) {
         const ms = expires * 1000 - Date.now();
         setLeft(ms);
-        if (ms <= 0 && !seen) {
+        if (ms <= 0 && !seen.current) {
           setMode({ kind: 'idle' });
           return;
         }
       }
-      api.pairingPending().then((p) => {
-        if (p) {
-          seen = true;
-          setPending(p);
-        } else if (seen) {
-          seen = false;
-          setPending(null);
-          setMode({ kind: 'idle' });
-          reload();
-        }
-      }).catch(() => {});
-    }, 1000);
-    return () => clearInterval(tick);
-  }, [active, expires, reload]);
+      const p = await api.pairingPending().catch(() => undefined);
+      if (stopped) return;
+      if (p) {
+        seen.current = true;
+        setPending(p);
+      } else if (p === null && seen.current) {
+        seen.current = false;
+        setPending(null);
+        setMode({ kind: 'idle' });
+        void useNodesStore.getState().load();
+        return;
+      }
+      timer = setTimeout(() => void tick(), 1000);
+    };
+    timer = setTimeout(() => void tick(), 1000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [active, expires]);
 
   const save = async (patch: { node_name?: string; relay_url?: string }) => {
     try {
       setSettings(await api.patchSettings(patch));
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   };
 
@@ -88,7 +98,7 @@ export function Devices() {
       setMode({ kind: 'invite', code: i.code, expires: i.expires_at });
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   };
 
@@ -98,7 +108,7 @@ export function Devices() {
       setMode({ kind: 'joining' });
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
   };
 
@@ -106,7 +116,7 @@ export function Devices() {
     try {
       await (ok ? api.pairingConfirm(trustPrivate) : api.pairingReject());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
     setPending(null);
     setTrustPrivate(false);
@@ -119,7 +129,7 @@ export function Devices() {
       await f();
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errMsg(e));
     }
     reload();
   };
@@ -127,34 +137,47 @@ export function Devices() {
   return (
     <section className="flex flex-col gap-1.5">
       <h3 className="text-sm text-slate-800">Devices</h3>
-      <input
-        aria-label="Node name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onBlur={() => name !== (settings?.node_name ?? '') && void save({ node_name: name })}
-        className={input}
-      />
-      <input
-        aria-label="Relay URL"
-        value={relay}
-        onChange={(e) => setRelay(e.target.value)}
-        onBlur={() => relay !== (settings?.relay_url ?? '') && void save({ relay_url: relay })}
-        className={input}
-      />
+      {settings && (
+        <>
+          <input
+            aria-label="Node name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => name !== (settings.node_name ?? '') && void save({ node_name: name })}
+            className={input}
+          />
+          <input
+            aria-label="Relay URL"
+            value={relay}
+            onChange={(e) => setRelay(e.target.value)}
+            onBlur={() => relay !== (settings.relay_url ?? '') && void save({ relay_url: relay })}
+            className={input}
+          />
+        </>
+      )}
       <ul className="flex flex-col">
         {nodes.filter((n) => !n.is_self).map((n) => (
           <li key={n.node_id} className="flex items-center gap-2 py-0.5 text-sm text-slate-700">
-            <span className={`h-1.5 w-1.5 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+            <span
+              role="img"
+              aria-label={n.online ? 'online' : 'offline'}
+              className={`h-1.5 w-1.5 rounded-full ${n.online ? 'bg-emerald-500' : 'bg-slate-300'}`}
+            />
             {n.name}
             {n.trust === 'full' && <Lock data-testid="trust-lock" size={12} className="text-slate-500" />}
-            <input
-              type="checkbox"
-              aria-label={`Trust private ${n.name}`}
-              checked={n.trust === 'full'}
-              onChange={(e) => void act(() => api.setNodeTrust(n.node_id, e.target.checked ? 'full' : 'public'))}
-              className="ml-auto"
-            />
-            <button aria-label={`Remove ${n.name}`} onClick={() => void act(() => api.removeNode(n.node_id))} className={btn}>
+            <label className="ml-auto flex max-md:p-3">
+              <input
+                type="checkbox"
+                aria-label={`Trust private ${n.name}`}
+                checked={n.trust === 'full'}
+                onChange={(e) => void act(() => api.setNodeTrust(n.node_id, e.target.checked ? 'full' : 'public'))}
+              />
+            </label>
+            <button
+              aria-label={`Remove ${n.name}`}
+              onClick={() => void act(() => api.removeNode(n.node_id))}
+              className={`${btn} max-md:p-3`}
+            >
               <X size={12} />
             </button>
           </li>

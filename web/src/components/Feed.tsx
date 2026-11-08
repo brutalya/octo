@@ -23,23 +23,32 @@ export function Feed({ threadId }: { threadId: string }) {
   const messages = useChatStore((s) => s.messages[threadId] ?? EMPTY);
   const streaming = useChatStore((s) => s.streaming[threadId]);
   const endRef = useRef<HTMLDivElement>(null);
+  const nearBottom = useRef(true);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView?.({ block: 'end' });
+    if (nearBottom.current) endRef.current?.scrollIntoView?.({ block: 'end' });
   }, [messages, streaming?.text]);
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div
+      className="flex-1 overflow-y-auto"
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      }}
+    >
       <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
         {messages.map((m) => (
           <Bubble key={m.id} role={m.role} content={m.content} />
         ))}
-        {streaming &&
-          (streaming.text ? (
-            <Markdown>{streaming.text}</Markdown>
-          ) : (
-            <div className="text-xs text-slate-400">{streaming.tool ?? '...'}</div>
-          ))}
+        <div aria-live="polite">
+          {streaming &&
+            (streaming.text ? (
+              <Markdown>{streaming.text}</Markdown>
+            ) : (
+              <div className="text-xs text-slate-400">{streaming.tool ?? '...'}</div>
+            ))}
+        </div>
         <div ref={endRef} />
       </div>
     </div>

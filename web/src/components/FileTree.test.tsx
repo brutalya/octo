@@ -83,4 +83,25 @@ describe('FileTree', () => {
     fireEvent.dragStart(screen.getByText('top.txt'), { dataTransfer: { setData: set } });
     expect(set).toHaveBeenCalledWith('application/x-octo-file', JSON.stringify({ space: 'public', path: 'top.txt' }));
   });
+
+  it('NameInput reports done once even when Enter is followed by blur', async () => {
+    render(<FileTree space="public" newRoot onNewRootDone={() => {}} />);
+    const input = screen.getByRole('textbox');
+    await userEvent.type(input, 'x{Enter}');
+    fireEvent.blur(input);
+    expect(mkdir).toHaveBeenCalledTimes(1);
+  });
+
+  it('Actions button opens the menu without toggling; Enter toggles a folder', async () => {
+    render(<FileTree space="public" />);
+    await userEvent.click(screen.getAllByRole('button', { name: 'Actions' })[0]);
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+    expect(screen.queryByText('a.md')).toBeNull();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    const dir = screen.getByRole('button', { name: /docs/, expanded: false });
+    dir.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByText('a.md')).toBeInTheDocument();
+  });
 });
