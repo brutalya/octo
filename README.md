@@ -57,6 +57,12 @@ cargo tauri signer generate -w ~/.tauri/octo.key
 
 Add the private key as repo secret `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set), and the public key as repo variable `OCTO_UPDATER_PUBKEY`.
 
+## Android
+
+Built only in CI (`android.yml`, on tag `v*` or manual run); no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`.
+
+Install: open the workflow run, download the artifact `octo-android-apk`, unzip, copy the `.apk` to the phone, allow installing from unknown sources for your file manager/browser, and open the APK. The app is a debug-signed build for arm64 devices.
+
 ## Deploy
 
 Docker relay/node behind Nginx Proxy Manager, systemd alternative: [docs/deploy.md](docs/deploy.md).

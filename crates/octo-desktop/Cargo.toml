@@ -5,6 +5,7 @@ edition = "2024"
 
 [lib]
 name = "octo_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
 path = "src/lib.rs"
 
 [[bin]]
@@ -20,10 +21,12 @@ octo-core = { version = "0.1.0", path = "../octo-core" }
 octo-server = { version = "0.1.0", path = "../octo-server" }
 rand = "0.10.3"
 tauri = { version = "2", features = [] }
+tokio = { version = "1.54.1", features = ["full"] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
-tokio = { version = "1.54.1", features = ["full"] }
 
 [dev-dependencies]
 http-body-util = "0.1.5"

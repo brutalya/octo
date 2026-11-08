@@ -1,5 +1,8 @@
 //! Octo desktop: embeds the axum server on a random loopback port and loads it in a webview.
 
+mod app;
+pub use app::run;
+
 use anyhow::Result;
 use octo_core::{Config, Hub};
 use std::net::SocketAddr;
