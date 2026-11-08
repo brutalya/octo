@@ -41,11 +41,35 @@ async fn embedded_server_serves_ui_and_guards_api() {
     );
     let tok = server.token.clone();
     assert_eq!(get(server.addr, "/api/providers", Some(&tok)).await.0, 200);
+    // The node service runs here too (pairing, sync and the tunnel need it).
+    assert_eq!(get(server.addr, "/api/nodes", Some(&tok)).await.0, 200);
     server.shutdown().await;
 }
 
 #[test]
 fn tokens_are_unique_and_injected() {
     assert_ne!(octo_desktop::new_token(), octo_desktop::new_token());
-    assert!(octo_desktop::init_script("abc").contains("__OCTO_TOKEN__ = \"abc\""));
+    let js = octo_desktop::init_script("abc", "http://127.0.0.1:4321");
+    assert!(js.contains("__OCTO_TOKEN__ = \"abc\""));
+    assert!(js.contains("location.origin === \"http://127.0.0.1:4321\""));
+}
+
+#[test]
+fn navigation_is_limited_to_the_embedded_server() {
+    let addr: std::net::SocketAddr = "127.0.0.1:4321".parse().unwrap();
+    let ok = |u: &str| octo_desktop::is_app_url(&u.parse().unwrap(), addr);
+    assert!(ok("http://127.0.0.1:4321/"));
+    assert!(ok("http://127.0.0.1:4321/some/route?x=1#y"));
+    for bad in [
+        "http://127.0.0.1:4322/",
+        "https://127.0.0.1:4321/",
+        "http://localhost:4321/",
+        "http://127.0.0.1.evil.example:4321/",
+        "http://evil.example/",
+        "http://127.0.0.1@evil.example:4321/",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ] {
+        assert!(!ok(bad), "{bad}");
+    }
 }

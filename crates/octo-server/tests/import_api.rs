@@ -45,7 +45,10 @@ fn app() -> (Router, tempfile::TempDir) {
     cfg.claude_projects_dir = root.path().join("projects");
     cfg.agy_dir = root.path().join("agy");
     (
-        octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None),
+        octo_server::app(
+            Arc::new(Hub::new(cfg, "test-node").unwrap()),
+            Default::default(),
+        ),
         root,
     )
 }

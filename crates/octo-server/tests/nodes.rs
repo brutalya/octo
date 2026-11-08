@@ -57,7 +57,14 @@ async fn start(relay_url: &str, name: &str, token: Option<&str>, seed: Option<&s
         },
     )
     .unwrap();
-    let app = octo_server::app_with_node(hub, node.clone(), None, token.map(str::to_string));
+    let app = octo_server::app(
+        hub,
+        octo_server::AppConfig {
+            node: Some(node.clone()),
+            token: token.map(str::to_string),
+            ..Default::default()
+        },
+    );
     let n = N {
         app,
         _node: node,
@@ -835,7 +842,13 @@ async fn restart(dir: tempfile::TempDir) -> N {
         },
     )
     .unwrap();
-    let app = octo_server::app_with_node(hub, node.clone(), None, None);
+    let app = octo_server::app(
+        hub,
+        octo_server::AppConfig {
+            node: Some(node.clone()),
+            ..Default::default()
+        },
+    );
     N {
         app,
         _node: node,
@@ -1207,4 +1220,23 @@ async fn pairing_does_not_overwrite_changes_made_while_it_runs() {
     let (_, la) = a.json("GET", "/api/nodes", None).await;
     assert_eq!(trust_of(&la, &id_b), "full", "{la}");
     assert_eq!(la.as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn oversized_forward_body_is_413() {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let id = a.id().await;
+    let big = vec![b'x'; 52 * 1024 * 1024];
+    let r = a
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/nodes/{id}/files/public"))
+                .body(Body::from(big))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }

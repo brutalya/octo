@@ -10,10 +10,13 @@ fn router(token: Option<&str>) -> (axum::Router, tempfile::TempDir) {
     let web = tmp.path().join("web");
     std::fs::create_dir(&web).unwrap();
     std::fs::write(web.join("index.html"), "<html>octo</html>").unwrap();
-    let app = octo_server::app_with_token(
+    let app = octo_server::app(
         Arc::new(Hub::new(cfg, "test-node").unwrap()),
-        Some(octo_server::WebAssets::Dir(web)),
-        token.map(str::to_string),
+        octo_server::AppConfig {
+            web: Some(octo_server::WebAssets::Dir(web)),
+            token: token.map(str::to_string),
+            ..Default::default()
+        },
     );
     (app, tmp)
 }

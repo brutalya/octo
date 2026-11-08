@@ -28,6 +28,7 @@ use tower::ServiceExt;
 
 /// Request headers forwarded through the tunnel (the bearer token is deliberately absent).
 const REQ_HEADERS: [&str; 2] = ["content-type", "accept"];
+/// Response headers the target puts on the wire (the receiving side sanitizes them again).
 const RESP_HEADERS: [&str; 5] = [
     "content-type",
     "cache-control",
@@ -35,8 +36,8 @@ const RESP_HEADERS: [&str; 5] = [
     "x-content-type-options",
     "content-security-policy",
 ];
-/// Largest request body accepted through the tunnel (uploads are limited to 50 MB).
-const MAX_BODY: usize = 51 * 1024 * 1024;
+/// Largest request body accepted through the tunnel (same as the upload limit).
+const MAX_BODY: usize = crate::UPLOAD_LIMIT;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 const PING_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_NAME: &str = "octo";
@@ -69,6 +70,8 @@ pub enum NodeError {
     UnknownNode,
     #[error("invalid path")]
     BadPath,
+    #[error("request body too large")]
+    TooLarge,
     #[error("node unreachable")]
     Unreachable,
     #[error("{0}")]
@@ -284,7 +287,8 @@ impl Node {
 
     /// The router that tunneled requests are dispatched into (set once by the server).
     pub fn set_router(&self, r: Router) {
-        let _ = self.sh.router.set(r);
+        let fresh = self.sh.router.set(r).is_ok();
+        debug_assert!(fresh, "set_router called twice");
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -356,7 +360,7 @@ impl Node {
         };
         let body = axum::body::to_bytes(body, MAX_BODY)
             .await
-            .map_err(|_| NodeError::BadPath)?;
+            .map_err(|_| NodeError::TooLarge)?;
         if peer == self.node_id() {
             return Ok(dispatch(&self.sh, Caller::Local, head, body).await);
         }
@@ -401,10 +405,8 @@ impl Node {
         });
         let mut b = Response::builder()
             .status(StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY));
-        for (k, v) in &resp.headers {
-            if RESP_HEADERS.contains(&k.as_str()) {
-                b = b.header(k, v);
-            }
+        for (k, v) in policy::sanitize_forwarded_headers(&resp.headers) {
+            b = b.header(k, v);
         }
         b.body(Body::from_stream(
             tokio_stream::wrappers::ReceiverStream::new(rx),
@@ -857,12 +859,12 @@ async fn serve_stream(sh: Arc<Shared>, peer: NodeId, stream: Stream) {
     loop {
         match f.next_body().await {
             Ok(Some(c)) => {
-                body.extend_from_slice(&c);
-                if body.len() > MAX_BODY {
+                if body.len() + c.len() > MAX_BODY {
                     let _ = f.send_head(&respond(413)).await;
                     let _ = f.finish().await;
                     return;
                 }
+                body.extend_from_slice(&c);
             }
             Ok(None) => break,
             Err(_) => return,
@@ -1245,8 +1247,7 @@ async fn peer_task(
 
 const SYNC_EVERY: Duration = Duration::from_secs(60);
 const HINT_DEBOUNCE: Duration = Duration::from_secs(1);
-/// Same as the upload limit.
-const MAX_BLOB: usize = 50 * 1024 * 1024;
+const MAX_BLOB: usize = crate::MAX_UPLOAD;
 const MAX_MANIFEST: usize = 32 * 1024 * 1024;
 const SYNC_RETRIES: u32 = 6;
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(10);

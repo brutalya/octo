@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
+use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 type Shared = Arc<Hub>;
@@ -55,19 +56,32 @@ pub fn check_exposure(addr: std::net::SocketAddr, token: Option<&str>) -> Result
     ))
 }
 
-/// Reads the API token from `path`, creating a random 0600 one when missing.
+/// A usable bearer token: not empty or blank.
+pub fn check_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("the API token is empty; pass a non-empty --token or use --token-file".into());
+    }
+    Ok(())
+}
+
+/// Reads the API token from `path`, creating a random 0600 one when missing. Creation is atomic:
+/// the token is written to a private temp file and linked into place, so a concurrent start
+/// either sees the complete file or loses the race and reads the winner's.
 pub fn load_or_create_token(path: &std::path::Path) -> std::io::Result<String> {
     use std::io::Write;
-    match std::fs::read_to_string(path) {
-        Ok(s) => {
-            let t = s.trim().to_string();
-            if t.is_empty() {
-                return Err(std::io::Error::other("token file is empty"));
+    let read = |p: &std::path::Path| -> std::io::Result<Option<String>> {
+        match std::fs::read_to_string(p) {
+            Ok(s) => {
+                let t = s.trim().to_string();
+                check_token(&t).map_err(|_| std::io::Error::other("token file is empty"))?;
+                Ok(Some(t))
             }
-            return Ok(t);
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+    };
+    if let Some(t) = read(path)? {
+        return Ok(t);
     }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -79,12 +93,30 @@ pub fn load_or_create_token(path: &std::path::Path) -> std::io::Result<String> {
         .iter()
         .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
         .collect();
+    let mut tmp_name = path.as_os_str().to_owned();
+    let mut salt = [0u8; 6];
+    rand::fill(&mut salt[..]);
+    let salt: String = salt.iter().map(|b| format!("{b:02x}")).collect();
+    tmp_name.push(format!(".{salt}.tmp"));
+    let tmp = std::path::PathBuf::from(tmp_name);
+    let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    opts.open(path)?.write_all(token.as_bytes())?;
-    Ok(token)
+    let mut f = opts.open(&tmp)?;
+    f.write_all(token.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    let linked = std::fs::hard_link(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(token),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            read(path)?.ok_or_else(|| std::io::Error::other("token file vanished"))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Minimal HTTP GET /healthz over plain TCP (no curl in the slim image).
@@ -171,7 +203,14 @@ impl IntoResponse for ApiError {
             | CoreError::Internal(_)
             | CoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(json!({"error": err.to_string()}))).into_response()
+        // Server-side failures can carry SQL, paths or OS errors: log them, tell the client little.
+        let msg = if status.is_server_error() && status != StatusCode::BAD_GATEWAY {
+            eprintln!("octo: {status}: {err}");
+            "internal error".to_string()
+        } else {
+            err.to_string()
+        };
+        (status, Json(json!({"error": msg}))).into_response()
     }
 }
 
@@ -221,36 +260,35 @@ struct RenameBody {
     new_path: String,
 }
 
-/// Uploads are limited to 50 MB (plus multipart framing).
-const UPLOAD_LIMIT: usize = 50 * 1024 * 1024 + 64 * 1024;
+/// Largest accepted file upload / blob (50 MB). Defined once for the API, the tunnel and sync.
+pub(crate) const MAX_UPLOAD: usize = 50 * 1024 * 1024;
+/// Upload request limit: the file plus multipart framing. Also the largest tunneled body.
+pub(crate) const UPLOAD_LIMIT: usize = MAX_UPLOAD + 64 * 1024;
 
-pub fn app(hub: Shared, web: Option<WebAssets>) -> Router {
-    app_with_token(hub, web, None)
+/// Everything that varies between the server binary, the desktop app and the tests.
+#[derive(Default)]
+pub struct AppConfig {
+    /// Web UI to serve besides the API.
+    pub web: Option<WebAssets>,
+    /// When set, `/api/*` requires `Authorization: Bearer <token>`.
+    pub token: Option<String>,
+    /// Adds the node endpoints (`/api/nodes`, `/api/pairing/*`). Requests tunneled from member
+    /// nodes are dispatched into the local API only (no token, no node/pairing endpoints, so
+    /// they cannot hop further).
+    pub node: Option<Arc<Node>>,
+    /// Host name (no port) of the configured listen address, accepted in the `Host` header
+    /// besides the loopback names when no token is set.
+    pub allowed_host: Option<String>,
 }
 
-/// Same as [`app`]; when `token` is set, `/api/*` requires `Authorization: Bearer <token>`.
-pub fn app_with_token(hub: Shared, web: Option<WebAssets>, token: Option<String>) -> Router {
-    build(hub, None, web, token)
-}
-
-/// Same as [`app_with_token`], plus the node endpoints (`/api/nodes`, `/api/pairing/*`).
-/// Requests tunneled from member nodes are dispatched into the local API only (no token, no
-/// node/pairing endpoints, so they cannot hop further).
-pub fn app_with_node(
-    hub: Shared,
-    node: Arc<Node>,
-    web: Option<WebAssets>,
-    token: Option<String>,
-) -> Router {
-    build(hub, Some(node), web, token)
-}
-
-fn build(
-    hub: Shared,
-    node: Option<Arc<Node>>,
-    web: Option<WebAssets>,
-    token: Option<String>,
-) -> Router {
+/// The one router builder used by the binary, the desktop app and the tests.
+pub fn app(hub: Shared, cfg: AppConfig) -> Router {
+    let AppConfig {
+        web,
+        token,
+        node,
+        allowed_host,
+    } = cfg;
     let local = local_api(hub);
     let api = match node {
         Some(n) => {
@@ -260,11 +298,7 @@ fn build(
                 let notify = notify.clone();
                 async move {
                     let changes = req.method() != axum::http::Method::GET
-                        && req
-                            .uri()
-                            .path()
-                            .trim_start_matches("/api")
-                            .starts_with("/files/private");
+                        && touches_private_files(req.uri().path());
                     let resp = next.run(req).await;
                     if changes
                         && resp.status().is_success()
@@ -280,6 +314,7 @@ fn build(
         }
         None => local,
     };
+    let guard_host = token.is_none();
     let api = match token {
         Some(t) => api.layer(middleware::from_fn_with_state(
             Arc::<str>::from(t),
@@ -290,17 +325,63 @@ fn build(
     let router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest("/api", api);
-    match web {
-        Some(WebAssets::Dir(dir)) => {
-            let index = ServeFile::new(dir.join("index.html"));
-            router.fallback_service(ServeDir::new(dir).fallback(index))
-        }
+    let router = match web {
+        Some(WebAssets::Dir(dir)) => router.fallback(get(serve_dir).with_state(Arc::new(dir))),
         Some(WebAssets::Embedded(lookup)) => router.fallback(get(move |uri: axum::http::Uri| {
             let lookup = lookup.clone();
             async move { serve_embedded(&lookup, uri.path()) }
         })),
         None => router,
+    };
+    if guard_host {
+        // Without a token the loopback listener is the only protection; a browser tricked into
+        // resolving an attacker's name to 127.0.0.1 (DNS rebinding) must not get through.
+        let allowed: Arc<[String]> = ["127.0.0.1", "localhost", "[::1]"]
+            .into_iter()
+            .map(String::from)
+            .chain(allowed_host.map(|h| h.to_ascii_lowercase()))
+            .collect();
+        router.layer(middleware::from_fn(move |req: Request, next: Next| {
+            let allowed = allowed.clone();
+            async move {
+                match req.headers().get(header::HOST) {
+                    None => next.run(req).await,
+                    Some(h) if h.to_str().ok().is_some_and(|h| host_allowed(h, &allowed)) => {
+                        next.run(req).await
+                    }
+                    Some(_) => (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({"error": "host not allowed"})),
+                    )
+                        .into_response(),
+                }
+            }
+        }))
+    } else {
+        router
     }
+}
+
+/// Host header value (optionally with port) against the allowed host names.
+fn host_allowed(value: &str, allowed: &[String]) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    let host = if value.starts_with('[') {
+        value.split_once(']').map(|(h, _)| format!("{h}]"))
+    } else {
+        Some(
+            value
+                .rsplit_once(':')
+                .map_or(value.as_str(), |(h, _)| h)
+                .to_string(),
+        )
+    };
+    host.is_some_and(|h| allowed.contains(&h))
+}
+
+/// True if `path` (with or without the `/api` prefix) is under `/files/private`.
+fn touches_private_files(path: &str) -> bool {
+    let mut seg = path.trim_start_matches("/api").split('/').skip(1);
+    seg.next() == Some("files") && seg.next() == Some("private")
 }
 
 /// Where the web UI comes from.
@@ -314,14 +395,74 @@ pub enum WebAssets {
 
 pub type EmbeddedLookup = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Exact asset, else `index.html` (SPA fallback).
-fn serve_embedded(lookup: &EmbeddedLookup, path: &str) -> axum::response::Response {
+/// Headers for everything the web UI serves: no inline script, no foreign origins.
+const WEB_CSP: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; \
+style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'";
+
+fn web_headers(mut resp: Response) -> Response {
+    let h = resp.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(WEB_CSP),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    resp
+}
+
+/// True if the last path segment has an extension (a file request, not a client route).
+fn has_extension(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|s| s.contains('.'))
+}
+
+/// Exact asset; unknown path with an extension is 404, without one it is a client route and
+/// gets `index.html` (SPA fallback).
+fn serve_embedded(lookup: &EmbeddedLookup, path: &str) -> Response {
     let path = path.trim_start_matches('/');
-    let found = if path.is_empty() { None } else { lookup(path) }.or_else(|| lookup("index.html"));
-    match found {
-        Some((bytes, mime)) => ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response(),
+    let found = if path.is_empty() { None } else { lookup(path) };
+    let found = match found {
+        Some(f) => Some(f),
+        None if has_extension(path) => None,
+        None => lookup("index.html"),
+    };
+    web_headers(match found {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], bytes).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    })
+}
+
+/// `web/dist` from disk with the same fallback rules as [`serve_embedded`].
+async fn serve_dir(State(dir): State<Arc<PathBuf>>, req: Request) -> Response {
+    let (method, uri) = (req.method().clone(), req.uri().clone());
+    drop(req);
+    let path = uri.path().to_string();
+    let again = |uri: axum::http::Uri| {
+        Request::builder()
+            .method(method.clone())
+            .uri(uri)
+            .body(axum::body::Body::empty())
+    };
+    let Ok(first) = again(uri) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let resp = match ServeDir::new(&*dir).oneshot(first).await {
+        Ok(r) => r.map(axum::body::Body::new),
+        Err(never) => match never {},
+    };
+    if resp.status() != StatusCode::NOT_FOUND || has_extension(&path) {
+        return web_headers(resp);
     }
+    let Ok(index) = again(axum::http::Uri::from_static("/")) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    web_headers(
+        match ServeFile::new(dir.join("index.html")).oneshot(index).await {
+            Ok(r) => r.map(axum::body::Body::new),
+            Err(never) => match never {},
+        },
+    )
 }
 
 fn local_api(hub: Shared) -> Router {
@@ -417,7 +558,7 @@ async fn list_messages(
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     // may re-read the CLI's session file
-    Ok(Json(blocking_core(move || h.list_messages(&id)).await?))
+    Ok(Json(blocking(move || h.list_messages(&id)).await?))
 }
 
 async fn import_sessions(
@@ -425,9 +566,7 @@ async fn import_sessions(
     Path(kind): Path<ProviderKind>,
     Query(q): Query<SessionsQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(
-        blocking_core(move || h.import_sessions(kind, &q.q)).await?,
-    ))
+    Ok(Json(blocking(move || h.import_sessions(kind, &q.q)).await?))
 }
 
 async fn import_session(
@@ -436,18 +575,25 @@ async fn import_session(
     Json(b): Json<ImportBody>,
 ) -> ApiResult<impl IntoResponse> {
     Ok(Json(
-        blocking_core(move || h.import_session(kind, &b.external_id)).await?,
+        blocking(move || h.import_session(kind, &b.external_id)).await?,
     ))
 }
 
-async fn blocking_core<T, F>(f: F) -> Result<T, ApiError>
+/// Runs blocking work (sync fs, SQLite, crypto) off the async runtime; a panicked or
+/// cancelled task is a 500.
+async fn blocking<T, E, F>(f: F) -> Result<T, ApiError>
 where
     T: Send + 'static,
-    F: FnOnce() -> Result<T, CoreError> + Send + 'static,
+    E: Send + 'static,
+    ApiError: From<E>,
+    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|_| ApiError::Core(CoreError::Internal("task failed")))?
+        .map_err(|e| {
+            eprintln!("octo: blocking task failed: {e}");
+            ApiError::Core(CoreError::Internal("task failed"))
+        })?
         .map_err(ApiError::from)
 }
 
@@ -484,30 +630,24 @@ async fn patch_settings(
     State(h): State<Shared>,
     Json(b): Json<SettingsPatch>,
 ) -> ApiResult<impl IntoResponse> {
-    let view = tokio::task::spawn_blocking(move || h.update_settings(b))
-        .await
-        .map_err(|_| CoreError::Internal("settings task failed"))??;
-    Ok(Json(view))
+    Ok(Json(blocking(move || h.update_settings(b)).await?))
 }
 
 /// Runs file I/O (sync fs + crypto) off the async runtime.
-async fn blocking<T, F>(h: &Shared, f: F) -> Result<T, ApiError>
+async fn files_blocking<T, F>(h: &Shared, f: F) -> Result<T, ApiError>
 where
     T: Send + 'static,
     F: FnOnce(&Files) -> Result<T, FilesError> + Send + 'static,
 {
     let files = h.files().clone();
-    tokio::task::spawn_blocking(move || f(&files))
-        .await
-        .map_err(|_| ApiError::Core(CoreError::Internal("file task failed")))?
-        .map_err(ApiError::from)
+    blocking(move || f(&files)).await
 }
 
 async fn list_files(
     State(h): State<Shared>,
     Path(space): Path<Space>,
 ) -> ApiResult<impl IntoResponse> {
-    Ok(Json(blocking(&h, move |f| f.list(space)).await?))
+    Ok(Json(files_blocking(&h, move |f| f.list(space)).await?))
 }
 
 async fn upload_files(
@@ -527,7 +667,7 @@ async fn upload_files(
         } else {
             format!("{}/{name}", q.path)
         };
-        saved.push(blocking(&h, move |f| f.write(space, &target, &data)).await?);
+        saved.push(files_blocking(&h, move |f| f.write(space, &target, &data)).await?);
     }
     if saved.is_empty() {
         return Err(CoreError::Invalid("no file in request").into());
@@ -540,7 +680,7 @@ async fn file_content(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<impl IntoResponse> {
-    let data = blocking(&h, move |f| f.read(space, &q.path)).await?;
+    let data = files_blocking(&h, move |f| f.read(space, &q.path)).await?;
     // Never rendered by the browser: user files share the app's origin.
     Ok((
         [
@@ -553,7 +693,7 @@ async fn file_content(
 }
 
 async fn sync_manifest(State(h): State<Shared>) -> ApiResult<impl IntoResponse> {
-    Ok(Json(blocking(&h, |f| f.private_manifest()).await?))
+    Ok(Json(files_blocking(&h, |f| f.private_manifest()).await?))
 }
 
 async fn sync_blob(State(h): State<Shared>, Path(hash): Path<String>) -> ApiResult<Response> {
@@ -561,7 +701,7 @@ async fn sync_blob(State(h): State<Shared>, Path(hash): Path<String>) -> ApiResu
     if !valid {
         return Err(CoreError::Invalid("invalid hash").into());
     }
-    let data = blocking(&h, move |f| f.private_blob(&hash))
+    let data = files_blocking(&h, move |f| f.private_blob(&hash))
         .await?
         .ok_or(FilesError::NotFound)?;
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], data).into_response())
@@ -572,7 +712,7 @@ async fn make_dir(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<StatusCode> {
-    blocking(&h, move |f| f.mkdir(space, &q.path)).await?;
+    files_blocking(&h, move |f| f.mkdir(space, &q.path)).await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -582,7 +722,7 @@ async fn rename_file(
     Query(q): Query<PathQuery>,
     Json(b): Json<RenameBody>,
 ) -> ApiResult<StatusCode> {
-    blocking(&h, move |f| f.rename(space, &q.path, &b.new_path)).await?;
+    files_blocking(&h, move |f| f.rename(space, &q.path, &b.new_path)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -591,7 +731,7 @@ async fn delete_file(
     Path(space): Path<Space>,
     Query(q): Query<PathQuery>,
 ) -> ApiResult<StatusCode> {
-    blocking(&h, move |f| f.delete(space, &q.path)).await?;
+    files_blocking(&h, move |f| f.delete(space, &q.path)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -599,11 +739,19 @@ impl IntoResponse for NodeError {
     fn into_response(self) -> Response {
         let status = match &self {
             NodeError::NoRelay | NodeError::BadCode | NodeError::BadPath => StatusCode::BAD_REQUEST,
+            NodeError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             NodeError::Busy => StatusCode::CONFLICT,
             NodeError::NoPending | NodeError::UnknownNode => StatusCode::NOT_FOUND,
             NodeError::Unreachable | NodeError::Net(_) => StatusCode::BAD_GATEWAY,
         };
-        (status, Json(json!({"error": self.to_string()}))).into_response()
+        let msg = match &self {
+            NodeError::Net(e) => {
+                eprintln!("octo: node error: {e}");
+                "network error".to_string()
+            }
+            _ => self.to_string(),
+        };
+        (status, Json(json!({"error": msg}))).into_response()
     }
 }
 
@@ -671,7 +819,11 @@ async fn pairing_confirm(State(n): State<Arc<Node>>, body: axum::body::Bytes) ->
     } else if let Ok(b) = serde_json::from_slice(&body) {
         b
     } else {
-        return StatusCode::BAD_REQUEST.into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid request body"})),
+        )
+            .into_response();
     };
     match n.decide(true, b.trust_private, b.allow_agents) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),

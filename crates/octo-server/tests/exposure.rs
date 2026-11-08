@@ -17,7 +17,10 @@ async fn status(app: &axum::Router, path: &str) -> StatusCode {
 async fn api_router_has_no_relay() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(tmp.path().to_path_buf()));
-    let app = octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None);
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        Default::default(),
+    );
     assert_eq!(status(&app, "/relay").await, StatusCode::NOT_FOUND);
 }
 
@@ -25,10 +28,12 @@ async fn api_router_has_no_relay() {
 async fn api_healthz_is_open_even_with_token() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = Config::new(Some(tmp.path().to_path_buf()));
-    let app = octo_server::app_with_token(
+    let app = octo_server::app(
         Arc::new(Hub::new(cfg, "test-node").unwrap()),
-        None,
-        Some("t".into()),
+        octo_server::AppConfig {
+            token: Some("t".into()),
+            ..Default::default()
+        },
     );
     assert_eq!(status(&app, "/healthz").await, StatusCode::OK);
     assert_eq!(status(&app, "/api/threads").await, StatusCode::UNAUTHORIZED);
@@ -56,4 +61,95 @@ fn non_loopback_without_token_is_refused() {
     assert!(octo_server::check_exposure(wide, Some("t")).is_ok());
     assert!(octo_server::check_exposure(lo, None).is_ok());
     assert!(octo_server::check_exposure(lo6, None).is_ok());
+}
+
+async fn with_host(
+    app: &axum::Router,
+    path: &str,
+    host: Option<&str>,
+    auth: Option<&str>,
+) -> StatusCode {
+    let mut b = Request::get(path);
+    if let Some(h) = host {
+        b = b.header("host", h);
+    }
+    if let Some(a) = auth {
+        b = b.header("authorization", a);
+    }
+    app.clone()
+        .oneshot(b.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn foreign_host_header_is_rejected_without_a_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = Config::new(Some(tmp.path().to_path_buf()));
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        octo_server::AppConfig {
+            allowed_host: Some("box.lan".into()),
+            ..Default::default()
+        },
+    );
+    for ok in [
+        "127.0.0.1",
+        "127.0.0.1:7878",
+        "localhost:80",
+        "LOCALHOST",
+        "[::1]:7878",
+        "[::1]",
+        "box.lan:7878",
+    ] {
+        assert_eq!(
+            with_host(&app, "/api/threads", Some(ok), None).await,
+            StatusCode::OK,
+            "{ok}"
+        );
+    }
+    for bad in [
+        "evil.example",
+        "evil.example:7878",
+        "127.0.0.1.evil.example",
+        "localhost.evil.example:1",
+        "[::2]:1",
+        "0.0.0.0:7878",
+        "",
+    ] {
+        assert_eq!(
+            with_host(&app, "/api/threads", Some(bad), None).await,
+            StatusCode::FORBIDDEN,
+            "{bad}"
+        );
+    }
+    // Also for the page and healthz.
+    assert_eq!(
+        with_host(&app, "/healthz", Some("evil.example"), None).await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn host_header_is_not_checked_when_a_token_is_set() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = Config::new(Some(tmp.path().to_path_buf()));
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        octo_server::AppConfig {
+            token: Some("t".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        with_host(
+            &app,
+            "/api/threads",
+            Some("api.example.com"),
+            Some("Bearer t")
+        )
+        .await,
+        StatusCode::OK
+    );
 }

@@ -22,8 +22,10 @@ pub struct Server {
     pub addr: SocketAddr,
     pub token: String,
     hub: Arc<Hub>,
+    /// Keeps the node service (relay link, pairing, sync, tunnel) alive.
+    _node: Arc<octo_server::node::Node>,
     stop: Option<oneshot::Sender<()>>,
-    task: JoinHandle<()>,
+    task: JoinHandle<std::io::Result<()>>,
 }
 
 impl Server {
@@ -37,45 +39,58 @@ impl Server {
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(());
         }
-        let _ = self.task.await;
+        match self.task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("octo: server stopped with an error: {e}"),
+            Err(e) => eprintln!("octo: server task failed: {e}"),
+        }
     }
 }
 
-/// Binds `127.0.0.1:0` and serves the API (token required) plus the built web UI.
+/// True for pages of the embedded server (`http://127.0.0.1:<port>`); the webview may show
+/// nothing else, so a link or redirect can never turn it into a browser with the app's token.
+pub fn is_app_url(url: &tauri::Url, addr: SocketAddr) -> bool {
+    url.scheme() == "http"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port() == Some(addr.port())
+        && matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip == addr.ip())
+}
+
+/// Binds `127.0.0.1:0` and serves the API (token required, node service included) plus the
+/// built web UI.
 pub async fn start_server(config: Config, web: Option<octo_server::WebAssets>) -> Result<Server> {
     let token = new_token();
-    let hub = Arc::new(Hub::new(
-        config.clone(),
-        &octo_server::node::node_id(&config.data_dir)?,
-    )?);
-    let app = octo_server::app_with_token(hub.clone(), web, Some(token.clone()));
+    let data_dir = config.data_dir.clone();
+    let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
+    let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
+    let app = octo_server::app(
+        hub.clone(),
+        octo_server::AppConfig {
+            web,
+            token: Some(token.clone()),
+            node: Some(node.clone()),
+            allowed_host: None,
+        },
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let (stop, rx) = oneshot::channel::<()>();
-    let task = tokio::spawn(async move {
-        let _ = axum_serve(listener, app, rx).await;
-    });
+    let task = tokio::spawn(octo_server::serve(listener, app, async {
+        let _ = rx.await;
+    }));
     Ok(Server {
         addr,
         token,
         hub,
+        _node: node,
         stop: Some(stop),
         task,
     })
 }
 
-async fn axum_serve(
-    listener: tokio::net::TcpListener,
-    app: octo_server::Router,
-    stop: oneshot::Receiver<()>,
-) -> std::io::Result<()> {
-    octo_server::serve(listener, app, async {
-        let _ = stop.await;
-    })
-    .await
-}
-
-/// Script injected into every page before it runs.
-pub fn init_script(token: &str) -> String {
-    format!("window.__OCTO_TOKEN__ = \"{token}\";")
+/// Script injected into every page before it runs. The token is only set on the app's own
+/// origin (e.g. `http://127.0.0.1:4321`), never on a page that got in by other means.
+pub fn init_script(token: &str, origin: &str) -> String {
+    format!("if (location.origin === \"{origin}\") {{ window.__OCTO_TOKEN__ = \"{token}\"; }}")
 }

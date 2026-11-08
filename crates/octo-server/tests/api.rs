@@ -25,7 +25,10 @@ fn app() -> (Router, tempfile::TempDir) {
         ..Config::new(None)
     };
     (
-        octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), None),
+        octo_server::app(
+            Arc::new(Hub::new(cfg, "test-node").unwrap()),
+            Default::default(),
+        ),
         tmp,
     )
 }
@@ -226,7 +229,10 @@ async fn serves_web_dir_with_index_fallback() {
     };
     let app = octo_server::app(
         Arc::new(Hub::new(cfg, "test-node").unwrap()),
-        Some(octo_server::WebAssets::Dir(tmp.path().to_path_buf())),
+        octo_server::AppConfig {
+            web: Some(octo_server::WebAssets::Dir(tmp.path().to_path_buf())),
+            ..Default::default()
+        },
     );
     for uri in ["/", "/some/client/route"] {
         let r = call(&app, "GET", uri, None).await;
@@ -252,7 +258,13 @@ async fn serves_embedded_assets_with_index_fallback() {
         "assets/app.js" => Some((b"console.log(1)".to_vec(), "text/javascript".to_string())),
         _ => None,
     }));
-    let app = octo_server::app(Arc::new(Hub::new(cfg, "test-node").unwrap()), Some(assets));
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        octo_server::AppConfig {
+            web: Some(assets),
+            ..Default::default()
+        },
+    );
     for uri in ["/", "/some/client/route"] {
         let r = call(&app, "GET", uri, None).await;
         assert_eq!(r.status(), StatusCode::OK, "{uri}");
@@ -315,4 +327,79 @@ async fn approval_defaults_to_confirm_and_can_be_patched() {
     )
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+fn web_app(web: octo_server::WebAssets) -> (Router, tempfile::TempDir) {
+    let (_, d) = app();
+    let cfg = Config {
+        data_dir: d.path().to_path_buf(),
+        claude_bin: "x".into(),
+        agy_bin: "x".into(),
+        openrouter_base: String::new(),
+        ..Config::new(None)
+    };
+    let app = octo_server::app(
+        Arc::new(Hub::new(cfg, "test-node").unwrap()),
+        octo_server::AppConfig {
+            web: Some(web),
+            ..Default::default()
+        },
+    );
+    (app, d)
+}
+
+#[tokio::test]
+async fn web_assets_have_csp_and_unknown_files_are_404() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("assets")).unwrap();
+    std::fs::write(tmp.path().join("index.html"), "<html>octo</html>").unwrap();
+    std::fs::write(tmp.path().join("assets/app.js"), "1").unwrap();
+    let embedded = octo_server::WebAssets::Embedded(Arc::new(|p: &str| match p {
+        "index.html" => Some((b"<html>octo</html>".to_vec(), "text/html".to_string())),
+        "assets/app.js" => Some((b"1".to_vec(), "text/javascript".to_string())),
+        _ => None,
+    }));
+    let dir = octo_server::WebAssets::Dir(tmp.path().to_path_buf());
+    for web in [dir, embedded] {
+        let (app, _d) = web_app(web);
+        for (uri, status) in [
+            ("/", StatusCode::OK),
+            ("/some/client/route", StatusCode::OK),
+            ("/assets/app.js", StatusCode::OK),
+            ("/assets/missing.js", StatusCode::NOT_FOUND),
+            ("/missing.png", StatusCode::NOT_FOUND),
+            ("/a/b/c.map", StatusCode::NOT_FOUND),
+        ] {
+            let r = call(&app, "GET", uri, None).await;
+            assert_eq!(r.status(), status, "{uri}");
+            let csp = r.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(
+                csp.contains("default-src 'self'") && csp.contains("frame-ancestors 'none'"),
+                "{uri} {csp}"
+            );
+            assert!(csp.contains("object-src 'none'"));
+            assert_eq!(r.headers()["x-content-type-options"], "nosniff", "{uri}");
+            if status == StatusCode::NOT_FOUND {
+                assert_ne!(
+                    text(r).await,
+                    "<html>octo</html>",
+                    "{uri} must not be index.html"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn server_errors_do_not_leak_internals() {
+    let (app, d) = app();
+    let db = rusqlite::Connection::open(d.path().join("octo.db")).unwrap();
+    db.execute_batch("DROP TABLE threads;").unwrap();
+    let r = call(&app, "GET", "/api/threads", None).await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let v = json_of(r).await;
+    assert_eq!(v, json!({"error": "internal error"}));
 }

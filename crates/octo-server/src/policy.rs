@@ -121,3 +121,49 @@ pub fn filter_thread_list(body: &[u8]) -> Option<Vec<u8>> {
     }
     serde_json::to_vec(&out).ok()
 }
+
+/// Content types that pass through a forward unchanged; anything else is served as opaque bytes
+/// (a remote node must not be able to make this origin render HTML, SVG or script).
+const SAFE_TYPES: [&str; 4] = [
+    "application/json",
+    "text/event-stream",
+    "application/octet-stream",
+    "text/plain",
+];
+
+/// Response headers of a forwarded (remote) response as this node serves them: content type
+/// from a whitelist, `nosniff` and `Content-Security-Policy: sandbox` always (the remote's own
+/// are dropped), `Content-Disposition` only in its `attachment` form, `Cache-Control` as sent.
+pub fn sanitize_forwarded_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    let find = |name: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    let ct = find("content-type")
+        .filter(|v| {
+            let essence = v
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+            SAFE_TYPES.contains(&essence.as_str())
+        })
+        .unwrap_or("application/octet-stream");
+    let mut out = vec![("content-type".to_string(), ct.to_string())];
+    if let Some(v) = find("cache-control") {
+        out.push(("cache-control".into(), v.into()));
+    }
+    if let Some(v) = find("content-disposition").filter(|v| {
+        let t = v.trim_start().to_ascii_lowercase();
+        t.strip_prefix("attachment")
+            .is_some_and(|r| r.is_empty() || r.starts_with(';') || r.starts_with(' '))
+    }) {
+        out.push(("content-disposition".into(), v.into()));
+    }
+    out.push(("x-content-type-options".into(), "nosniff".into()));
+    out.push(("content-security-policy".into(), "sandbox".into()));
+    out
+}

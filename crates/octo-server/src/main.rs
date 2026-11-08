@@ -10,11 +10,12 @@ struct Args {
     data_dir: Option<PathBuf>,
     #[arg(long, default_value = "127.0.0.1:7878")]
     addr: String,
-    /// Built web UI to serve. Defaults to ./web/dist, then the repo's web/dist;
-    /// skipped if the directory does not exist.
+    /// Built web UI to serve. Defaults to ./web/dist when it exists; an explicit path that is
+    /// not a directory is an error.
     #[arg(long)]
     web_dir: Option<PathBuf>,
-    /// Require `Authorization: Bearer <token>` on /api/*. Open when omitted.
+    /// Require `Authorization: Bearer <token>` on /api/*. Open when omitted. Visible in the
+    /// process list: prefer --token-file.
     #[arg(long)]
     token: Option<String>,
     /// Read the token from this file; a random one (0600) is created on first start.
@@ -42,6 +43,32 @@ struct Args {
     relay_only: bool,
 }
 
+/// Resolves on Ctrl-C or SIGTERM.
+async fn termination() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            },
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// A future that resolves once `stop` flips to true (or its sender is gone).
+async fn stopped(mut stop: tokio::sync::watch::Receiver<bool>) {
+    let _ = stop.wait_for(|s| *s).await;
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = Args::parse();
@@ -55,24 +82,50 @@ async fn main() -> Result<()> {
     if let Some(p) = &args.token_file {
         args.token = Some(octo_server::load_or_create_token(p)?);
     }
-    let relay_listener = match &args.relay_addr {
-        Some(a) => {
-            let l = tokio::net::TcpListener::bind(a).await?;
+    if let Some(t) = &args.token {
+        octo_server::check_token(t).map_err(anyhow::Error::msg)?;
+    }
+    // Everything that can be wrong with the configuration is checked before any port is bound.
+    if args.relay_only && args.relay_addr.is_none() {
+        anyhow::bail!("--relay-only needs --relay-addr");
+    }
+    let relay_sock: Option<std::net::SocketAddr> =
+        args.relay_addr.as_deref().map(str::parse).transpose()?;
+    let api_addr: std::net::SocketAddr = args.addr.parse()?;
+    if !args.relay_only {
+        octo_server::check_exposure(api_addr, args.token.as_deref()).map_err(anyhow::Error::msg)?;
+    }
+    let web_dir = match args.web_dir {
+        Some(p) if p.is_dir() => Some(p),
+        Some(p) => anyhow::bail!("--web-dir {} is not a directory", p.display()),
+        None => Some(PathBuf::from("web/dist")).filter(|p| p.is_dir()),
+    };
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        termination().await;
+        let _ = stop_tx.send(true);
+    });
+    let relay_task = match relay_sock {
+        Some(sock) => {
+            let l = tokio::net::TcpListener::bind(sock).await?;
             println!("Octo relay: ws://{}/relay", l.local_addr()?);
             let relay = octo_net::relay::Relay::new(Default::default())?;
-            Some((l, octo_server::relay_app(relay)))
+            let app = octo_server::relay_app(relay);
+            let stop = stop_rx.clone();
+            Some(tokio::spawn(async move {
+                if let Err(e) = octo_server::serve(l, app, stopped(stop)).await {
+                    eprintln!("octo: relay listener failed: {e}");
+                }
+            }))
         }
         None => None,
     };
     if args.relay_only {
-        let Some((l, app)) = relay_listener else {
-            anyhow::bail!("--relay-only needs --relay-addr");
-        };
-        axum::serve(l, app).await?;
+        if let Some(t) = relay_task {
+            t.await?;
+        }
         return Ok(());
     }
-    let api_addr: std::net::SocketAddr = args.addr.parse()?;
-    octo_server::check_exposure(api_addr, args.token.as_deref()).map_err(anyhow::Error::msg)?;
     let mut config = Config::new(args.data_dir);
     if let Some(p) = args.claude_bin {
         config.claude_bin = p;
@@ -86,32 +139,35 @@ async fn main() -> Result<()> {
     if let Some(p) = args.agy_dir {
         config.agy_dir = p;
     }
-    let web_dir = args
-        .web_dir
-        .into_iter()
-        .chain([
-            PathBuf::from("web/dist"),
-            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist")),
-        ])
-        .find(|p| p.is_dir());
     let web_built = web_dir.is_some();
-    let web_dir = web_dir.map(octo_server::WebAssets::Dir);
+    let web = web_dir.map(octo_server::WebAssets::Dir);
     let data_dir = config.data_dir.clone();
     let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
     let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
-    let app = octo_server::app_with_node(hub, node, web_dir, args.token);
-    if let Some((l, relay_app)) = relay_listener {
-        tokio::spawn(async move {
-            if let Err(e) = axum::serve(l, relay_app).await {
-                eprintln!("relay listener: {e}");
-            }
-        });
-    }
+    let allowed_host = Some(match api_addr.ip() {
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        ip => ip.to_string(),
+    });
+    let app = octo_server::app(
+        hub.clone(),
+        octo_server::AppConfig {
+            web,
+            token: args.token,
+            node: Some(node),
+            allowed_host,
+        },
+    );
     let listener = tokio::net::TcpListener::bind(api_addr).await?;
     println!("Octo: http://{}", listener.local_addr()?);
     if !web_built {
         println!("web UI not built: cd web && npm ci && npm run build");
     }
-    axum::serve(listener, app).await?;
+    let served = octo_server::serve(listener, app, stopped(stop_rx)).await;
+    // Stop accepting happened above; now end agent processes, then the relay listener.
+    hub.shutdown();
+    if let Some(t) = relay_task {
+        let _ = t.await;
+    }
+    served?;
     Ok(())
 }

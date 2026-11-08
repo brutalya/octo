@@ -46,7 +46,13 @@ Update: `docker compose pull && docker compose up -d`.
 
 ## Flags
 
-`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing), `--relay-addr`, `--relay-only`, `--data-dir`, `--web-dir`, `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
+`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing; **preferred**: `--token <secret>` is visible in the process list), `--token <secret>` (must not be empty), `--relay-addr`, `--relay-only`, `--data-dir`, `--web-dir <dir>` (default `./web/dist` if it exists; an explicit path that is not a directory is a startup error), `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
+
+An empty `--token` or an empty token file is a startup error. Configuration is validated before any port is bound. SIGTERM and Ctrl-C stop accepting connections, end running agent processes and exit.
+
+Without a token the API only answers requests whose `Host` header is `127.0.0.1`, `localhost`, `[::1]` or the host of `--addr` (protection against DNS rebinding); with a token the header is not checked.
+
+The relay listener (`--relay-addr`) needs no authentication by design: it only forwards end-to-end encrypted frames between nodes of one network id and sees no plaintext. Limit exposure with the reverse proxy, not with a token.
 
 ## Troubleshooting
 

@@ -41,3 +41,31 @@ async fn healthcheck_ok_against_relay_and_fails_when_down() {
     };
     assert!(octo_server::healthcheck(&dead).is_err());
 }
+
+#[test]
+fn blank_tokens_are_rejected() {
+    for t in ["", " ", "\n\t"] {
+        assert!(octo_server::check_token(t).is_err(), "{t:?}");
+    }
+    assert!(octo_server::check_token("x").is_ok());
+}
+
+#[test]
+fn concurrent_token_creation_agrees_on_one_complete_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = std::sync::Arc::new(tmp.path().join("token"));
+    let hs: Vec<_> = (0..8)
+        .map(|_| {
+            let p = p.clone();
+            std::thread::spawn(move || octo_server::load_or_create_token(&p).unwrap())
+        })
+        .collect();
+    let tokens: Vec<String> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+    assert!(
+        tokens.iter().all(|t| t == &tokens[0] && t.len() == 48),
+        "{tokens:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&*p).unwrap(), tokens[0]);
+    // No temp files left behind.
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+}

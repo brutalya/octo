@@ -3,7 +3,7 @@ use octo_core::storage::Space;
 use octo_net::membership::Trust;
 use octo_server::policy::{
     TunnelReq, body_agent_fields, body_touches_private, filter_thread_list, path_allowed,
-    thread_id, tunnel_allows as allows,
+    sanitize_forwarded_headers, thread_id, tunnel_allows as allows,
 };
 
 /// Trust/agents matrix helper: existing tests grant agents so they keep testing trust only.
@@ -237,5 +237,72 @@ fn path_allow_list_pins_percent_coupling() {
         "threads",
     ] {
         assert!(!path_allowed(no), "{no}");
+    }
+}
+
+fn hdrs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    v.iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn get<'a>(h: &'a [(String, String)], k: &str) -> Option<&'a str> {
+    h.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+}
+
+#[test]
+fn forwarded_response_headers_are_sanitized() {
+    // Active content types are neutralized.
+    for ct in [
+        "text/html",
+        "image/svg+xml",
+        "application/xhtml+xml",
+        "text/javascript",
+        "",
+    ] {
+        let h = sanitize_forwarded_headers(&hdrs(&[("content-type", ct)]));
+        assert_eq!(
+            get(&h, "content-type"),
+            Some("application/octet-stream"),
+            "{ct}"
+        );
+    }
+    for ct in [
+        "application/json",
+        "text/event-stream",
+        "application/octet-stream",
+        "text/plain; charset=utf-8",
+    ] {
+        let h = sanitize_forwarded_headers(&hdrs(&[("content-type", ct)]));
+        assert_eq!(get(&h, "content-type"), Some(ct));
+    }
+    // Missing content type: octet-stream. Always nosniff + sandbox; remote CSP is dropped.
+    let h = sanitize_forwarded_headers(&hdrs(&[
+        ("content-security-policy", "default-src *"),
+        ("x-content-type-options", "none"),
+        ("set-cookie", "a=b"),
+    ]));
+    assert_eq!(get(&h, "content-type"), Some("application/octet-stream"));
+    assert_eq!(get(&h, "content-security-policy"), Some("sandbox"));
+    assert_eq!(get(&h, "x-content-type-options"), Some("nosniff"));
+    assert_eq!(get(&h, "set-cookie"), None);
+    assert_eq!(
+        h.iter()
+            .filter(|(k, _)| k == "content-security-policy")
+            .count(),
+        1
+    );
+    // Content-Disposition: only the attachment form survives.
+    let h = sanitize_forwarded_headers(&hdrs(&[(
+        "content-disposition",
+        "attachment; filename=\"a.txt\"",
+    )]));
+    assert_eq!(
+        get(&h, "content-disposition"),
+        Some("attachment; filename=\"a.txt\"")
+    );
+    for bad in ["inline", "inline; filename=x.html", "form-data", ""] {
+        let h = sanitize_forwarded_headers(&hdrs(&[("content-disposition", bad)]));
+        assert_eq!(get(&h, "content-disposition"), None, "{bad}");
     }
 }
