@@ -3,17 +3,25 @@
 use crate::NOISE_MAX;
 use crate::error::{NetError, Result};
 use crate::identity::{NodeId, NodeKey};
-pub use crate::relay::{ERR_BUSY, ERR_PEER_UNAVAILABLE, ERR_RATE_LIMITED};
+pub use crate::relay::{ERR_BUSY, ERR_PEER_UNAVAILABLE};
 use crate::relay::{
-    Link, MAX_PAYLOAD, RELAY_PARAMS, RELAY_PROLOGUE, RELAY_VERSION, T_DELIVER, T_ERROR, T_READY,
-    T_SEND,
+    KEEPALIVE_EVERY, Link, MAX_PAYLOAD, RELAY_PARAMS, RELAY_PROLOGUE, RELAY_VERSION, SharedLink,
+    T_DELIVER, T_ERROR, T_KEEPALIVE, T_READY, T_SEND, lock_link,
 };
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use snow::Builder;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
+/// A socket write that takes longer than this ends the session (reconnect).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct RelayClientConfig {
@@ -25,6 +33,10 @@ pub struct RelayClientConfig {
     pub backoff_max: Duration,
 }
 
+/// Events are best-effort: `Connected`, `Disconnected` and `RelayError` are sent with `try_send`
+/// and are lost if the event queue is full. `Frame` is never dropped (it applies backpressure).
+/// The source of truth for the link state is [`RelayHandle::is_online`] /
+/// [`RelayHandle::wait_online`], which is updated before the matching event is queued.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     Connected,
@@ -81,6 +93,7 @@ impl RelayHandle {
         }
     }
 
+    /// True while the authenticated relay link is up. Authoritative; see [`Event`].
     pub fn is_online(&self) -> bool {
         *self.online.borrow()
     }
@@ -163,6 +176,10 @@ where
     }
 }
 
+fn werr(e: tokio_tungstenite::tungstenite::Error) -> NetError {
+    NetError::Relay(e.to_string())
+}
+
 async fn session(
     cfg: &RelayClientConfig,
     cmd: &mut mpsc::Receiver<(NodeId, Vec<u8>)>,
@@ -174,8 +191,7 @@ async fn session(
     let (mut ws, _) = tokio::time::timeout(to, tokio_tungstenite::connect_async(cfg.url.as_str()))
         .await
         .map_err(|_| NetError::Timeout)?
-        .map_err(|e| NetError::Relay(e.to_string()))?;
-    let werr = |e: tokio_tungstenite::tungstenite::Error| NetError::Relay(e.to_string());
+        .map_err(werr)?;
     let mut hs = Builder::new(RELAY_PARAMS.parse()?)
         .local_private_key(cfg.key.secret())?
         .prologue(RELAY_PROLOGUE)?
@@ -193,45 +209,91 @@ async fn session(
     ws.send(Message::Binary(buf[..n].to_vec().into()))
         .await
         .map_err(werr)?;
-    let mut link = Link(hs.into_transport_mode()?);
+    let link: SharedLink = Arc::new(Mutex::new(Link(hs.into_transport_mode()?)));
     let first = tokio::time::timeout(to, recv_bin(&mut ws))
         .await
         .map_err(|_| NetError::Timeout)??;
-    if link.open(&first)? != [T_READY] {
+    if lock_link(&link).open(&first)? != [T_READY] {
         return Err(NetError::Relay("expected READY".into()));
     }
     *ready = true;
     let _ = online.send(true);
     let _ = events.try_send(Event::Connected);
+    let (sink, stream) = ws.split();
+    // Reader and writer run concurrently: a blocked socket write never stops reads.
+    let writer = write_half(sink, link.clone(), cmd);
+    let reader = read_half(stream, link, events);
+    tokio::select! {
+        r = writer => r,
+        r = reader => r,
+    }
+}
+
+async fn write_timed(
+    sink: &mut SplitSink<Ws, Message>,
+    link: &SharedLink,
+    pt: &[u8],
+) -> Result<()> {
+    let ct = lock_link(link).seal(pt)?;
+    tokio::time::timeout(WRITE_TIMEOUT, sink.send(Message::Binary(ct.into())))
+        .await
+        .map_err(|_| NetError::Timeout)?
+        .map_err(werr)
+}
+
+/// Sends queued frames and a keepalive every `KEEPALIVE_EVERY`; closes the link when the
+/// command queue is closed (`shutdown`, after flushing what was queued).
+async fn write_half(
+    mut sink: SplitSink<Ws, Message>,
+    link: SharedLink,
+    cmd: &mut mpsc::Receiver<(NodeId, Vec<u8>)>,
+) -> Result<()> {
+    let mut tick = tokio::time::interval(KEEPALIVE_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
     loop {
         tokio::select! {
             c = cmd.recv() => {
                 let Some((to, payload)) = c else {
-                    let _ = ws.close(None).await;
+                    let _ = sink.close().await;
                     return Ok(());
                 };
                 let mut pt = Vec::with_capacity(17 + payload.len());
                 pt.push(T_SEND);
                 pt.extend_from_slice(to.as_bytes());
                 pt.extend_from_slice(&payload);
-                ws.send(Message::Binary(link.seal(&pt)?.into())).await.map_err(werr)?;
+                write_timed(&mut sink, &link, &pt).await?;
+                tick.reset();
             }
-            m = recv_bin(&mut ws) => {
-                let pt = link.open(&m?)?;
-                match pt.split_first() {
-                    Some((&T_DELIVER, rest)) if rest.len() >= 16 => {
-                        let (from, payload) = rest.split_at(16);
-                        let from = NodeId::from_bytes(from.try_into().map_err(|_| NetError::Malformed)?);
-                        if events.send(Event::Frame { from, payload: payload.to_vec() }).await.is_err() {
-                            return Ok(());
-                        }
-                    }
-                    Some((&T_ERROR, [code])) => {
-                        let _ = events.try_send(Event::RelayError(*code));
-                    }
-                    _ => return Err(NetError::Malformed),
+            _ = tick.tick() => write_timed(&mut sink, &link, &[T_KEEPALIVE]).await?,
+        }
+    }
+}
+
+async fn read_half(
+    mut stream: SplitStream<Ws>,
+    link: SharedLink,
+    events: &mpsc::Sender<Event>,
+) -> Result<()> {
+    loop {
+        let ct = recv_bin(&mut stream).await?;
+        let pt = lock_link(&link).open(&ct)?;
+        match pt.split_first() {
+            Some((&T_DELIVER, rest)) if rest.len() >= 16 => {
+                let (from, payload) = rest.split_at(16);
+                let from = NodeId::from_bytes(from.try_into().map_err(|_| NetError::Malformed)?);
+                let ev = Event::Frame {
+                    from,
+                    payload: payload.to_vec(),
+                };
+                if events.send(ev).await.is_err() {
+                    return Ok(());
                 }
             }
+            Some((&T_ERROR, [code])) => {
+                let _ = events.try_send(Event::RelayError(*code));
+            }
+            _ => return Err(NetError::Malformed),
         }
     }
 }

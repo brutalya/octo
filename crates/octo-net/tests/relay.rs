@@ -265,3 +265,208 @@ async fn noise_ik_session_end_to_end_over_relay() {
         matches!(sb.handle(&mb, from, &payload).unwrap(), Handled::Data(d) if d == b"private thread")
     );
 }
+
+// ---- raw protocol client (to act as a misbehaving peer)
+
+type RawWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+struct Raw {
+    ws: RawWs,
+    t: snow::TransportState,
+    id: octo_net::identity::NodeId,
+}
+
+impl Raw {
+    async fn connect(addr: std::net::SocketAddr, net: [u8; 32]) -> Self {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+        let kp = snow::Builder::new(params.parse().unwrap())
+            .generate_keypair()
+            .unwrap();
+        let id = octo_net::identity::NodeId::from_pubkey(&kp.public.clone().try_into().unwrap());
+        let mut hs = snow::Builder::new(params.parse().unwrap())
+            .local_private_key(&kp.private)
+            .unwrap()
+            .prologue(b"octo-relay-v1")
+            .unwrap()
+            .build_initiator()
+            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(url(addr)).await.unwrap();
+        let mut buf = vec![0u8; 65_535];
+        let n = hs.write_message(&[], &mut buf).unwrap();
+        let mut m1 = vec![1u8];
+        m1.extend_from_slice(&buf[..n]);
+        ws.send(Message::Binary(m1.into())).await.unwrap();
+        let Some(Ok(Message::Binary(m2))) = ws.next().await else {
+            panic!("no msg2")
+        };
+        hs.read_message(&m2, &mut buf).unwrap();
+        let n = hs.write_message(&net, &mut buf).unwrap();
+        ws.send(Message::Binary(buf[..n].to_vec().into()))
+            .await
+            .unwrap();
+        let mut me = Self {
+            ws,
+            t: hs.into_transport_mode().unwrap(),
+            id,
+        };
+        assert_eq!(me.recv().await.unwrap(), [0x13]);
+        me
+    }
+
+    async fn send(&mut self, pt: &[u8]) {
+        use futures_util::SinkExt;
+        let mut out = vec![0u8; pt.len() + 16];
+        let n = self.t.write_message(pt, &mut out).unwrap();
+        self.ws
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                out[..n].to_vec().into(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    /// Next decrypted message; `None` once the relay closed the connection.
+    async fn recv(&mut self) -> Option<Vec<u8>> {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message;
+        loop {
+            match self.ws.next().await {
+                Some(Ok(Message::Binary(b))) => {
+                    let mut out = vec![0u8; b.len()];
+                    let n = self.t.read_message(&b, &mut out).unwrap();
+                    out.truncate(n);
+                    return Some(out);
+                }
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                _ => return None,
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn bidirectional_bulk_does_not_deadlock() {
+    let limits = RelayLimits {
+        msgs_per_sec: 1e9,
+        msg_burst: 1e9,
+        bytes_per_sec: 1e12,
+        byte_burst: 1e12,
+        queue: 1024,
+        ..RelayLimits::default()
+    };
+    let (addr, _s) = spawn_relay(limits).await;
+    let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
+    let mut a = online(addr, &ka, NET1).await;
+    let mut b = online(addr, &kb, NET1).await;
+    const N: usize = 400;
+    let (ida, idb) = (ka.node_id(), kb.node_id());
+    let all = async {
+        let (ra, rb) = (&a, &b);
+        tokio::join!(
+            async {
+                for _ in 0..N {
+                    ra.send(idb, vec![1; 60_000]).await.unwrap();
+                }
+            },
+            async {
+                for _ in 0..N {
+                    rb.send(ida, vec![2; 60_000]).await.unwrap();
+                }
+            }
+        );
+        for _ in 0..N {
+            assert!(matches!(next(&mut a).await, Event::Frame { .. }));
+            assert!(matches!(next(&mut b).await, Event::Frame { .. }));
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(90), all)
+        .await
+        .expect("bulk both ways must complete");
+}
+
+#[tokio::test]
+async fn stalled_reader_is_closed_by_write_timeout() {
+    let limits = RelayLimits {
+        msgs_per_sec: 1e9,
+        msg_burst: 1e9,
+        bytes_per_sec: 1e12,
+        byte_burst: 1e12,
+        write_timeout: Duration::from_millis(300),
+        ..RelayLimits::default()
+    };
+    let (addr, _s) = spawn_relay(limits).await;
+    let kb = NodeKey::generate();
+    // `stalled` authenticates, then never reads again.
+    let stalled = Raw::connect(addr, NET1).await;
+    let mut b = online(addr, &kb, NET1).await;
+    let big = vec![3u8; 60_000];
+    let end = std::time::Instant::now() + Duration::from_secs(15);
+    let mut seen = false;
+    while !seen && std::time::Instant::now() < end {
+        b.send(stalled.id, big.clone()).await.unwrap();
+        while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_millis(5), b.recv()).await {
+            seen |= ev == Event::RelayError(ERR_PEER_UNAVAILABLE);
+        }
+    }
+    assert!(seen, "relay must drop the stalled connection");
+}
+
+#[tokio::test]
+async fn silent_connections_time_out_and_keepalive_keeps_alive() {
+    let limits = RelayLimits {
+        idle_timeout: Duration::from_millis(400),
+        handshake_timeout: Duration::from_millis(300),
+        ..RelayLimits::default()
+    };
+    let (addr, _s) = spawn_relay(limits).await;
+    // Pre-auth silence.
+    let (mut ws, _) = tokio_tungstenite::connect_async(url(addr)).await.unwrap();
+    let closed = tokio::time::timeout(
+        Duration::from_secs(3),
+        futures_util::StreamExt::next(&mut ws),
+    )
+    .await;
+    assert!(matches!(
+        closed,
+        Ok(None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))))
+    ));
+    // Authenticated silence.
+    let mut quiet = Raw::connect(addr, NET1).await;
+    let r = tokio::time::timeout(Duration::from_secs(3), quiet.recv()).await;
+    assert!(matches!(r, Ok(None)), "idle connection must be closed");
+    // Keepalives hold the connection open well past the idle timeout and still route.
+    let mut live = Raw::connect(addr, NET1).await;
+    for _ in 0..8 {
+        live.send(&[0x14]).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    let mut send = vec![0x10];
+    send.extend_from_slice(&[9; 16]);
+    send.push(1);
+    live.send(&send).await;
+    assert_eq!(live.recv().await.unwrap(), [0x12, ERR_PEER_UNAVAILABLE]);
+}
+
+#[tokio::test]
+async fn failed_upgrades_do_not_leak_connection_permits() {
+    use tokio::io::AsyncWriteExt;
+    let limits = RelayLimits {
+        max_connections: 3,
+        ..RelayLimits::default()
+    };
+    let (addr, _s) = spawn_relay(limits).await;
+    for _ in 0..6 {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /relay HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        drop(s);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let k = NodeKey::generate();
+    online(addr, &k, NET1).await;
+}
