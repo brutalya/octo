@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api, nodeGeneration } from '../api/client';
 import { errMsg } from '../lib/format';
-import type { AttachmentRef, Message } from '../api/types';
+import type { AttachmentRef, Message, PendingApproval } from '../api/types';
 import { useThreadsStore } from './threads';
 
 interface Streaming {
@@ -12,6 +12,10 @@ interface Streaming {
 interface ChatState {
   messages: Record<string, Message[]>;
   streaming: Record<string, Streaming | undefined>;
+  /** Open approval requests per thread. */
+  approvals: Record<string, PendingApproval[]>;
+  loadApprovals: (threadId: string) => Promise<void>;
+  resolveApproval: (threadId: string, id: string, allow: boolean) => Promise<void>;
   load: (threadId: string) => Promise<void>;
   /** Resolves false when the message was not accepted (nothing was appended). */
   send: (threadId: string, content: string, attachments?: AttachmentRef[]) => Promise<boolean>;
@@ -33,9 +37,24 @@ export const useChatStore = create<ChatState>((set, get) => {
   const setStreaming = (threadId: string, v: Streaming | undefined) =>
     set((s) => ({ streaming: { ...s.streaming, [threadId]: v } }));
 
+  const setApprovals = (threadId: string, f: (l: PendingApproval[]) => PendingApproval[]) =>
+    set((s) => ({ approvals: { ...s.approvals, [threadId]: f(s.approvals[threadId] ?? []) } }));
+
   return {
     messages: {},
     streaming: {},
+    approvals: {},
+
+    loadApprovals: async (threadId) => {
+      const gen = nodeGeneration();
+      const list = await api.approvals(threadId).catch(() => null);
+      if (list && gen === nodeGeneration()) setApprovals(threadId, () => list);
+    },
+
+    resolveApproval: async (threadId, id, allow) => {
+      await api.resolveApproval(threadId, id, allow);
+      setApprovals(threadId, (l) => l.filter((a) => a.id !== id));
+    },
 
     load: async (threadId) => {
       const gen = nodeGeneration();
@@ -68,6 +87,10 @@ export const useChatStore = create<ChatState>((set, get) => {
             setStreaming(threadId, { text, tool: null });
           } else if (e.type === 'tool') {
             setStreaming(threadId, { text, tool: e.summary || e.name });
+          } else if (e.type === 'approval') {
+            setApprovals(threadId, (l) =>
+              l.some((a) => a.id === e.id) ? l : [...l, { id: e.id, tool: e.tool, summary: e.summary }],
+            );
           } else if (e.type === 'error') {
             sawDone = true;
             fail(e.message);
@@ -85,7 +108,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         if (live() && !ctrl.signal.aborted) fail(errMsg(err));
       } finally {
         if (controllers.get(threadId) === ctrl) controllers.delete(threadId);
-        if (live()) setStreaming(threadId, undefined);
+        if (live()) {
+          setStreaming(threadId, undefined);
+          setApprovals(threadId, () => []);
+        }
       }
       if (!live()) return true;
       // Replace the local-N messages with the persisted ones, keeping a local error the server did not store.
@@ -111,7 +137,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     reset: () => {
       for (const c of controllers.values()) c.abort();
       controllers.clear();
-      set({ messages: {}, streaming: {} });
+      set({ messages: {}, streaming: {}, approvals: {} });
     },
   };
 });

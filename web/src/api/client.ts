@@ -1,6 +1,6 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, ProviderKind, ProviderStatus,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, PendingApproval, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
@@ -130,6 +130,10 @@ export const api = {
   messages: async (id: string): Promise<Message[]> => (await request(`/threads/${id}/messages`)).json(),
   cancel: async (id: string): Promise<void> => {
     await request(`/threads/${id}/cancel`, { method: 'POST' });
+  },
+  approvals: async (id: string): Promise<PendingApproval[]> => (await request(`/threads/${id}/approvals`)).json(),
+  resolveApproval: async (id: string, aid: string, allow: boolean): Promise<void> => {
+    await request(`/threads/${id}/approvals/${aid}`, jsonInit('POST', { allow }));
   },
   async *send(
     id: string,

@@ -140,3 +140,10 @@ describe('readAgentEvents lifecycle', () => {
     expect(out).toEqual(['done']);
   });
 });
+
+describe('approval event', () => {
+  it('is a known agent event', () => {
+    const e = toAgentEvent({ event: 'approval', data: '{"type":"approval","id":"a1","tool":"Bash","summary":"Bash: ls"}' });
+    expect(e).toEqual({ type: 'approval', id: 'a1', tool: 'Bash', summary: 'Bash: ls' });
+  });
+});

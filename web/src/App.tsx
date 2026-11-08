@@ -32,6 +32,7 @@ export function App() {
   useEffect(() => {
     if (activeId && !useChatStore.getState().streaming[activeId]) {
       void useChatStore.getState().load(activeId).catch(() => {});
+      void useChatStore.getState().loadApprovals(activeId);
     }
   }, [activeId]);
 

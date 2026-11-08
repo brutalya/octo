@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useChatStore } from '../stores/chat';
-import type { Message } from '../api/types';
+import type { Message, PendingApproval } from '../api/types';
+import { Check, X } from 'lucide-react';
 import { Markdown } from './Markdown';
 
 const EMPTY: Message[] = [];
+const NO_APPROVALS: PendingApproval[] = [];
 
 function Bubble({ role, content }: { role: Message['role']; content: string }) {
   if (role === 'user') {
@@ -19,9 +21,26 @@ function Bubble({ role, content }: { role: Message['role']; content: string }) {
   return <Markdown>{content}</Markdown>;
 }
 
+function ApprovalRow({ threadId, a }: { threadId: string; a: PendingApproval }) {
+  const resolve = useChatStore((s) => s.resolveApproval);
+  const decide = (allow: boolean) => void resolve(threadId, a.id, allow).catch(() => {});
+  return (
+    <div className="flex items-center gap-2 text-sm text-slate-600">
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{a.summary}</span>
+      <button type="button" aria-label="Allow" className="rounded p-1 hover:bg-slate-100" onClick={() => decide(true)}>
+        <Check size={16} />
+      </button>
+      <button type="button" aria-label="Deny" className="rounded p-1 hover:bg-slate-100" onClick={() => decide(false)}>
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
 export function Feed({ threadId }: { threadId: string }) {
   const messages = useChatStore((s) => s.messages[threadId] ?? EMPTY);
   const streaming = useChatStore((s) => s.streaming[threadId]);
+  const approvals = useChatStore((s) => s.approvals[threadId] ?? NO_APPROVALS);
   const endRef = useRef<HTMLDivElement>(null);
   const nearBottom = useRef(true);
 
@@ -49,6 +68,9 @@ export function Feed({ threadId }: { threadId: string }) {
               <div className="text-xs text-slate-400">{streaming.tool ?? '...'}</div>
             ))}
         </div>
+        {approvals.map((a) => (
+          <ApprovalRow key={a.id} threadId={threadId} a={a} />
+        ))}
         <div ref={endRef} />
       </div>
     </div>
