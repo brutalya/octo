@@ -99,13 +99,18 @@ impl NodeKey {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        match create_private(path) {
-            Ok(mut f) => {
-                f.write_all(&key.secret[..])?;
-                f.sync_all()?;
-                Ok(key)
-            }
-            // Lost a creation race: use the winner's key.
+        // Fully write a private temp file, then hard-link it into place: the link fails if the
+        // target exists, and a reader never sees a partially written key.
+        let tmp = path.with_extension(format!("tmp{:016x}", rand::random::<u64>()));
+        let written = create_private(&tmp).and_then(|mut f| {
+            f.write_all(&key.secret[..])?;
+            f.sync_all()
+        });
+        let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+        let _ = std::fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => Ok(key),
+            // Lost a creation race: use the winner's (complete) key.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 Self::from_file_bytes(Zeroizing::new(std::fs::read(path)?))
             }

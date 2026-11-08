@@ -23,6 +23,69 @@ fn code_roundtrip() {
     assert!(PairingCode::parse("ws://x#zzz").is_err());
 }
 
+#[test]
+fn code_requires_ws_scheme_and_debug_is_redacted() {
+    let k = NodeKey::generate();
+    let t = octo_net::pairing::PairingToken::generate(k.node_id());
+    let tok = t.to_string();
+    for bad in ["http://h/relay", "h:1/relay", "file:///x", ""] {
+        assert!(
+            PairingCode::parse(&format!("{bad}#{tok}")).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(PairingCode::parse(&format!("wss://h/relay#{tok}")).is_ok());
+    let c = PairingCode::parse(&format!("ws://h/relay#{tok}")).unwrap();
+    assert!(!format!("{c:?}").contains(&tok[26..]));
+    assert!(!format!("{:?}", c.token).contains(&tok[26..]));
+}
+
+#[tokio::test]
+async fn join_rejects_invalid_names() {
+    let (addr, _s) = spawn_relay(RelayLimits::default()).await;
+    let host = PairHost::start(&url(addr), &NodeKey::generate(), "a", TTL)
+        .await
+        .unwrap();
+    let k = NodeKey::generate();
+    for name in ["bad\nname".to_string(), "x".repeat(65)] {
+        assert!(
+            join(&host.code(), &k, &name, Duration::from_millis(300))
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_welcome_send_does_not_add_member() {
+    let (addr, _s) = spawn_relay(RelayLimits::default()).await;
+    let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
+    let mut ma = Membership::ephemeral(octo_net::membership::NetworkKey::generate());
+    // A member list too large for one relay frame makes the welcome send fail.
+    for _ in 0..400 {
+        ma.add(octo_net::membership::Member::new(
+            NodeKey::generate().public(),
+            &"n".repeat(64),
+        ))
+        .unwrap();
+    }
+    let mut host = PairHost::start(&url(addr), &ka, "a", TTL).await.unwrap();
+    let code = host.code();
+    let joiner = tokio::spawn(async move {
+        let p = join(&code, &kb, "b", Duration::from_secs(3)).await.unwrap();
+        let mut mb = Membership::ephemeral(octo_net::membership::NetworkKey::generate());
+        let _ = p.finish(true, &mut mb).await;
+    });
+    let hp = host.wait_peer().await.unwrap();
+    let peer = hp.peer_node_id();
+    let r = hp
+        .finish(true, octo_net::membership::Trust::Public, &mut ma)
+        .await;
+    assert!(r.is_err());
+    assert!(ma.get(&peer).is_none());
+    let _ = joiner.await;
+}
+
 /// Drive XX by hand. Returns (initiator hash, responder hash).
 fn xx(
     secret: &[u8; 16],
@@ -240,6 +303,7 @@ async fn already_paired_node_cannot_join() {
 
 #[test]
 fn announcement_applies_only_with_known_sender() {
+    use octo_net::membership::Trust;
     use octo_net::pairing::{announcement, apply_announcement};
     let (a, b, c) = (
         NodeKey::generate(),
@@ -248,10 +312,12 @@ fn announcement_applies_only_with_known_sender() {
     );
     let nk = octo_net::membership::NetworkKey::generate();
     let mut mb = Membership::ephemeral(nk);
-    mb.add(octo_net::membership::Member::new(a.public(), "a"))
-        .unwrap();
-    let msg = announcement(&octo_net::membership::Member::new(c.public(), "c"));
-    assert!(apply_announcement(&mut mb, &b.node_id(), &msg).is_err());
-    apply_announcement(&mut mb, &a.node_id(), &msg).unwrap();
+    let mut ma = octo_net::membership::Member::new(a.public(), "a");
+    ma.trust = Trust::Full;
+    mb.add(ma).unwrap();
+    let cm = octo_net::membership::Member::new(c.public(), "c");
+    let _ = announcement(&cm).unwrap();
+    assert!(apply_announcement(&mut mb, &b.node_id(), cm.clone()).is_err());
+    apply_announcement(&mut mb, &a.node_id(), cm).unwrap();
     assert!(mb.get(&c.node_id()).is_some());
 }

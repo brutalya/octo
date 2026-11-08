@@ -114,14 +114,34 @@ fn announced_trust_only_from_full_members() {
     m.add(Member::new(b.public(), "b")).unwrap();
     let mut cm = Member::new(c.public(), "c");
     cm.trust = Trust::Full;
-    let msg = announcement(&cm);
-    // From a public member: added, but never as full.
-    apply_announcement(&mut m, &b.node_id(), &msg).unwrap();
-    assert_eq!(m.get(&c.node_id()).unwrap().trust, Trust::Public);
+    let msg = announcement(&cm).unwrap();
+    // From a public member: ignored entirely.
+    assert!(apply_control(&mut m, &b.node_id(), &msg).is_err());
+    assert!(m.get(&c.node_id()).is_none());
     // From a full member: trust is taken over.
-    m.remove(&c.node_id()).unwrap();
-    apply_announcement(&mut m, &a.node_id(), &msg).unwrap();
+    apply_control(&mut m, &a.node_id(), &msg).unwrap();
     assert_eq!(m.get(&c.node_id()).unwrap().trust, Trust::Full);
+}
+
+#[test]
+fn announcement_never_overwrites_an_existing_member() {
+    let (a, b) = (NodeKey::generate(), NodeKey::generate());
+    let mut m = Membership::ephemeral(NetworkKey::generate());
+    let mut ma = Member::new(a.public(), "a");
+    ma.trust = Trust::Full;
+    m.add(ma).unwrap();
+    let mut mb = Member::new(b.public(), "b");
+    mb.trust = Trust::Full;
+    m.add(mb).unwrap();
+    // A full announcer cannot downgrade or rename an existing member.
+    let mut other = Member::new(b.public(), "renamed");
+    other.trust = Trust::Public;
+    apply_announcement(&mut m, &a.node_id(), other).unwrap();
+    let got = m.get(&b.node_id()).unwrap();
+    assert_eq!((got.trust, got.name.as_str()), (Trust::Full, "b"));
+    // `add` itself reports and ignores an existing id.
+    assert!(!m.add(Member::new(b.public(), "x")).unwrap());
+    assert_eq!(m.get(&b.node_id()).unwrap().name, "b");
 }
 
 #[test]
@@ -133,14 +153,14 @@ fn private_key_message_only_from_full_and_newer() {
     m.add(ma).unwrap();
     m.add(Member::new(b.public(), "b")).unwrap();
     let k = NetworkKey::generate();
-    let msg = private_key_message(5, k.as_bytes());
+    let msg = private_key_message(5, k.as_bytes()).unwrap();
     assert!(apply_control(&mut m, &b.node_id(), &msg).is_err());
     assert_eq!(m.private_epoch(), 1);
     apply_control(&mut m, &a.node_id(), &msg).unwrap();
     assert_eq!(m.private_epoch(), 5);
     assert_eq!(m.private_key().unwrap().as_bytes(), k.as_bytes());
     // Stale epoch ignored.
-    let old = private_key_message(4, &[7; 32]);
+    let old = private_key_message(4, &[7; 32]).unwrap();
     let _ = apply_control(&mut m, &a.node_id(), &old);
     assert_eq!(m.private_epoch(), 5);
     // Announcements still route through apply_control.
@@ -148,7 +168,7 @@ fn private_key_message_only_from_full_and_newer() {
     apply_control(
         &mut m,
         &a.node_id(),
-        &announcement(&Member::new(c.public(), "c")),
+        &announcement(&Member::new(c.public(), "c")).unwrap(),
     )
     .unwrap();
     assert!(m.get(&c.node_id()).is_some());

@@ -9,3 +9,9 @@ pub mod relay_client;
 pub mod session;
 
 pub use error::{NetError, Result};
+
+/// Noise parameters of the `XX` pattern (relay link and pairing).
+pub const XX_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+
+/// Largest Noise message (and buffer) in bytes.
+pub(crate) const NOISE_MAX: usize = 65_535;

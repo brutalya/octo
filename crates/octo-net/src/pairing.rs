@@ -9,7 +9,7 @@
 //! Frames: `[1][kind][bytes]`, kind 0x21 msg1, 0x22 msg2, 0x23 msg3, 0x24 transport (JSON).
 use crate::error::{NetError, Result};
 use crate::identity::{NodeId, NodeKey};
-use crate::membership::{Member, Membership, NetworkKey, PrivateKey, Trust};
+use crate::membership::{Member, Membership, NetworkKey, PrivateKey, Trust, valid_display_name};
 use crate::relay_client::{ERR_PEER_UNAVAILABLE, Event, RelayClientConfig, RelayHandle};
 use crate::session::WIRE_VERSION;
 use blake2::{Blake2s256, Digest};
@@ -21,24 +21,30 @@ use std::time::Duration;
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 
-pub const XX_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+pub use crate::XX_PARAMS;
 /// Validity of a pairing code.
 pub const PAIR_TTL: Duration = Duration::from_secs(300);
 const K_HS1: u8 = 0x21;
 const K_HS2: u8 = 0x22;
 const K_HS3: u8 = 0x23;
 const K_DATA: u8 = 0x24;
-const BUF: usize = 65_535;
+const BUF: usize = crate::NOISE_MAX;
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PairingToken {
     pub host: NodeId,
-    secret: [u8; 16],
+    secret: Zeroizing<[u8; 16]>,
+}
+
+impl fmt::Debug for PairingToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PairingToken(host={}, secret=..)", self.host)
+    }
 }
 
 impl PairingToken {
     pub fn generate(host: NodeId) -> Self {
-        let mut secret = [0u8; 16];
+        let mut secret = Zeroizing::new([0u8; 16]);
         rand::fill(&mut secret[..]);
         Self { host, secret }
     }
@@ -46,36 +52,44 @@ impl PairingToken {
     fn network_id(&self) -> [u8; 32] {
         let mut h = Blake2s256::new();
         h.update(b"octo-pair-net-v1");
-        h.update(self.secret);
+        h.update(*self.secret);
         h.finalize().into()
     }
 }
 
 impl fmt::Display for PairingToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let raw = [self.host.as_bytes().as_slice(), &self.secret].concat();
+        let raw = Zeroizing::new([self.host.as_bytes().as_slice(), &*self.secret].concat());
         f.write_str(&BASE32_NOPAD.encode(&raw).to_ascii_lowercase())
     }
 }
 
 impl PairingToken {
     fn parse(s: &str) -> Result<Self> {
-        let raw = BASE32_NOPAD
-            .decode(s.to_ascii_uppercase().as_bytes())
-            .map_err(|_| NetError::Malformed)?;
+        let raw = Zeroizing::new(
+            BASE32_NOPAD
+                .decode(s.to_ascii_uppercase().as_bytes())
+                .map_err(|_| NetError::Malformed)?,
+        );
         if raw.len() != 32 {
             return Err(NetError::Malformed);
         }
         let host = NodeId::from_bytes(raw[..16].try_into().map_err(|_| NetError::Malformed)?);
-        let secret = raw[16..].try_into().map_err(|_| NetError::Malformed)?;
+        let secret = Zeroizing::new(raw[16..].try_into().map_err(|_| NetError::Malformed)?);
         Ok(Self { host, secret })
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PairingCode {
     pub relay_url: String,
     pub token: PairingToken,
+}
+
+impl fmt::Debug for PairingCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PairingCode({}#..)", self.relay_url)
+    }
 }
 
 impl fmt::Display for PairingCode {
@@ -87,6 +101,9 @@ impl fmt::Display for PairingCode {
 impl PairingCode {
     pub fn parse(s: &str) -> Result<Self> {
         let (url, tok) = s.trim().rsplit_once('#').ok_or(NetError::Malformed)?;
+        if !(url.starts_with("ws://") || url.starts_with("wss://")) {
+            return Err(NetError::Malformed);
+        }
         Ok(Self {
             relay_url: url.to_owned(),
             token: PairingToken::parse(tok)?,
@@ -155,7 +172,7 @@ fn seal(t: &mut TransportState, m: &PairMsg) -> Result<Vec<u8>> {
 }
 
 fn open(t: &mut TransportState, body: &[u8]) -> Result<PairMsg> {
-    let mut pl = Zeroizing::new(vec![0u8; BUF]);
+    let mut pl = Zeroizing::new(vec![0u8; body.len()]);
     let n = t.read_message(body, &mut pl)?;
     Ok(serde_json::from_slice(&pl[..n])?)
 }
@@ -295,10 +312,7 @@ impl PairHost {
                     }
                     let n = match hs.read_message(&body, &mut buf) {
                         Ok(n) => n,
-                        Err(e) => {
-                            eprintln!("hs3 err {e}");
-                            continue;
-                        }
+                        Err(_) => continue,
                     };
                     let Ok(peer_name) = String::from_utf8(buf[..n].to_vec()) else {
                         continue;
@@ -307,7 +321,7 @@ impl PairHost {
                     else {
                         continue;
                     };
-                    if NodeId::from_pubkey(&peer_pub) != from || peer_name.len() > 64 {
+                    if NodeId::from_pubkey(&peer_pub) != from || !valid_display_name(&peer_name) {
                         continue;
                     }
                     let sas = sas_from_hash(hs.get_handshake_hash());
@@ -378,9 +392,10 @@ impl HostPending {
             network_key: HEXLOWER.encode(membership.network_key().as_bytes()),
             private_key,
         };
-        membership.add(member.clone())?;
+        // Add the member only once the welcome is on its way; a failed send leaves no trace.
         let f = seal(&mut self.t, &welcome)?;
         self.relay.send(self.peer, f).await?;
+        membership.put(member.clone())?;
         self.relay.shutdown().await;
         Ok(member)
     }
@@ -405,8 +420,8 @@ pub async fn join(
     name: &str,
     ttl: Duration,
 ) -> Result<JoinPending> {
-    if name.len() > 64 {
-        return Err(NetError::TooLarge);
+    if !valid_display_name(name) {
+        return Err(NetError::Malformed);
     }
     let deadline = Instant::now() + ttl;
     let host = code.token.host;
@@ -426,8 +441,7 @@ pub async fn join(
     };
     hs.read_message(&body, &mut buf)
         .map_err(|_| NetError::Pairing("handshake failed (wrong code?)".into()))?;
-    let n = hs.write_message(name.as_bytes(), &mut buf)?;
-    relay.send(host, frame(K_HS3, &buf[..n])).await?;
+    // Verify the host's static key against the code before revealing anything in msg3.
     let host_pub: [u8; 32] = hs
         .get_remote_static()
         .and_then(|k| k.try_into().ok())
@@ -435,6 +449,8 @@ pub async fn join(
     if NodeId::from_pubkey(&host_pub) != host {
         return Err(NetError::Pairing("host key does not match code".into()));
     }
+    let n = hs.write_message(name.as_bytes(), &mut buf)?;
+    relay.send(host, frame(K_HS3, &buf[..n])).await?;
     let sas = sas_from_hash(hs.get_handshake_hash());
     Ok(JoinPending {
         relay,
@@ -519,66 +535,100 @@ fn decode32(s: &str) -> Result<[u8; 32]> {
 // ---------------------------------------------------------------- control messages (IK sessions)
 
 /// Plaintext for the host to send (over an established IK session) to every other member.
-pub fn announcement(m: &Member) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({"t": "member_added", "member": m})).unwrap_or_default()
+pub fn announcement(m: &Member) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(
+        &serde_json::json!({"t": "member_added", "member": m}),
+    )?)
 }
 
 /// Plaintext handing the private key of `epoch` to a full-trust member.
-pub fn private_key_message(epoch: u64, key: &[u8; 32]) -> Vec<u8> {
-    serde_json::to_vec(
+pub fn private_key_message(epoch: u64, key: &[u8; 32]) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(
         &serde_json::json!({"t": "private_key", "epoch": epoch, "key": HEXLOWER.encode(key)}),
-    )
-    .unwrap_or_default()
+    )?)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum Control {
+    MemberAdded { member: Member },
+    PrivateKey { epoch: u64, key: String },
 }
 
 /// Applies a control message received over an IK session from `from`: `member_added` or
-/// `private_key`. Only members may send them; the key only from members we trust fully.
+/// `private_key`. Only full-trust members may send either.
 pub fn apply_control(membership: &mut Membership, from: &NodeId, plaintext: &[u8]) -> Result<()> {
     let trust = membership.trust_of(from).ok_or(NetError::NotMember)?;
-    #[derive(Deserialize)]
-    struct Head {
-        t: String,
-    }
-    let head: Head = serde_json::from_slice(plaintext)?;
-    match head.t.as_str() {
-        "member_added" => apply_announcement(membership, from, plaintext),
-        "private_key" => {
-            #[derive(Deserialize)]
-            struct K {
-                epoch: u64,
-                key: String,
-            }
+    match serde_json::from_slice::<Control>(plaintext)? {
+        Control::MemberAdded { member } => apply_announcement(membership, from, member),
+        Control::PrivateKey { epoch, key } => {
             if trust != Trust::Full {
                 return Err(NetError::NotMember);
             }
-            let k: K = serde_json::from_slice(plaintext)?;
-            let key = PrivateKey::from_bytes(decode32(&k.key)?);
-            membership.adopt_private(k.epoch, &key)?;
+            let key = PrivateKey::from_bytes(decode32(&key)?);
+            membership.adopt_private(epoch, &key)?;
             Ok(())
         }
-        _ => Err(NetError::Malformed),
     }
 }
 
-/// Applies an announcement received over an IK session from `from`. Only members may announce;
-/// the announced trust level is honoured only when the announcer is trusted fully.
+/// Applies a parsed announcement from `from`. Only a full-trust member may announce, and an
+/// announcement never overwrites a member we already have (so it cannot change trust or keys).
 pub fn apply_announcement(
     membership: &mut Membership,
     from: &NodeId,
-    plaintext: &[u8],
+    member: Member,
 ) -> Result<()> {
-    let sender = membership.trust_of(from).ok_or(NetError::NotMember)?;
-    #[derive(Deserialize)]
-    struct A {
-        t: String,
-        member: Member,
+    if membership.trust_of(from).ok_or(NetError::NotMember)? != Trust::Full {
+        return Err(NetError::NotMember);
     }
-    let mut a: A = serde_json::from_slice(plaintext)?;
-    if a.t != "member_added" {
-        return Err(NetError::Malformed);
+    membership.add(member)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::relay::{Relay, router};
+
+    /// The joiner must check the host's static key against the code *before* sending msg3.
+    #[tokio::test]
+    async fn join_does_not_send_msg3_to_a_host_with_the_wrong_static_key() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let app = router(Relay::new(Default::default()).unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(l, app).await;
+        });
+        let url = format!("ws://{addr}/relay");
+        // Relay identity H is what the code names; the Noise static key is someone else's.
+        let (kh, kx, kj) = (
+            NodeKey::generate(),
+            NodeKey::generate(),
+            NodeKey::generate(),
+        );
+        let token = PairingToken::generate(kh.node_id());
+        let mut fake = RelayHandle::connect(relay_cfg(&url, &kh, &token));
+        fake.wait_online(Duration::from_secs(5)).await.unwrap();
+        let code = PairingCode {
+            relay_url: url,
+            token: token.clone(),
+        };
+        let joiner =
+            tokio::spawn(async move { join(&code, &kj, "j", Duration::from_secs(2)).await });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (from, kind, body) = next_frame(&mut fake, None, deadline, false).await.unwrap();
+        assert_eq!(kind, K_HS1);
+        let mut hs = xx_state(false, &kx, &token.secret).unwrap();
+        let mut buf = vec![0u8; BUF];
+        hs.read_message(&body, &mut buf).unwrap();
+        let n = hs.write_message(&[], &mut buf).unwrap();
+        fake.send(from, frame(K_HS2, &buf[..n])).await.unwrap();
+        let quiet = Instant::now() + Duration::from_millis(500);
+        assert!(matches!(
+            next_frame(&mut fake, None, quiet, false).await,
+            Err(NetError::Timeout)
+        ));
+        assert!(joiner.await.unwrap().is_err());
     }
-    if sender != Trust::Full {
-        a.member.trust = Trust::Public;
-    }
-    membership.add(a.member)
 }

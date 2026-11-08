@@ -11,6 +11,7 @@
 //! - C->R `0x10 || to(16) || payload`  (SEND)
 //! - R->C `0x11 || from(16) || payload` (DELIVER; `from` is the authenticated sender)
 //! - R->C `0x12 || code` (ERROR), R->C `0x13` (READY, sent once after auth)
+use crate::NOISE_MAX;
 use crate::error::Result;
 use crate::identity::NodeId;
 use axum::Router;
@@ -27,11 +28,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 
 pub const RELAY_VERSION: u8 = 1;
-pub const RELAY_PARAMS: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+pub const RELAY_PARAMS: &str = crate::XX_PARAMS;
 pub const RELAY_PROLOGUE: &[u8] = b"octo-relay-v1";
 /// 65535 (Noise max) - 16 (tag) - 1 (type) - 16 (node id).
 pub const MAX_PAYLOAD: usize = 65_502;
-pub(crate) const NOISE_MAX: usize = 65_535;
 
 pub(crate) const T_SEND: u8 = 0x10;
 pub(crate) const T_DELIVER: u8 = 0x11;

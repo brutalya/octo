@@ -294,3 +294,54 @@ fn repeated_aead_failures_trigger_rehandshake() {
     let f = a.encrypt(idb, b"again").unwrap();
     assert!(matches!(b.handle(&mb, ida, &f).unwrap(), Handled::Data(_)));
 }
+
+#[test]
+fn garbage_msg2_does_not_destroy_pending_handshake() {
+    let ((ka, ma), (kb, mb)) = two_nodes();
+    let (ida, idb) = (ka.node_id(), kb.node_id());
+    let (mut a, mut b) = (Sessions::new(ka), Sessions::new(kb));
+    let hs1 = a.connect(&ma, idb).unwrap();
+    let Handled::Reply(hs2) = b.handle(&mb, ida, &hs1).unwrap() else {
+        panic!("expected reply")
+    };
+    let mut garbage = hs2.clone();
+    let last = garbage.len() - 1;
+    garbage[last] ^= 1;
+    assert!(a.handle(&ma, idb, &garbage).is_err());
+    assert!(matches!(
+        a.handle(&ma, idb, &hs2).unwrap(),
+        Handled::Established
+    ));
+}
+
+#[test]
+fn stale_init_does_not_wedge_tie_break_and_forget_clears_state() {
+    let ((ka, ma), (kb, mb)) = two_nodes();
+    let (ida, idb) = (ka.node_id(), kb.node_id());
+    let (small, big) = if ida < idb {
+        ((ka, ma, ida), (kb, mb, idb))
+    } else {
+        ((kb, mb, idb), (ka, ma, ida))
+    };
+    let (mut s, mut g) = (Sessions::new(small.0), Sessions::new(big.0));
+    s.set_init_ttl(std::time::Duration::from_millis(50));
+    // The smaller id has a pending Init whose msg1 was lost; the other side connects.
+    let _lost = s.connect(&small.1, big.2).unwrap();
+    let hs1 = g.connect(&big.1, small.2).unwrap();
+    assert!(matches!(
+        s.handle(&small.1, big.2, &hs1).unwrap(),
+        Handled::Ignored
+    ));
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let Handled::Reply(_) = s.handle(&small.1, big.2, &hs1).unwrap() else {
+        panic!("stale init must not block the responder role")
+    };
+    assert!(s.is_established(&big.2));
+    s.forget(&big.2).unwrap();
+    assert!(!s.is_established(&big.2));
+    // The replay timestamp is gone too: the same msg1 is accepted again.
+    assert!(matches!(
+        s.handle(&small.1, big.2, &hs1).unwrap(),
+        Handled::Reply(_)
+    ));
+}

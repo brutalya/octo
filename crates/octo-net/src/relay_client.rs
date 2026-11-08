@@ -1,11 +1,12 @@
 //! Relay client: authenticated WebSocket link with automatic reconnect and backoff.
 //! See `relay` for the wire protocol.
+use crate::NOISE_MAX;
 use crate::error::{NetError, Result};
 use crate::identity::{NodeId, NodeKey};
 pub use crate::relay::{ERR_BUSY, ERR_PEER_UNAVAILABLE, ERR_RATE_LIMITED};
 use crate::relay::{
-    Link, MAX_PAYLOAD, NOISE_MAX, RELAY_PARAMS, RELAY_PROLOGUE, RELAY_VERSION, T_DELIVER, T_ERROR,
-    T_READY, T_SEND,
+    Link, MAX_PAYLOAD, RELAY_PARAMS, RELAY_PROLOGUE, RELAY_VERSION, T_DELIVER, T_ERROR, T_READY,
+    T_SEND,
 };
 use futures_util::{SinkExt, StreamExt};
 use snow::Builder;

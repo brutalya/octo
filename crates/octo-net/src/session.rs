@@ -15,6 +15,7 @@ use snow::{Builder, HandshakeState, StatelessTransportState};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 pub const IK_PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 pub const WIRE_VERSION: u8 = 1;
@@ -23,7 +24,10 @@ const K_HS2: u8 = 2;
 const K_DATA: u8 = 3;
 /// Largest plaintext per `encrypt` call; keeps the frame under the relay payload cap.
 pub const MAX_PLAINTEXT: usize = 65_000;
-const NOISE_MAX: usize = 65_535;
+use crate::NOISE_MAX;
+/// An unanswered outgoing handshake older than this is treated as absent, so a lost msg1
+/// cannot wedge the simultaneous-connect tie-break.
+const INIT_TTL: Duration = Duration::from_secs(10);
 
 /// Consecutive AEAD failures from an established peer before we re-handshake.
 pub const MAX_AEAD_FAILURES: u32 = 16;
@@ -93,7 +97,7 @@ struct Ready {
 }
 
 enum Slot {
-    Init(Box<HandshakeState>),
+    Init(Box<HandshakeState>, Instant),
     Ready(Box<Ready>),
 }
 
@@ -125,6 +129,7 @@ pub struct Sessions {
     last_ts_in: HashMap<NodeId, u64>,
     last_ts_out: u64,
     store: Option<PathBuf>,
+    init_ttl: Duration,
 }
 
 fn prologue(m: &Membership) -> Vec<u8> {
@@ -154,7 +159,17 @@ impl Sessions {
             last_ts_in: HashMap::new(),
             last_ts_out: 0,
             store: None,
+            init_ttl: INIT_TTL,
         }
+    }
+
+    /// Overrides how long an unanswered outgoing handshake counts as pending.
+    pub fn set_init_ttl(&mut self, ttl: Duration) {
+        self.init_ttl = ttl;
+    }
+
+    fn init_pending(&self, peer: &NodeId) -> bool {
+        matches!(self.slots.get(peer), Some(Slot::Init(_, at)) if at.elapsed() < self.init_ttl)
     }
 
     /// Like `new`, but persists the per-peer msg1 timestamps in `path` (JSON, 0600) so a
@@ -202,9 +217,19 @@ impl Sessions {
         matches!(self.slots.get(peer), Some(Slot::Ready(_)))
     }
 
-    /// Forget the session (e.g. after a decrypt error or unpairing).
+    /// Forget the session (e.g. after a decrypt error).
     pub fn reset(&mut self, peer: &NodeId) {
         self.slots.remove(peer);
+    }
+
+    /// Drops everything kept about `peer` (session and replay timestamp), e.g. when it was
+    /// removed from the network.
+    pub fn forget(&mut self, peer: &NodeId) -> Result<()> {
+        self.slots.remove(peer);
+        if self.last_ts_in.remove(peer).is_some() {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     /// Starts a handshake to a member; returns the frame to send.
@@ -219,7 +244,8 @@ impl Sessions {
         self.last_ts_out = now_ms().max(self.last_ts_out + 1);
         let mut buf = vec![0u8; NOISE_MAX];
         let n = hs.write_message(&self.last_ts_out.to_be_bytes(), &mut buf)?;
-        self.slots.insert(peer, Slot::Init(Box::new(hs)));
+        self.slots
+            .insert(peer, Slot::Init(Box::new(hs), Instant::now()));
         Ok(frame(K_HS1, &buf[..n]))
     }
 
@@ -243,7 +269,7 @@ impl Sessions {
     fn on_hs1(&mut self, m: &Membership, from: NodeId, body: &[u8]) -> Result<Handled> {
         let member = m.get(&from).ok_or(NetError::NotMember)?;
         // Simultaneous connect: the smaller node id stays initiator, the other one yields.
-        if matches!(self.slots.get(&from), Some(Slot::Init(_))) && self.key.node_id() < from {
+        if self.init_pending(&from) && self.key.node_id() < from {
             return Ok(Handled::Ignored);
         }
         let pro = prologue(m);
@@ -251,7 +277,7 @@ impl Sessions {
             .local_private_key(self.key.secret())?
             .prologue(&pro)?
             .build_responder()?;
-        let mut pl = vec![0u8; NOISE_MAX];
+        let mut pl = vec![0u8; body.len()];
         let n = hs.read_message(body, &mut pl)?;
         let ts = u64::from_be_bytes(pl[..n].try_into().map_err(|_| NetError::Malformed)?);
         // The static key that actually authenticated must be the member we think `from` is.
@@ -276,11 +302,19 @@ impl Sessions {
     }
 
     fn on_hs2(&mut self, from: NodeId, body: &[u8]) -> Result<Handled> {
-        let Some(Slot::Init(mut hs)) = self.slots.remove(&from) else {
+        if !self.init_pending(&from) {
+            self.slots.remove(&from);
+            return Err(NetError::NoSession);
+        }
+        let Some(Slot::Init(hs, _)) = self.slots.get_mut(&from) else {
             return Err(NetError::NoSession);
         };
-        let mut pl = vec![0u8; NOISE_MAX];
+        // A bad msg2 must not destroy the pending handshake: remove the slot only on success.
+        let mut pl = vec![0u8; body.len()];
         hs.read_message(body, &mut pl)?;
+        let Some(Slot::Init(hs, _)) = self.slots.remove(&from) else {
+            return Err(NetError::NoSession);
+        };
         self.slots.insert(from, ready(*hs)?);
         Ok(Handled::Established)
     }
@@ -294,7 +328,7 @@ impl Sessions {
         if nonce == u64::MAX || !r.recv.check(nonce) {
             return Err(NetError::Replay);
         }
-        let mut pl = vec![0u8; NOISE_MAX];
+        let mut pl = vec![0u8; ct.len()];
         match r.t.read_message(nonce, ct, &mut pl) {
             Ok(n) => {
                 r.recv.mark(nonce);
