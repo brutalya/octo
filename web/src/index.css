@@ -2,38 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
-:root,
-[data-theme="dark"] {
+:root {
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  /* Velvet Charcoal & Alabaster Silk (Exact match with localhost:3000) */
-  --color-white: 27, 27, 31;          /* Card & Surface background (#1b1b1f) */
-  --color-black: 255, 255, 255;       /* Pure white highlights */
-  --color-slate-50: 19, 19, 21;       /* App root background: rich dark graphite (#131315) */
-  --color-slate-100: 34, 34, 40;      /* Elevated items, hover backgrounds (#222228) */
-  --color-slate-200: 48, 48, 56;      /* Hairline borders (#303038) */
-  --color-slate-300: 68, 68, 78;      /* Divider lines */
-  --color-slate-400: 130, 130, 144;   /* Subtle icons & placeholders */
-  --color-slate-500: 166, 166, 180;   /* Secondary text (Cashmere gray) */
-  --color-slate-600: 196, 196, 210;   /* Medium text */
-  --color-slate-700: 226, 224, 220;   /* High-emphasis text */
-  --color-slate-800: 246, 243, 238;   /* Primary titles (Warm Alabaster Silk #f6f3ee) */
-  --color-slate-900: 255, 255, 255;   /* Crisp pure white text */
+  --color-white: 27, 27, 31;
+  --color-black: 255, 255, 255;
+  --color-slate-50: 19, 19, 21;
+  --color-slate-100: 34, 34, 40;
+  --color-slate-200: 48, 48, 56;
+  --color-slate-300: 68, 68, 78;
+  --color-slate-400: 130, 130, 144;
+  --color-slate-500: 166, 166, 180;
+  --color-slate-600: 196, 196, 210;
+  --color-slate-700: 226, 224, 220;
+  --color-slate-800: 246, 243, 238;
+  --color-slate-900: 255, 255, 255;
 
-  /* Haute-Couture Accent: Vintage Champagne Gold & Warm Ochre (#c5a059 / #d4af37) */
-  --color-indigo-50: 38, 33, 24;      /* Soft warm champagne glow */
-  --color-indigo-100: 54, 46, 32;     /* Subtle gold pill background */
-  --color-indigo-200: 82, 69, 46;     /* Gold outline hover */
-  --color-indigo-300: 136, 114, 72;   /* Muted gold */
-  --color-indigo-400: 188, 158, 98;   /* Light warm gold */
-  --color-indigo-500: 212, 175, 55;   /* Pure Champagne Gold (#d4af37) */
-  --color-indigo-600: 197, 160, 89;   /* Classic Haute Gold (#c5a059) */
-  --color-indigo-700: 166, 134, 69;   /* Deep burnished gold */
-  --color-indigo-800: 128, 102, 49;   /* Antique bronze */
-  --color-indigo-900: 84, 66, 29;     /* Deep bronze */
+  --color-indigo-50: 38, 33, 24;
+  --color-indigo-100: 54, 46, 32;
+  --color-indigo-200: 82, 69, 46;
+  --color-indigo-300: 136, 114, 72;
+  --color-indigo-400: 188, 158, 98;
+  --color-indigo-500: 212, 175, 55;
+  --color-indigo-600: 197, 160, 89;
+  --color-indigo-700: 166, 134, 69;
+  --color-indigo-800: 128, 102, 49;
+  --color-indigo-900: 84, 66, 29;
 
-  /* Restful Semantic Accents */
   --color-red-50: 38, 22, 22;
   --color-red-100: 56, 28, 28;
   --color-red-200: 82, 38, 38;
@@ -72,87 +68,6 @@
   --scrollbar-thumb-hover: #c5a059;
   --scrollbar-track: #151518;
   --scrollbar-radius: 9999px;
-
-  --tree-indent-border: #33333e;
-  --toggle-border: #4a4a58;
-}
-
-
-[data-theme="light"] {
-  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-  /* Neutrals */
-  --color-white: 255, 255, 255;
-  --color-black: 15, 23, 42;
-  --color-slate-50: 248, 250, 252;
-  --color-slate-100: 241, 245, 249;
-  --color-slate-200: 226, 232, 240;
-  --color-slate-300: 203, 213, 225;
-  --color-slate-400: 148, 163, 184;
-  --color-slate-500: 100, 116, 139;
-  --color-slate-600: 71, 85, 105;
-  --color-slate-700: 51, 65, 85;
-  --color-slate-800: 30, 41, 59;
-  --color-slate-900: 15, 23, 42;
-
-  /* Primary Accent: Indigo */
-  --color-indigo-50: 238, 242, 255;
-  --color-indigo-100: 224, 231, 255;
-  --color-indigo-200: 199, 210, 254;
-  --color-indigo-300: 165, 180, 252;
-  --color-indigo-400: 129, 140, 248;
-  --color-indigo-500: 99, 102, 241;
-  --color-indigo-600: 79, 70, 229;
-  --color-indigo-700: 67, 56, 202;
-  --color-indigo-800: 55, 48, 163;
-  --color-indigo-900: 49, 46, 129;
-
-  /* Red */
-  --color-red-50: 254, 242, 242;
-  --color-red-100: 254, 226, 226;
-  --color-red-200: 254, 202, 202;
-  --color-red-400: 248, 113, 113;
-  --color-red-500: 239, 68, 68;
-  --color-red-600: 220, 38, 38;
-
-  /* Amber */
-  --color-amber-50: 255, 251, 235;
-  --color-amber-100: 254, 243, 199;
-  --color-amber-200: 253, 230, 138;
-  --color-amber-400: 251, 191, 36;
-  --color-amber-500: 245, 158, 11;
-  --color-amber-600: 217, 119, 6;
-
-  /* Emerald */
-  --color-emerald-50: 236, 253, 245;
-  --color-emerald-100: 209, 250, 229;
-  --color-emerald-200: 167, 243, 208;
-  --color-emerald-400: 52, 211, 153;
-  --color-emerald-500: 16, 185, 129;
-  --color-emerald-600: 5, 150, 105;
-
-  /* Geometry & Shadows */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
-  --radius-3xl: 1.75rem;
-
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.04);
-  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.08), 0 8px 10px -6px rgb(0 0 0 / 0.04);
-  --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.15);
-
-  --scrollbar-thumb: #cbd5e1;
-  --scrollbar-thumb-hover: #94a3b8;
-  --scrollbar-track: transparent;
-  --scrollbar-radius: 9999px;
-
-  --tree-indent-border: #e2e8f0;
-  --toggle-border: #cbd5e1;
 }
 
 html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
