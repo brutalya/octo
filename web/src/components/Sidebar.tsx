@@ -9,7 +9,7 @@ import type { Approval, ModelInfo, ProviderKind, SessionSummary, Space } from '.
 
 const HTTP_PROVIDERS: ProviderKind[] = ['ollama', 'openrouter'];
 
-export function shortModel(id: string): string {
+function shortModel(id: string): string {
   return (id.split('/').pop() ?? id).replace(/:latest$/, '');
 }
 

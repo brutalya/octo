@@ -61,3 +61,17 @@ describe('api base', () => {
     expect(urls()).toEqual(['/api/nodes/abc/threads/t1/messages']);
   });
 });
+
+describe('api errors', () => {
+  it('prefers the JSON error field and truncates', async () => {
+    f.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 400 }));
+    await expect(api.threads()).rejects.toThrow('nope');
+    f.mockResolvedValueOnce(new Response('x'.repeat(1000), { status: 500 }));
+    await expect(api.threads()).rejects.toHaveProperty('message', 'x'.repeat(300));
+  });
+
+  it('nodes tolerates a non-array body', async () => {
+    f.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    expect(await api.nodes()).toEqual([]);
+  });
+});

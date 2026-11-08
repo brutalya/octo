@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, nodeGeneration } from '../api/client';
+import { errMsg } from '../lib/format';
 import type { AttachmentRef, Message } from '../api/types';
 import { useThreadsStore } from './threads';
 
@@ -12,8 +13,11 @@ interface ChatState {
   messages: Record<string, Message[]>;
   streaming: Record<string, Streaming | undefined>;
   load: (threadId: string) => Promise<void>;
-  send: (threadId: string, content: string, attachments?: AttachmentRef[]) => Promise<void>;
+  /** Resolves false when the message was not accepted (nothing was appended). */
+  send: (threadId: string, content: string, attachments?: AttachmentRef[]) => Promise<boolean>;
   stop: (threadId: string) => Promise<void>;
+  /** Abort every running stream and forget all chat state (node switch). */
+  reset: () => void;
 }
 
 const controllers = new Map<string, AbortController>();
@@ -34,52 +38,80 @@ export const useChatStore = create<ChatState>((set, get) => {
     streaming: {},
 
     load: async (threadId) => {
+      const gen = nodeGeneration();
       const msgs = await api.messages(threadId);
-      set((s) => ({ messages: { ...s.messages, [threadId]: msgs } }));
+      if (gen === nodeGeneration()) set((s) => ({ messages: { ...s.messages, [threadId]: msgs } }));
     },
 
     send: async (threadId, content, attachments) => {
-      if (get().streaming[threadId]) return;
+      if (get().streaming[threadId]) return false;
+      const gen = nodeGeneration();
+      const live = () => gen === nodeGeneration();
       const ctrl = new AbortController();
       controllers.set(threadId, ctrl);
       append(threadId, local(threadId, 'user', content));
       setStreaming(threadId, { text: '', tool: null });
       let text = '';
-      let aborted = false;
+      let sawDone = false;
+      let failure: Message | null = null;
+      const fail = (message: string) => {
+        if (text) append(threadId, local(threadId, 'assistant', text));
+        text = '';
+        failure = local(threadId, 'error', message);
+        append(threadId, failure);
+      };
       try {
         for await (const e of api.send(threadId, content, ctrl.signal, attachments)) {
+          if (!live()) break;
           if (e.type === 'text_delta') {
             text += e.text;
             setStreaming(threadId, { text, tool: null });
           } else if (e.type === 'tool') {
             setStreaming(threadId, { text, tool: e.summary || e.name });
           } else if (e.type === 'error') {
-            if (text) append(threadId, local(threadId, 'assistant', text));
-            append(threadId, local(threadId, 'error', e.message));
-            text = '';
+            sawDone = true;
+            fail(e.message);
             break;
           } else if (e.type === 'done') {
+            sawDone = true;
             break;
           }
         }
-        if (text) append(threadId, local(threadId, 'assistant', text));
-      } catch (err) {
-        if (ctrl.signal.aborted) aborted = true;
-        else {
-          if (text) append(threadId, local(threadId, 'assistant', text));
-          append(threadId, local(threadId, 'error', err instanceof Error ? err.message : String(err)));
+        if (live() && !ctrl.signal.aborted) {
+          if (!sawDone) fail('Stream ended unexpectedly');
+          else if (text) append(threadId, local(threadId, 'assistant', text));
         }
+      } catch (err) {
+        if (live() && !ctrl.signal.aborted) fail(errMsg(err));
       } finally {
-        controllers.delete(threadId);
-        setStreaming(threadId, undefined);
+        if (controllers.get(threadId) === ctrl) controllers.delete(threadId);
+        if (live()) setStreaming(threadId, undefined);
       }
-      if (aborted) await get().load(threadId).catch(() => {});
-      await useThreadsStore.getState().load().catch(() => {});
+      if (!live()) return true;
+      // Replace the local-N messages with the persisted ones, keeping a local error the server did not store.
+      try {
+        const fresh = await api.messages(threadId);
+        if (live()) {
+          const err = failure as Message | null;
+          const merged = err && !fresh.some((m) => m.role === 'error' && m.content === err.content) ? [...fresh, err] : fresh;
+          set((s) => ({ messages: { ...s.messages, [threadId]: merged } }));
+        }
+      } catch {
+        // keep the local messages
+      }
+      await useThreadsStore.getState().load();
+      return true;
     },
 
     stop: async (threadId) => {
-      controllers.get(threadId)?.abort();
       await api.cancel(threadId).catch(() => {});
+      controllers.get(threadId)?.abort();
+    },
+
+    reset: () => {
+      for (const c of controllers.values()) c.abort();
+      controllers.clear();
+      set({ messages: {}, streaming: {} });
     },
   };
 });

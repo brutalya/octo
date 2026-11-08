@@ -54,4 +54,20 @@ describe('threads store import', () => {
     expect(s.threads[0].title).toBe('renamed');
     expect(s.activeId).toBe('t1');
   });
+
+  it('ignores a second create while one is pending', async () => {
+    const f = vi.fn(async () => json({ ...thread, id: 'n' }));
+    vi.stubGlobal('fetch', f);
+    await Promise.all([
+      useThreadsStore.getState().create('claude', 'public', 'confirm'),
+      useThreadsStore.getState().create('claude', 'public', 'confirm'),
+    ]);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('failures land in error instead of rejecting', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'nope' }), { status: 400 })));
+    await expect(useThreadsStore.getState().remove('t1')).resolves.toBeUndefined();
+    expect(useThreadsStore.getState().error).toBe('nope');
+  });
 });

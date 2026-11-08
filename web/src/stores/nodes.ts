@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import { api, setNodeBase } from '../api/client';
+import { api, nodeGeneration, setNodeBase } from '../api/client';
 import { useThreadsStore } from './threads';
 import { useFilesStore } from './files';
+import { useChatStore } from './chat';
 import type { NodeInfo } from '../api/types';
 
 const KEY = 'octo.node';
@@ -31,25 +32,38 @@ interface NodesState {
   selectedOffline: () => boolean;
 }
 
+let inflight: Promise<void> | null = null;
+
 export const useNodesStore = create<NodesState>((set, get) => ({
   nodes: [],
   selectedId: null,
-  load: async () => {
-    let nodes: NodeInfo[];
-    try {
-      nodes = await api.nodes();
-    } catch {
-      return;
-    }
-    let { selectedId } = get();
-    if (selectedId === null) {
-      const s = stored();
-      if (s && nodes.some((n) => n.node_id === s && !n.is_self)) {
-        selectedId = s;
-        setNodeBase(s);
+  load: () => {
+    inflight ??= (async () => {
+      const gen = nodeGeneration();
+      let nodes: NodeInfo[];
+      try {
+        nodes = await api.nodes();
+      } catch {
+        return;
       }
-    }
-    set({ nodes, selectedId });
+      if (gen !== nodeGeneration()) return;
+      let { selectedId } = get();
+      if (selectedId === null) {
+        const s = stored();
+        if (s && nodes.some((n) => n.node_id === s && !n.is_self)) {
+          selectedId = s;
+          setNodeBase(s);
+        }
+      } else if (!nodes.some((n) => n.node_id === selectedId && !n.is_self)) {
+        set({ nodes });
+        get().select(null);
+        return;
+      }
+      set({ nodes, selectedId });
+    })().finally(() => {
+      inflight = null;
+    });
+    return inflight;
   },
   select: (id) => {
     const target = id && get().nodes.some((n) => n.node_id === id && !n.is_self) ? id : null;
@@ -57,10 +71,11 @@ export const useNodesStore = create<NodesState>((set, get) => ({
     setNodeBase(target);
     store(target);
     set({ selectedId: target });
-    useThreadsStore.setState({ threads: [], activeId: null });
-    useFilesStore.setState({ entries: { private: [], public: [] }, preview: null });
-    void useThreadsStore.getState().load().catch(() => {});
-    void useThreadsStore.getState().loadProviders().catch(() => {});
+    useChatStore.getState().reset();
+    useThreadsStore.setState({ threads: [], activeId: null, error: null });
+    useFilesStore.setState({ entries: { private: [], public: [] }, preview: null, error: null });
+    void useThreadsStore.getState().load();
+    void useThreadsStore.getState().loadProviders();
   },
   selectedOffline: () => {
     const { nodes, selectedId } = get();

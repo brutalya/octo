@@ -125,6 +125,54 @@ describe('chat store', () => {
     expect(useChatStore.getState().messages['t1']).toEqual(history);
   });
 
+  it('reloads history after a finished send so local ids are replaced', async () => {
+    const saved: Message[] = [
+      { id: 'srv1', thread_id: 't1', role: 'user', content: 'hi', attachments: [], created_at: 1 },
+      { id: 'srv2', thread_id: 't1', role: 'assistant', content: 'yo', attachments: [], created_at: 2 },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages') && init?.method === 'POST') return sse({ type: 'text_delta', text: 'yo' }, { type: 'done' });
+      if (url.endsWith('/messages')) return json(saved);
+      return json([thread]);
+    }));
+    await useChatStore.getState().send('t1', 'hi');
+    expect(useChatStore.getState().messages['t1']).toEqual(saved);
+  });
+
+  it('a stream that ends without done shows an error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) =>
+      url.endsWith('/messages') && init?.method === 'POST'
+        ? sse({ type: 'text_delta', text: 'half' })
+        : new Response('bad', { status: 500 }),
+    ));
+    await useChatStore.getState().send('t1', 'hi');
+    expect(useChatStore.getState().messages['t1'].at(-1)?.role).toBe('error');
+  });
+
+  it('stop posts cancel before aborting the fetch', async () => {
+    const order: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/messages') && init?.method === 'POST') {
+        return new Promise<Response>((_, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            order.push('abort');
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        });
+      }
+      if (url.endsWith('/cancel')) {
+        order.push('cancel');
+        return new Response(null, { status: 204 });
+      }
+      return json([]);
+    }));
+    const p = useChatStore.getState().send('t1', 'hi');
+    await vi.waitFor(() => expect(useChatStore.getState().streaming['t1']).toBeDefined());
+    await useChatStore.getState().stop('t1');
+    await p;
+    expect(order).toEqual(['cancel', 'abort']);
+  });
+
   it('load fetches messages for a thread', async () => {
     const m: Message = { id: 'm', thread_id: 't1', role: 'assistant', content: 'yo', attachments: [], created_at: 2 };
     vi.stubGlobal('fetch', vi.fn(async () => json([m])));

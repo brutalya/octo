@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseSse, toAgentEvent, readAgentEvents } from './sse';
 import type { AgentEvent } from './types';
 
@@ -107,5 +107,36 @@ describe('readAgentEvents', () => {
     const out: AgentEvent[] = [];
     for await (const e of readAgentEvents(body)) out.push(e);
     expect(out).toEqual([{ type: 'text_delta', text: 'é' }]);
+  });
+});
+
+describe('readAgentEvents lifecycle', () => {
+  it('cancels the reader when the consumer stops early', async () => {
+    const cancel = vi.fn();
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode('data: {"type":"done"}\n\ndata: {"type":"done"}\n\n'));
+      },
+      cancel,
+    });
+    for await (const e of readAgentEvents(body)) {
+      expect(e.type).toBe('done');
+      break;
+    }
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  it('flushes a trailing event without blank line', async () => {
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode('data: {"type":"done"}'));
+        c.close();
+      },
+    });
+    const out: string[] = [];
+    for await (const e of readAgentEvents(body)) out.push(e.type);
+    expect(out).toEqual(['done']);
   });
 });

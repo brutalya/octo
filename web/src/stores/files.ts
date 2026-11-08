@@ -1,6 +1,9 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, nodeGeneration } from '../api/client';
+import { errMsg } from '../lib/format';
 import type { FileEntry, Space } from '../api/types';
+
+const PREVIEW_MAX = 200_000;
 
 interface Preview {
   space: Space;
@@ -11,6 +14,7 @@ interface Preview {
 interface FilesState {
   entries: Record<Space, FileEntry[]>;
   preview: Preview | null;
+  error: string | null;
   load: (space: Space) => Promise<void>;
   upload: (space: Space, dir: string, files: File[]) => Promise<void>;
   mkdir: (space: Space, path: string) => Promise<void>;
@@ -20,34 +24,69 @@ interface FilesState {
   closePreview: () => void;
 }
 
-export const useFilesStore = create<FilesState>((set, get) => ({
-  entries: { private: [], public: [] },
-  preview: null,
-  load: async (space) => {
-    const list = await api.files(space);
-    set((s) => ({ entries: { ...s.entries, [space]: list } }));
-  },
-  upload: async (space, dir, files) => {
-    for (const f of files) await api.upload(space, dir, f);
-    await get().load(space);
-  },
-  mkdir: async (space, path) => {
-    await api.mkdir(space, path);
-    await get().load(space);
-  },
-  rename: async (space, path, newPath) => {
-    await api.renameFile(space, path, newPath);
-    await get().load(space);
-  },
-  remove: async (space, path) => {
-    await api.deleteFile(space, path);
-    const p = get().preview;
-    if (p && p.space === space && (p.path === path || p.path.startsWith(path + '/'))) set({ preview: null });
-    await get().load(space);
-  },
-  open: async (space, path) => {
-    const text = await api.fileText(space, path);
-    set({ preview: { space, path, text } });
-  },
-  closePreview: () => set({ preview: null }),
-}));
+export const useFilesStore = create<FilesState>((set, get) => {
+  const fail = (gen: number, e: unknown) => {
+    if (gen === nodeGeneration()) set({ error: errMsg(e) });
+  };
+
+  /** Runs `f`; failures land in `error` unless the node changed meanwhile. */
+  const run = async (f: () => Promise<void>) => {
+    const gen = nodeGeneration();
+    set({ error: null });
+    try {
+      await f();
+    } catch (e) {
+      fail(gen, e);
+    }
+  };
+
+  const load = async (space: Space) => {
+    const gen = nodeGeneration();
+    try {
+      const list = await api.files(space);
+      if (gen === nodeGeneration()) set((s) => ({ entries: { ...s.entries, [space]: list } }));
+    } catch (e) {
+      fail(gen, e);
+    }
+  };
+
+  return {
+    entries: { private: [], public: [] },
+    preview: null,
+    error: null,
+    load,
+    upload: async (space, dir, files) => {
+      await run(async () => {
+        try {
+          for (const f of files) await api.upload(space, dir, f);
+        } finally {
+          await load(space);
+        }
+      });
+    },
+    mkdir: async (space, path) => {
+      await run(() => api.mkdir(space, path));
+      await load(space);
+    },
+    rename: async (space, path, newPath) => {
+      await run(() => api.renameFile(space, path, newPath));
+      await load(space);
+    },
+    remove: async (space, path) => {
+      await run(async () => {
+        await api.deleteFile(space, path);
+        const p = get().preview;
+        if (p && p.space === space && (p.path === path || p.path.startsWith(path + '/'))) set({ preview: null });
+      });
+      await load(space);
+    },
+    open: (space, path) =>
+      run(async () => {
+        const gen = nodeGeneration();
+        let text = await api.fileText(space, path);
+        if (text.length > PREVIEW_MAX) text = text.slice(0, PREVIEW_MAX) + '…';
+        if (gen === nodeGeneration()) set({ preview: { space, path, text } });
+      }),
+    closePreview: () => set({ preview: null }),
+  };
+});

@@ -6,16 +6,36 @@ import type {
 
 const LOCAL = '/api';
 let base = LOCAL;
+let generation = 0;
 
 /** Re-target data calls to a remote node; null = this node. */
 export function setNodeBase(nodeId: string | null): void {
-  base = nodeId ? `${LOCAL}/nodes/${encodeURIComponent(nodeId)}` : LOCAL;
+  const next = nodeId ? `${LOCAL}/nodes/${encodeURIComponent(nodeId)}` : LOCAL;
+  if (next === base) return;
+  base = next;
+  generation++;
 }
 
-export class ApiError extends Error {
+/** Bumps on every node switch; loads drop results whose captured value is stale. */
+export const nodeGeneration = (): number => generation;
+
+class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
+}
+
+function errorMessage(text: string, status: number): string {
+  let msg = text;
+  try {
+    const j: unknown = JSON.parse(text);
+    if (typeof j === 'object' && j !== null && typeof (j as { error?: unknown }).error === 'string') {
+      msg = (j as { error: string }).error;
+    }
+  } catch {
+    // plain text body
+  }
+  return (msg || `HTTP ${status}`).slice(0, 300);
 }
 
 async function request(path: string, init?: RequestInit, local = false): Promise<Response> {
@@ -28,7 +48,7 @@ async function request(path: string, init?: RequestInit, local = false): Promise
   const res = await fetch((local ? LOCAL : base) + path, init);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new ApiError(res.status, text || `HTTP ${res.status}`);
+    throw new ApiError(res.status, errorMessage(text, res.status));
   }
   return res;
 }
@@ -52,7 +72,10 @@ export const api = {
   settings: async (): Promise<SettingsView> => (await request('/settings', undefined, true)).json(),
   patchSettings: async (patch: SettingsPatch): Promise<SettingsView> =>
     (await request('/settings', jsonInit('PATCH', patch), true)).json(),
-  nodes: async (): Promise<NodeInfo[]> => (await request('/nodes', undefined, true)).json(),
+  nodes: async (): Promise<NodeInfo[]> => {
+    const n: unknown = await (await request('/nodes', undefined, true)).json();
+    return Array.isArray(n) ? (n as NodeInfo[]) : [];
+  },
   pairingInvite: async (): Promise<PairingInvite> =>
     (await request('/pairing/invite', { method: 'POST' }, true)).json(),
   pairingJoin: async (code: string, name: string): Promise<void> => {

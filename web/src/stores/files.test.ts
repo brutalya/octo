@@ -71,4 +71,22 @@ describe('files store', () => {
     useFilesStore.getState().closePreview();
     expect(useFilesStore.getState().preview).toBeNull();
   });
+
+  it('upload reloads even when a file fails', async () => {
+    const f = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'POST' ? new Response('no', { status: 500 }) : json(entries),
+    );
+    vi.stubGlobal('fetch', f);
+    await useFilesStore.getState().upload('public', '', [new File(['x'], 'a')]);
+    expect(useFilesStore.getState().entries.public).toEqual(entries);
+    expect(useFilesStore.getState().error).toBe('no');
+  });
+
+  it('preview is capped with a single ellipsis', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('a'.repeat(300_000), { status: 200 })));
+    await useFilesStore.getState().open('public', 'big.txt');
+    const text = useFilesStore.getState().preview?.text ?? '';
+    expect(text.length).toBe(200_000 + 1);
+    expect(text.endsWith('a…')).toBe(true);
+  });
 });

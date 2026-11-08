@@ -16,3 +16,5 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   if (d < 365) return `${Math.floor(d / 30)}mo`;
   return `${Math.floor(d / 365)}y`;
 }
+
+export const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));

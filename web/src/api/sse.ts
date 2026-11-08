@@ -1,6 +1,6 @@
 import type { AgentEvent } from './types';
 
-export interface SseMessage {
+interface SseMessage {
   event: string;
   data: string;
 }
@@ -52,19 +52,27 @@ export async function* readAgentEvents(body: ReadableStream<Uint8Array>): AsyncG
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let ended = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      if (done) {
+        ended = true;
+        buffer += decoder.decode();
+        if (buffer.trim()) buffer += '\n\n';
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+      }
       const parsed = parseSse(buffer);
       buffer = parsed.rest;
       for (const m of parsed.messages) {
         const e = toAgentEvent(m);
         if (e) yield e;
       }
+      if (ended) break;
     }
   } finally {
+    if (!ended) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
