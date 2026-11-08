@@ -612,6 +612,7 @@ fn node_routes(node: Arc<Node>) -> Router {
         .route("/nodes", get(list_nodes))
         .route("/nodes/{id}", axum::routing::delete(remove_node))
         .route("/nodes/{id}/trust", axum::routing::patch(set_node_trust))
+        .route("/nodes/{id}/agents", axum::routing::patch(set_node_agents))
         .route("/nodes/{id}/{*rest}", any(forward_to_node))
         .route("/pairing/invite", post(pairing_invite))
         .route("/pairing/join", post(pairing_join))
@@ -660,6 +661,8 @@ async fn pairing_pending(State(n): State<Arc<Node>>) -> Result<impl IntoResponse
 struct ConfirmBody {
     #[serde(default)]
     trust_private: bool,
+    #[serde(default)]
+    allow_agents: bool,
 }
 
 async fn pairing_confirm(State(n): State<Arc<Node>>, body: axum::body::Bytes) -> Response {
@@ -670,7 +673,7 @@ async fn pairing_confirm(State(n): State<Arc<Node>>, body: axum::body::Bytes) ->
     } else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    match n.decide(true, b.trust_private) {
+    match n.decide(true, b.trust_private, b.allow_agents) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => e.into_response(),
     }
@@ -690,6 +693,20 @@ async fn set_node_trust(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct AgentsBody {
+    agents: bool,
+}
+
+async fn set_node_agents(
+    State(n): State<Arc<Node>>,
+    Path(id): Path<String>,
+    Json(b): Json<AgentsBody>,
+) -> Result<StatusCode, NodeError> {
+    n.set_agents(&id, b.agents)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn remove_node(
     State(n): State<Arc<Node>>,
     Path(id): Path<String>,
@@ -699,6 +716,6 @@ async fn remove_node(
 }
 
 async fn pairing_reject(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
-    n.decide(false, false)?;
+    n.decide(false, false, false)?;
     Ok(StatusCode::NO_CONTENT)
 }

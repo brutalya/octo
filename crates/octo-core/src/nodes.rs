@@ -20,6 +20,8 @@ pub struct NodeInfo {
     pub online: bool,
     /// Trust this node grants the member; `null` for the node itself.
     pub trust: Option<TrustLevel>,
+    /// Whether this node lets the member run CLI agents here; `null` for the node itself.
+    pub agents: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

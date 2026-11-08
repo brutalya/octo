@@ -7,9 +7,9 @@ import { setNodeBase } from '../api/client';
 import type { NodeInfo } from '../api/types';
 
 const nodes: NodeInfo[] = [
-  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null },
-  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public' },
-  { node_id: 'ph', name: 'Phone', is_self: false, online: false, trust: 'public' },
+  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null, agents: null },
+  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public', agents: false },
+  { node_id: 'ph', name: 'Phone', is_self: false, online: false, trust: 'public', agents: false },
 ];
 beforeEach(() => {
   localStorage.clear();

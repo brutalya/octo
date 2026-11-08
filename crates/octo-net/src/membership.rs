@@ -97,6 +97,10 @@ pub struct Member {
     pub added_at: u64,
     #[serde(default)]
     pub trust: Trust,
+    /// Local opinion of this node: may the member run CLI agents here. Never sent to or
+    /// accepted from other nodes.
+    #[serde(default)]
+    pub agents: bool,
 }
 
 impl Member {
@@ -115,6 +119,7 @@ impl Member {
                 .collect(),
             added_at,
             trust: Trust::Public,
+            agents: false,
         }
     }
 
@@ -300,6 +305,21 @@ impl Membership {
         Ok(true)
     }
 
+    /// Changes the local `agents` permission; false if no such member or nothing changed.
+    pub fn set_agents(&mut self, id: &NodeId, agents: bool) -> Result<bool> {
+        let mut members = self.members.clone();
+        let Some(m) = members.iter_mut().find(|m| &m.node_id == id) else {
+            return Ok(false);
+        };
+        if m.agents == agents {
+            return Ok(false);
+        }
+        m.agents = agents;
+        self.write(&self.key, &members, self.private.as_ref())?;
+        self.members = members;
+        Ok(true)
+    }
+
     pub fn trust_of(&self, id: &NodeId) -> Option<Trust> {
         self.get(id).map(|m| m.trust)
     }
@@ -327,7 +347,7 @@ impl Membership {
     }
 
     /// Adds or replaces by node id and persists (local decisions such as completing a pairing).
-    pub(crate) fn put(&mut self, m: Member) -> Result<()> {
+    pub fn put(&mut self, m: Member) -> Result<()> {
         m.validate()?;
         let mut members: Vec<Member> = self
             .members
@@ -353,6 +373,29 @@ impl Membership {
         }
         self.write(&self.key, &members, self.private.as_ref())?;
         self.members = members;
+        Ok(true)
+    }
+
+    /// A copy that never writes to disk. Long protocol steps (pairing) run on it without holding
+    /// the live membership, and their result is merged into the live one afterwards.
+    pub fn detached(&self) -> Self {
+        Self {
+            path: None,
+            ..self.clone()
+        }
+    }
+
+    /// Takes network key, members and private key from `other` (a pairing run on a detached
+    /// copy), but only while this membership is still empty. Returns whether it did.
+    pub fn adopt_from(&mut self, other: &Membership) -> Result<bool> {
+        if !self.members.is_empty() {
+            return Ok(false);
+        }
+        self.adopt(
+            other.key.clone(),
+            other.members.clone(),
+            other.private.clone(),
+        )?;
         Ok(true)
     }
 

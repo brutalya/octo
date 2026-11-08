@@ -5,9 +5,9 @@ import { Devices } from './Devices';
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
 const nodes = [
-  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null },
-  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public' },
-  { node_id: 'pc', name: 'Pc', is_self: false, online: true, trust: 'full' },
+  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null, agents: null },
+  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public', agents: false },
+  { node_id: 'pc', name: 'Pc', is_self: false, online: true, trust: 'full', agents: true },
 ];
 let f: ReturnType<typeof vi.fn>;
 let pending: Response | null;
@@ -113,7 +113,7 @@ describe('Devices', () => {
     await userEvent.click(toggle);
     await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     const c = calls('POST', '/api/pairing/confirm')[0];
-    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: true });
+    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: true, allow_agents: false });
   });
 
   it('confirm without toggling sends trust_private false', async () => {
@@ -124,7 +124,7 @@ describe('Devices', () => {
     await screen.findByText('123456', {}, { timeout: 4000 });
     await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     const c = calls('POST', '/api/pairing/confirm')[0];
-    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: false });
+    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: false, allow_agents: false });
   });
 
   it('joiner does not get the toggle', async () => {
@@ -155,5 +155,30 @@ describe('Devices', () => {
     expect(JSON.parse((down[1] as RequestInit).body as string)).toEqual({ trust: 'public' });
     await userEvent.click(screen.getByRole('button', { name: 'Remove Vps' }));
     expect(calls('DELETE', '/api/nodes/vps')).toHaveLength(1);
+  });
+
+  it('per-member agents toggle', async () => {
+    render(<Devices />);
+    await screen.findByText('Vps');
+    const vps = screen.getByRole('checkbox', { name: 'Allow agents Vps' });
+    const pc = screen.getByRole('checkbox', { name: 'Allow agents Pc' });
+    expect(vps).not.toBeChecked();
+    expect(pc).toBeChecked();
+    await userEvent.click(vps);
+    expect(JSON.parse((calls('PATCH', '/api/nodes/vps/agents')[0][1] as RequestInit).body as string)).toEqual({ agents: true });
+    await userEvent.click(pc);
+    expect(JSON.parse((calls('PATCH', '/api/nodes/pc/agents')[0][1] as RequestInit).body as string)).toEqual({ agents: false });
+  });
+
+  it('SAS dialog carries allow_agents for host and joiner', async () => {
+    pending = json({ sas: '123456', peer_name: 'Phone' });
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Add device' }));
+    await screen.findByText('123456', {}, { timeout: 4000 });
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Allow agents' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    const c = calls('POST', '/api/pairing/confirm')[0];
+    expect(JSON.parse((c[1] as RequestInit).body as string)).toEqual({ trust_private: false, allow_agents: true });
   });
 });

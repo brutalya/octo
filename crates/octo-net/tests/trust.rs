@@ -173,3 +173,52 @@ fn private_key_message_only_from_full_and_newer() {
     .unwrap();
     assert!(m.get(&c.node_id()).is_some());
 }
+
+#[test]
+fn agents_flag_is_local_only() {
+    let (a, c) = (NodeKey::generate(), NodeKey::generate());
+    let mut m = Membership::ephemeral(NetworkKey::generate());
+    let mut ma = Member::new(a.public(), "a");
+    ma.trust = Trust::Full;
+    m.add(ma).unwrap();
+    // Default is off; an announcement claiming agents=true is ignored for that flag.
+    let mut cm = Member::new(c.public(), "c");
+    cm.agents = true;
+    assert!(
+        !serde_json::from_slice::<serde_json::Value>(&announcement(&cm).unwrap()).unwrap()
+            ["member"]["agents"]
+            .as_bool()
+            .unwrap_or(false),
+        "announcements never carry agents"
+    );
+    let msg = serde_json::to_vec(&serde_json::json!({"t":"member_added","member":cm})).unwrap();
+    apply_control(&mut m, &a.node_id(), &msg).unwrap();
+    assert!(!m.get(&c.node_id()).unwrap().agents);
+    // Local setter persists.
+    assert!(m.set_agents(&c.node_id(), true).unwrap());
+    assert!(m.get(&c.node_id()).unwrap().agents);
+    assert!(!m.set_agents(&c.node_id(), true).unwrap());
+}
+
+#[test]
+fn agents_flag_persists_and_old_files_read_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("membership.json");
+    let a = NodeKey::generate();
+    let mut m = Membership::load_or_create(&p).unwrap();
+    m.add(Member::new(a.public(), "a")).unwrap();
+    m.set_agents(&a.node_id(), true).unwrap();
+    let m2 = Membership::load_or_create(&p).unwrap();
+    assert!(m2.get(&a.node_id()).unwrap().agents);
+    // A file written before the field existed.
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    v["members"][0].as_object_mut().unwrap().remove("agents");
+    std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(
+        !Membership::load_or_create(&p)
+            .unwrap()
+            .get(&a.node_id())
+            .unwrap()
+            .agents
+    );
+}

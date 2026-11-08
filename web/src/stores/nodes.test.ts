@@ -6,8 +6,8 @@ import { useChatStore } from './chat';
 import { api, setNodeBase } from '../api/client';
 
 const nodes = [
-  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null },
-  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public' },
+  { node_id: 'me', name: 'Home', is_self: true, online: true, trust: null, agents: null },
+  { node_id: 'vps', name: 'Vps', is_self: false, online: true, trust: 'public', agents: false },
 ];
 let f: ReturnType<typeof vi.fn>;
 beforeEach(() => {

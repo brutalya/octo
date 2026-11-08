@@ -388,6 +388,10 @@ impl HostPending {
                 .iter()
                 .filter(|m| m.node_id != member.node_id)
                 .cloned()
+                .map(|mut m| {
+                    m.agents = false;
+                    m
+                })
                 .collect(),
             network_key: HEXLOWER.encode(membership.network_key().as_bytes()),
             private_key,
@@ -491,6 +495,11 @@ impl JoinPending {
                 private_key,
             } => {
                 host.validate()?;
+                let mut host = host;
+                host.agents = false;
+                for m in &mut members {
+                    m.agents = false;
+                }
                 if host.pubkey != self.host_pub {
                     return Err(NetError::Pairing("welcome host key mismatch".into()));
                 }
@@ -505,7 +514,6 @@ impl JoinPending {
                     Some(p) => Some((p.epoch, PrivateKey::from_bytes(decode32(&p.key)?))),
                     None => None,
                 };
-                let mut host = host;
                 if private.is_some() {
                     host.trust = Trust::Full;
                 } else {
@@ -536,6 +544,8 @@ fn decode32(s: &str) -> Result<[u8; 32]> {
 
 /// Plaintext for the host to send (over an established IK session) to every other member.
 pub fn announcement(m: &Member) -> Result<Vec<u8>> {
+    let mut m = m.clone();
+    m.agents = false; // local opinion, never announced
     Ok(serde_json::to_vec(
         &serde_json::json!({"t": "member_added", "member": m}),
     )?)
@@ -577,8 +587,9 @@ pub fn apply_control(membership: &mut Membership, from: &NodeId, plaintext: &[u8
 pub fn apply_announcement(
     membership: &mut Membership,
     from: &NodeId,
-    member: Member,
+    mut member: Member,
 ) -> Result<()> {
+    member.agents = false;
     if membership.trust_of(from).ok_or(NetError::NotMember)? != Trust::Full {
         return Err(NetError::NotMember);
     }

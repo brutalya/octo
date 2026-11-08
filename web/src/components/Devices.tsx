@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Lock, Plus, X } from 'lucide-react';
+import { Check, Lock, Plus, Terminal, X } from 'lucide-react';
 import { api } from '../api/client';
 import { useNodesStore } from '../stores/nodes';
 import { errMsg } from '../lib/format';
@@ -29,6 +29,7 @@ export function Devices() {
   const [pending, setPending] = useState<PairingPending | null>(null);
   const [left, setLeft] = useState(0);
   const [trustPrivate, setTrustPrivate] = useState(false);
+  const [allowAgents, setAllowAgents] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const seen = useRef(false);
@@ -114,12 +115,13 @@ export function Devices() {
 
   const answer = async (ok: boolean) => {
     try {
-      await (ok ? api.pairingConfirm(trustPrivate) : api.pairingReject());
+      await (ok ? api.pairingConfirm(trustPrivate, allowAgents) : api.pairingReject());
     } catch (e) {
       setError(errMsg(e));
     }
     setPending(null);
     setTrustPrivate(false);
+    setAllowAgents(false);
     setMode({ kind: 'idle' });
     reload();
   };
@@ -173,6 +175,15 @@ export function Devices() {
                 onChange={(e) => void act(() => api.setNodeTrust(n.node_id, e.target.checked ? 'full' : 'public'))}
               />
             </label>
+            <label className="flex max-md:p-3">
+              <input
+                type="checkbox"
+                aria-label={`Allow agents ${n.name}`}
+                checked={n.agents === true}
+                onChange={(e) => void act(() => api.setNodeAgents(n.node_id, e.target.checked))}
+              />
+              <Terminal size={12} className="ml-1 text-slate-500" />
+            </label>
             <button
               aria-label={`Remove ${n.name}`}
               onClick={() => void act(() => api.removeNode(n.node_id))}
@@ -197,6 +208,15 @@ export function Devices() {
               <Lock size={12} />
             </label>
           )}
+          <label className="flex items-center gap-1 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              aria-label="Allow agents"
+              checked={allowAgents}
+              onChange={(e) => setAllowAgents(e.target.checked)}
+            />
+            <Terminal size={12} />
+          </label>
           <button aria-label="Confirm" onClick={() => void answer(true)} className={btn}>
             <Check size={14} />
           </button>

@@ -128,6 +128,17 @@ impl N {
 
 /// Runs the pairing a -> b through the API; `trust` is the host's choice (None = no body).
 async fn pair_nodes(a: &N, b: &N, trust: Option<bool>) {
+    pair_nodes_agents(a, b, trust, None, None).await;
+}
+
+/// Like [`pair_nodes`]; `host_agents` / `join_agents` are the `allow_agents` each side sends.
+async fn pair_nodes_agents(
+    a: &N,
+    b: &N,
+    trust: Option<bool>,
+    host_agents: Option<bool>,
+    join_agents: Option<bool>,
+) {
     let (s, inv) = a.json("POST", "/api/pairing/invite", None).await;
     assert_eq!(s, StatusCode::OK, "{inv}");
     assert!(inv["expires_at"].as_u64().unwrap() > 0);
@@ -147,15 +158,23 @@ async fn pair_nodes(a: &N, b: &N, trust: Option<bool>) {
     // Busy while a pairing is in flight.
     let (s, _) = a.json("POST", "/api/pairing/invite", None).await;
     assert_eq!(s, StatusCode::CONFLICT);
-    let body = trust.map(|t| json!({"trust_private": t}));
+    let mut body = serde_json::Map::new();
+    if let Some(t) = trust {
+        body.insert("trust_private".into(), json!(t));
+    }
+    if let Some(g) = host_agents {
+        body.insert("allow_agents".into(), json!(g));
+    }
+    let body = (!body.is_empty()).then_some(Value::Object(body));
     assert!(
         a.call("POST", "/api/pairing/confirm", body)
             .await
             .status()
             .is_success()
     );
+    let body = join_agents.map(|g| json!({"allow_agents": g}));
     assert!(
-        b.call("POST", "/api/pairing/confirm", None)
+        b.call("POST", "/api/pairing/confirm", body)
             .await
             .status()
             .is_success()
@@ -248,6 +267,7 @@ async fn reject_ends_pairing() {
 #[tokio::test]
 async fn tunneled_get_threads_without_forwarding_token() {
     let (a, b, id_b) = paired(Some("ta"), Some("tb")).await;
+    allow_agents(&b, &a).await;
     // b's own token is required locally...
     let r = Request::builder()
         .uri("/api/threads")
@@ -299,6 +319,7 @@ async fn tunneled_get_threads_without_forwarding_token() {
 #[tokio::test]
 async fn tunneled_sse_streams_incrementally() {
     let (a, b, id_b) = paired(None, None).await;
+    allow_agents(&b, &a).await;
     let (_, t) = b
         .json(
             "POST",
@@ -951,4 +972,239 @@ async fn private_key_epoch_catches_up_for_member_offline_during_rotation() {
     wait_epoch(&c, e0 + 1).await;
     assert_eq!(private_state(&c).1, ka);
     drop(b);
+}
+
+/// `target` lets `member` run CLI agents through the tunnel.
+async fn allow_agents(target: &N, member: &N) {
+    let id = member.id().await;
+    let (s, _) = target
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id}/agents"),
+            Some(json!({"agents": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+async fn wait_member(n: &N, id: &str) {
+    for _ in 0..100 {
+        let (_, v) = n.json("GET", "/api/nodes", None).await;
+        if v.as_array().unwrap().iter().any(|x| x["node_id"] == id) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("member never appeared");
+}
+
+fn agents_of(list: &Value, id: &str) -> Value {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == id)
+        .unwrap()["agents"]
+        .clone()
+}
+
+#[tokio::test]
+async fn agents_permission_gates_cli_use_through_the_tunnel() {
+    // b is the target; a is a (public-trust) member of b. Default: agents off.
+    let (a, b, id_b) = paired(None, None).await;
+    let id_a = a.id().await;
+    let (_, lb) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(agents_of(&lb, &id_a), false);
+    assert_eq!(agents_of(&lb, &b.id().await), Value::Null);
+    let base = format!("/api/nodes/{id_b}");
+    let http_thread = mk_thread(&b, "public").await;
+    let (s, cli) = b
+        .json(
+            "POST",
+            "/api/threads",
+            Some(json!({"provider": "claude", "space": "public"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{cli}");
+    let cli = cli["id"].as_str().unwrap().to_string();
+    let denied = [
+        (
+            "POST",
+            "threads".to_string(),
+            Some(json!({"provider": "claude", "space": "public"})),
+        ),
+        (
+            "POST",
+            "threads".into(),
+            Some(json!({"provider": "antigravity", "space": "public"})),
+        ),
+        (
+            "POST",
+            "threads".into(),
+            Some(
+                json!({"provider": "ollama", "space": "public", "model": "m", "approval": "confirm"}),
+            ),
+        ),
+        (
+            "POST",
+            "threads".into(),
+            Some(json!({"provider": "ollama", "space": "public", "model": "m", "cwd": "/tmp"})),
+        ),
+        (
+            "POST",
+            format!("threads/{cli}/messages"),
+            Some(json!({"content": "hi"})),
+        ),
+        (
+            "PATCH",
+            format!("threads/{cli}"),
+            Some(json!({"approval": "auto"})),
+        ),
+        (
+            "PATCH",
+            format!("threads/{http_thread}"),
+            Some(json!({"approval": "confirm"})),
+        ),
+        ("GET", "import/claude/sessions".into(), None),
+        (
+            "POST",
+            "import/claude".into(),
+            Some(json!({"external_id": "x"})),
+        ),
+    ];
+    for (m, p, body) in &denied {
+        let (s, v) = a.json(m, &format!("{base}/{p}"), body.clone()).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{m} {p}: {v}");
+    }
+    // HTTP providers stay available.
+    let (s, v) = a
+        .json(
+            "POST",
+            &format!("{base}/threads"),
+            Some(json!({"provider": "ollama", "space": "public", "model": "m"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Local-only API; turning it on opens the CLI routes.
+    let (s, _) = b
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_a}/agents"),
+            Some(json!({"agents": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, lb) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(agents_of(&lb, &id_a), true);
+    for (m, p, body) in &denied[..2] {
+        let (s, v) = a.json(m, &format!("{base}/{p}"), body.clone()).await;
+        assert!(s.is_success(), "{m} {p}: {s} {v}");
+    }
+    let (s, _) = a
+        .json("GET", &format!("{base}/import/claude/sessions"), None)
+        .await;
+    assert_ne!(s, StatusCode::FORBIDDEN);
+    // The other side never learns this opinion.
+    let (_, la) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(agents_of(&la, &id_b), false);
+    let (s, _) = b
+        .json(
+            "PATCH",
+            "/api/nodes/aaaaaaaaaaaaaaaaaaaaaaaaaa/agents",
+            Some(json!({"agents": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn pairing_confirm_carries_allow_agents_on_both_sides() {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let b = start(&url, "beta", None, None).await;
+    pair_nodes_agents(&a, &b, Some(false), Some(true), Some(false)).await;
+    let (id_a, id_b) = (a.id().await, b.id().await);
+    wait_online(&a, &id_b).await;
+    wait_member(&b, &id_a).await;
+    let (_, la) = a.json("GET", "/api/nodes", None).await;
+    let (_, lb) = b.json("GET", "/api/nodes", None).await;
+    assert_eq!(agents_of(&la, &id_b), true, "host allowed the joiner");
+    assert_eq!(
+        agents_of(&lb, &id_a),
+        false,
+        "joiner did not allow the host"
+    );
+    let c = start(&url, "gamma", None, None).await;
+    pair_nodes_agents(&b, &c, Some(false), None, Some(true)).await;
+    let id_c = c.id().await;
+    let id_b2 = b.id().await;
+    wait_member(&c, &id_b2).await;
+    let _ = id_c;
+    let (_, lc) = c.json("GET", "/api/nodes", None).await;
+    assert_eq!(agents_of(&lc, &id_b), true, "joiner allowed the host");
+}
+
+#[tokio::test]
+async fn thread_lookup_failure_denies_tunnel_callers_and_hides_details() {
+    let (a, b, id_b) = paired(None, None).await;
+    // Break b's thread store; `cancel` itself never touches it, so only the policy lookup fails.
+    let db = rusqlite::Connection::open(b.dir.path().join("octo.db")).unwrap();
+    db.execute_batch("DROP TABLE threads;").unwrap();
+    let (s, v) = a
+        .json(
+            "POST",
+            &format!("/api/nodes/{id_b}/threads/t1/cancel"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    assert!(
+        !v.to_string().contains("threads"),
+        "no internals leaked: {v}"
+    );
+    // The local caller is not affected by the lookup (cancel is always 204).
+    let (s, _) = b.json("POST", "/api/threads/t1/cancel", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn pairing_does_not_overwrite_changes_made_while_it_runs() {
+    let (a, _b, id_b) = paired(None, None).await;
+    let url = relay_of(&a).await;
+    let c = start(&url, "gamma", None, None).await;
+    let (_, inv) = a.json("POST", "/api/pairing/invite", None).await;
+    c.json(
+        "POST",
+        "/api/pairing/join",
+        Some(json!({"code": inv["code"], "name": "gamma"})),
+    )
+    .await;
+    a.pending().await;
+    c.pending().await;
+    // The host decides first; the exchange then waits for the joiner's confirmation.
+    assert!(
+        a.call("POST", "/api/pairing/confirm", None)
+            .await
+            .status()
+            .is_success()
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (s, _) = a
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_b}/trust"),
+            Some(json!({"trust": "full"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    assert!(
+        c.call("POST", "/api/pairing/confirm", None)
+            .await
+            .status()
+            .is_success()
+    );
+    let id_c = c.id().await;
+    wait_online(&a, &id_c).await;
+    let (_, la) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(trust_of(&la, &id_b), "full", "{la}");
+    assert_eq!(la.as_array().unwrap().len(), 3);
 }

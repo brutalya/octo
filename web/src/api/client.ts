@@ -90,8 +90,11 @@ export const api = {
       throw e;
     }
   },
-  pairingConfirm: async (trustPrivate = false): Promise<void> => {
-    await request('/pairing/confirm', jsonInit('POST', { trust_private: trustPrivate }), true);
+  pairingConfirm: async (trustPrivate = false, allowAgents = false): Promise<void> => {
+    await request('/pairing/confirm', jsonInit('POST', { trust_private: trustPrivate, allow_agents: allowAgents }), true);
+  },
+  setNodeAgents: async (id: string, agents: boolean): Promise<void> => {
+    await request(`/nodes/${encodeURIComponent(id)}/agents`, jsonInit('PATCH', { agents }), true);
   },
   setNodeTrust: async (id: string, trust: TrustLevel): Promise<void> => {
     await request(`/nodes/${encodeURIComponent(id)}/trust`, jsonInit('PATCH', { trust }), true);

@@ -5,4 +5,8 @@ export type NodeInfo = { node_id: string, name: string, is_self: boolean, online
 /**
  * Trust this node grants the member; `null` for the node itself.
  */
-trust: TrustLevel | null, };
+trust: TrustLevel | null, 
+/**
+ * Whether this node lets the member run CLI agents here; `null` for the node itself.
+ */
+agents: boolean | null, };
