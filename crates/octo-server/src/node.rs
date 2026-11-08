@@ -7,6 +7,7 @@ use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use octo_core::Hub;
+use octo_core::files::FilesError;
 use octo_core::files::private::{Action, SyncEntry, plan};
 use octo_core::nodes::{NodeInfo, PairingInvite, PairingPending, TrustLevel};
 use octo_core::settings::NetSettings;
@@ -126,6 +127,9 @@ struct Shared {
     ts_path: std::path::PathBuf,
     hint: tokio::sync::Notify,
     sync: Mutex<HashMap<NodeId, SyncSlot>>,
+    /// Every task spawned on behalf of the node (sync runs, streams, peer tasks, body pumps);
+    /// aborted when the node is dropped.
+    tasks: Mutex<tokio::task::JoinSet<()>>,
 }
 
 /// At most one sync run per peer; `dirty` requests another run after the current one.
@@ -137,7 +141,7 @@ struct SyncSlot {
 
 pub struct Node {
     sh: Arc<Shared>,
-    task: JoinHandle<()>,
+    task: AbortHandle,
     hint_task: JoinHandle<()>,
 }
 
@@ -145,6 +149,9 @@ impl Drop for Node {
     fn drop(&mut self) {
         self.task.abort();
         self.hint_task.abort();
+        if let Ok(mut t) = self.sh.tasks.lock() {
+            t.abort_all();
+        }
         if let Ok(p) = self.sh.pair.lock()
             && let Some(a) = &p.abort
         {
@@ -166,6 +173,13 @@ impl Shared {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Spawns a task owned by the node: it ends when the node is dropped.
+    fn spawn(&self, fut: impl Future<Output = ()> + Send + 'static) -> AbortHandle {
+        let mut set = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        while set.try_join_next().is_some() {} // reap finished tasks
+        set.spawn(fut)
     }
 
     fn is_member(&self, id: &NodeId) -> bool {
@@ -270,8 +284,18 @@ impl Node {
             ts_path,
             hint: tokio::sync::Notify::new(),
             sync: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(tokio::task::JoinSet::new()),
         });
-        let task = tokio::spawn(run(sh.clone(), sessions, cmd_rx));
+        let actor = tokio::spawn(run(sh.clone(), sessions, cmd_rx));
+        let task = actor.abort_handle();
+        // An actor that panics would silently leave the node deaf: say so.
+        tokio::spawn(async move {
+            if let Err(e) = actor.await
+                && e.is_panic()
+            {
+                eprintln!("octo: node actor panicked: {e}");
+            }
+        });
         let hint_task = tokio::spawn(debounce_hints(sh.clone()));
         Ok(Arc::new(Self {
             sh,
@@ -387,7 +411,7 @@ impl Node {
             }
         };
         let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(16);
-        tokio::spawn(async move {
+        self.sh.spawn(async move {
             loop {
                 match f.next_body().await {
                     Ok(Some(b)) => {
@@ -736,7 +760,7 @@ fn reply(status: StatusCode, msg: &str) -> Response<Body> {
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::json!({"error": msg}).to_string()))
-        .unwrap_or_default()
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 /// Who is calling the local API through the dispatcher.
@@ -909,7 +933,53 @@ const PLAIN_CTL: u8 = 1;
 struct PeerEntry {
     in_tx: mpsc::Sender<Vec<u8>>,
     link: Link,
-    task: JoinHandle<()>,
+    task: AbortHandle,
+}
+
+/// Control messages waiting for a session with an offline peer. A newer message replaces an
+/// older one of the same kind (a stale `private_key` is worthless once a newer one exists), so
+/// the queue stays small however long the peer is away.
+#[derive(Default)]
+struct CtlQueue {
+    q: HashMap<NodeId, Vec<(String, Vec<u8>)>>,
+}
+
+impl CtlQueue {
+    /// Messages of one kind supersede each other; announcements are keyed by the member too.
+    fn key(bytes: &[u8]) -> String {
+        let v: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
+        let t = v.get("t").and_then(|t| t.as_str()).unwrap_or("");
+        match v.pointer("/member/node_id").and_then(|m| m.as_str()) {
+            Some(m) => format!("{t}:{m}"),
+            None => t.to_string(),
+        }
+    }
+
+    fn push(&mut self, peer: NodeId, bytes: Vec<u8>) {
+        let key = Self::key(&bytes);
+        let list = self.q.entry(peer).or_default();
+        match list.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = bytes,
+            None => list.push((key, bytes)),
+        }
+    }
+
+    fn take(&mut self, peer: &NodeId) -> Vec<Vec<u8>> {
+        self.q
+            .remove(peer)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, b)| b)
+            .collect()
+    }
+
+    fn clear(&mut self, peer: &NodeId) {
+        self.q.remove(peer);
+    }
+
+    fn peers(&self) -> impl Iterator<Item = &NodeId> {
+        self.q.keys()
+    }
 }
 
 struct Actor {
@@ -919,7 +989,7 @@ struct Actor {
     current: Option<(String, [u8; 32])>,
     peers: HashMap<NodeId, PeerEntry>,
     waiters: HashMap<NodeId, Vec<oneshot::Sender<Result<Link, NetError>>>>,
-    ctl: HashMap<NodeId, Vec<Vec<u8>>>,
+    ctl: CtlQueue,
     connecting: HashMap<NodeId, Instant>,
     out_tx: mpsc::Sender<(NodeId, Vec<u8>)>,
 }
@@ -941,7 +1011,7 @@ async fn run(sh: Arc<Shared>, sessions: Sessions, mut cmd_rx: mpsc::Receiver<Cmd
         current: None,
         peers: HashMap::new(),
         waiters: HashMap::new(),
-        ctl: HashMap::new(),
+        ctl: CtlQueue::default(),
         connecting: HashMap::new(),
         out_tx,
     };
@@ -1020,8 +1090,11 @@ impl Actor {
     }
 
     async fn start_connect(&mut self, peer: NodeId) {
-        let m = self.sh.membership();
-        if let Ok(f) = self.sessions.connect(&m, peer) {
+        let connect = {
+            let m = self.sh.members.read().unwrap_or_else(|e| e.into_inner());
+            self.sessions.connect(&m, peer)
+        };
+        if let Ok(f) = connect {
             self.connecting.insert(peer, Instant::now());
             self.send(peer, f).await;
         }
@@ -1034,7 +1107,7 @@ impl Actor {
         let want: Vec<NodeId> = self
             .waiters
             .keys()
-            .chain(self.ctl.keys())
+            .chain(self.ctl.peers())
             .filter(|p| !self.sessions.is_established(p))
             .copied()
             .collect();
@@ -1052,11 +1125,14 @@ impl Actor {
                 {
                     return;
                 }
-                self.sessions.reset(&peer);
-                if let Some(p) = self.peers.remove(&peer) {
-                    p.task.abort();
+                if link.is_none() {
+                    // Removed member: nothing queued for it, no session or replay state kept.
+                    self.ctl.clear(&peer);
+                    if let Err(e) = self.sessions.forget(&peer) {
+                        eprintln!("octo: forgetting session state failed: {e}");
+                    }
                 }
-                self.connecting.remove(&peer);
+                self.drop_peer(&peer);
             }
             Cmd::Ensure(peer, reply) => {
                 if let (Some(p), true) =
@@ -1075,8 +1151,9 @@ impl Actor {
                 self.maybe_connect(peer).await;
             }
             Cmd::Hint => {
-                let hint =
-                    serde_json::to_vec(&serde_json::json!({"t": "sync_hint"})).unwrap_or_default();
+                let Ok(hint) = serde_json::to_vec(&serde_json::json!({"t": "sync_hint"})) else {
+                    return;
+                };
                 let to: Vec<NodeId> = full_members(&self.sh.membership())
                     .into_iter()
                     .filter(|p| self.sessions.is_established(p))
@@ -1092,11 +1169,20 @@ impl Actor {
                 if self.sessions.is_established(&peer) {
                     self.send_ctl(peer, &bytes).await;
                 } else {
-                    self.ctl.entry(peer).or_default().push(bytes);
+                    self.ctl.push(peer, bytes);
                     self.maybe_connect(peer).await;
                 }
             }
         }
+    }
+
+    /// Ends the session and the mux of `peer`.
+    fn drop_peer(&mut self, peer: &NodeId) {
+        self.sessions.reset(peer);
+        if let Some(p) = self.peers.remove(peer) {
+            p.task.abort();
+        }
+        self.connecting.remove(peer);
     }
 
     async fn maybe_connect(&mut self, peer: NodeId) {
@@ -1115,8 +1201,12 @@ impl Actor {
     }
 
     async fn on_frame(&mut self, from: NodeId, payload: Vec<u8>) {
-        let m = self.sh.membership();
-        match self.sessions.handle(&m, from, &payload) {
+        // Under the read lock only for the (synchronous) handling, never across an await.
+        let handled = {
+            let m = self.sh.members.read().unwrap_or_else(|e| e.into_inner());
+            self.sessions.handle(&m, from, &payload)
+        };
+        match handled {
             Ok(Handled::Reply(f)) => {
                 self.send(from, f).await;
                 self.open_peer(from).await;
@@ -1124,8 +1214,16 @@ impl Actor {
             Ok(Handled::Established) => self.open_peer(from).await,
             Ok(Handled::Data(d)) => match d.split_first() {
                 Some((&PLAIN_MUX, rest)) => {
-                    if let Some(p) = self.peers.get(&from) {
-                        let _ = p.in_tx.try_send(rest.to_vec());
+                    let lost = self
+                        .peers
+                        .get(&from)
+                        .is_some_and(|p| p.in_tx.try_send(rest.to_vec()).is_err());
+                    if lost {
+                        // A dropped mux frame stalls its streams for good: start over.
+                        eprintln!(
+                            "octo: inbound queue for a peer overflowed, resetting its session"
+                        );
+                        self.drop_peer(&from);
                     }
                 }
                 Some((&PLAIN_CTL, rest)) => self.on_ctl(from, rest).await,
@@ -1143,7 +1241,9 @@ impl Actor {
     }
 
     async fn on_ctl(&mut self, from: NodeId, bytes: &[u8]) {
-        let msg: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
+        let Ok(msg) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return; // not a control message
+        };
         let full = self.sh.trust_of(&from) == Some(Trust::Full);
         match msg.get("t").and_then(|t| t.as_str()) {
             Some("sync_hint") => {
@@ -1181,7 +1281,7 @@ impl Actor {
         let (open_tx, open_rx) = mpsc::channel(16);
         let initiator = self.sh.key.node_id() < peer;
         let mux = Mux::new(mux_out_tx, in_rx, initiator);
-        let task = tokio::spawn(peer_task(
+        let task = self.sh.spawn(peer_task(
             self.sh.clone(),
             peer,
             mux,
@@ -1200,15 +1300,16 @@ impl Actor {
                 task,
             },
         );
-        for c in self.ctl.remove(&peer).unwrap_or_default() {
+        for c in self.ctl.take(&peer) {
             self.send_ctl(peer, &c).await;
         }
         if self.sh.trust_of(&peer) == Some(Trust::Full) {
             let epoch = self.sh.membership().private_epoch();
-            let msg =
+            if let Ok(msg) =
                 serde_json::to_vec(&serde_json::json!({"t": "private_epoch", "epoch": epoch}))
-                    .unwrap_or_default();
-            self.send_ctl(peer, &msg).await;
+            {
+                self.send_ctl(peer, &msg).await;
+            }
             trigger_sync(&self.sh, peer);
         }
     }
@@ -1232,7 +1333,7 @@ async fn peer_task(
             }
             s = mux.accept() => match s {
                 Some(s) => {
-                    tokio::spawn(serve_stream(sh.clone(), peer, s));
+                    sh.spawn(serve_stream(sh.clone(), peer, s));
                 }
                 None => return,
             },
@@ -1274,8 +1375,9 @@ fn trigger_sync(sh: &Arc<Shared>, peer: NodeId) {
         }
         slot.running = true;
     }
-    let sh = sh.clone();
-    tokio::spawn(async move {
+    let sh2 = sh.clone();
+    sh.spawn(async move {
+        let sh = sh2;
         let mut failures = 0u32;
         loop {
             let ok = sync_once(&sh, peer).await.is_some();
@@ -1341,18 +1443,59 @@ async fn read_response(stream: Stream, uri: &str, cap: usize) -> Result<Vec<u8>,
     Ok(out)
 }
 
-async fn apply_entry(
+/// An entry with its downloaded content (`None` = already present locally).
+type SyncItem = (SyncEntry, Option<Vec<u8>>);
+
+/// Applies a group of entries with one index save, off the async runtime. Re-checks right
+/// before applying that `peer` is still a full member (trust may have been withdrawn while
+/// blobs were downloading). `None` = nothing applied (trust gone or the store failed).
+async fn apply_batch(
     sh: &Arc<Shared>,
-    e: SyncEntry,
-    data: Option<Vec<u8>>,
-) -> Result<(), octo_core::files::FilesError> {
+    peer: NodeId,
+    items: Vec<SyncItem>,
+) -> Option<Vec<Result<(), FilesError>>> {
+    if items.is_empty() {
+        return Some(vec![]);
+    }
+    if sh.trust_of(&peer) != Some(Trust::Full) {
+        return None;
+    }
     let files = sh.hub.files().clone();
-    tokio::task::spawn_blocking(move || files.private_apply(&e, data.as_deref()))
-        .await
-        .unwrap_or(Err(octo_core::files::FilesError::Invalid))
+    match tokio::task::spawn_blocking(move || files.private_apply_batch(&items)).await {
+        Ok(Ok(r)) => Some(r),
+        Ok(Err(e)) => {
+            eprintln!("octo: sync: applying a batch failed: {e}");
+            None
+        }
+        Err(e) => {
+            eprintln!("octo: sync: apply task failed: {e}");
+            None
+        }
+    }
 }
 
-/// One pull run: manifest, plan, fetch missing blobs (hash-verified by `apply`), apply.
+/// Counts and reports entries the store refused (they are not retried).
+fn report_rejected(
+    peer: NodeId,
+    entries: &[SyncEntry],
+    results: &[Result<(), FilesError>],
+) -> usize {
+    let mut n = 0;
+    for (e, r) in entries.iter().zip(results) {
+        if let Err(err) = r {
+            n += 1;
+            eprintln!("octo: sync from {peer}: rejected {:?}: {err}", e.path);
+        }
+    }
+    n
+}
+
+/// Downloaded blobs are applied in groups of about this many bytes.
+const APPLY_GROUP_BYTES: usize = 64 * 1024 * 1024;
+
+/// One pull run: manifest, plan, fetch missing blobs (hash-verified by `apply`), apply in
+/// batches. Returns `Some` when nothing needs a retry: rejected entries are logged and counted
+/// but not retried; failed downloads and oversized entries make the run incomplete.
 async fn sync_once(sh: &Arc<Shared>, peer: NodeId) -> Option<()> {
     let remote: Vec<SyncEntry> = serde_json::from_slice(
         &peer_get(sh, peer, "/api/sync/private/manifest", MAX_MANIFEST).await?,
@@ -1364,33 +1507,115 @@ async fn sync_once(sh: &Arc<Shared>, peer: NodeId) -> Option<()> {
         .ok()?
         .ok()?;
     let mut complete = true;
+    let (mut adopt, mut fetch) = (vec![], vec![]);
     for action in plan(&local, &remote) {
-        if sh.trust_of(&peer) != Some(Trust::Full) {
-            return Some(());
-        }
-        let (entry, fetch) = match action {
-            Action::Fetch(e) => (e, true),
-            Action::Adopt(e) => (e, false),
-        };
-        let first = if fetch {
-            Err(octo_core::files::FilesError::NotFound)
-        } else {
-            apply_entry(sh, entry.clone(), None).await
-        };
-        // Content not present locally (or gone meanwhile): download it.
-        if matches!(first, Err(octo_core::files::FilesError::NotFound))
-            && entry.size <= MAX_BLOB as u64
-        {
-            let uri = format!("/api/sync/private/blob/{}", entry.hash);
-            // A failed download is a transient failure; a rejected entry is not retried.
-            let data = peer_get(sh, peer, &uri, MAX_BLOB).await;
-            match data {
-                Some(data) => {
-                    let _ = apply_entry(sh, entry, Some(data)).await;
-                }
-                None => complete = false,
-            }
+        match action {
+            Action::Adopt(e) => adopt.push(e),
+            Action::Fetch(e) => fetch.push(e),
         }
     }
+    let mut rejected = 0;
+    // Entries whose content is already here (or that need none).
+    let results = apply_batch(sh, peer, adopt.iter().map(|e| (e.clone(), None)).collect()).await;
+    let Some(results) = results else {
+        return trust_gone_or_failed(sh, peer);
+    };
+    let mut missing = vec![];
+    for (e, r) in adopt.iter().zip(&results) {
+        if matches!(r, Err(FilesError::NotFound)) {
+            missing.push(e.clone()); // content not present locally: download it
+        }
+    }
+    let settled: Vec<_> = adopt
+        .iter()
+        .zip(&results)
+        .filter(|(_, r)| !matches!(r, Err(FilesError::NotFound)))
+        .map(|(e, _)| e.clone())
+        .collect();
+    let settled_results: Vec<_> = results
+        .into_iter()
+        .filter(|r| !matches!(r, Err(FilesError::NotFound)))
+        .collect();
+    rejected += report_rejected(peer, &settled, &settled_results);
+    missing.extend(fetch);
+    let mut group: Vec<SyncItem> = vec![];
+    let mut group_bytes = 0usize;
+    for entry in missing {
+        if entry.size > MAX_BLOB as u64 {
+            eprintln!(
+                "octo: sync from {peer}: {:?} is too large ({} bytes), skipped",
+                entry.path, entry.size
+            );
+            complete = false;
+            continue;
+        }
+        let uri = format!("/api/sync/private/blob/{}", entry.hash);
+        // A failed download is a transient failure (retried); a rejected entry is not.
+        match peer_get(sh, peer, &uri, MAX_BLOB).await {
+            Some(data) => {
+                group_bytes += data.len();
+                group.push((entry, Some(data)));
+            }
+            None => complete = false,
+        }
+        if group_bytes >= APPLY_GROUP_BYTES {
+            let items = std::mem::take(&mut group);
+            group_bytes = 0;
+            let entries: Vec<_> = items.iter().map(|(e, _)| e.clone()).collect();
+            let Some(r) = apply_batch(sh, peer, items).await else {
+                return trust_gone_or_failed(sh, peer);
+            };
+            rejected += report_rejected(peer, &entries, &r);
+        }
+    }
+    let entries: Vec<_> = group.iter().map(|(e, _)| e.clone()).collect();
+    let Some(r) = apply_batch(sh, peer, group).await else {
+        return trust_gone_or_failed(sh, peer);
+    };
+    rejected += report_rejected(peer, &entries, &r);
+    if rejected > 0 {
+        eprintln!("octo: sync from {peer}: {rejected} entries rejected");
+    }
     complete.then_some(())
+}
+
+/// `apply_batch` yields nothing when trust was withdrawn (the run just ends) or on a store
+/// failure (the run is retried).
+fn trust_gone_or_failed(sh: &Arc<Shared>, peer: NodeId) -> Option<()> {
+    (sh.trust_of(&peer) != Some(Trust::Full)).then_some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use octo_net::identity::NodeKey;
+
+    fn id() -> NodeId {
+        NodeKey::generate().node_id()
+    }
+
+    fn msg(t: &str, extra: &str) -> Vec<u8> {
+        format!(r#"{{"t":"{t}"{extra}}}"#).into_bytes()
+    }
+
+    #[test]
+    fn ctl_queue_keeps_only_the_latest_per_type() {
+        let (a, b) = (id(), id());
+        let mut q = CtlQueue::default();
+        q.push(a, msg("private_key", r#","epoch":1"#));
+        q.push(a, msg("private_key", r#","epoch":2"#));
+        q.push(a, msg("private_key", r#","epoch":3"#));
+        q.push(b, msg("private_key", r#","epoch":9"#));
+        let got = q.take(&a);
+        assert_eq!(got, vec![msg("private_key", r#","epoch":3"#)]);
+        assert!(q.take(&a).is_empty());
+        // Announcements about different members are different messages.
+        q.push(a, msg("member_added", r#","member":{"node_id":"x"}"#));
+        q.push(a, msg("member_added", r#","member":{"node_id":"y"}"#));
+        q.push(a, msg("member_added", r#","member":{"node_id":"x","n":2}"#));
+        assert_eq!(q.take(&a).len(), 2);
+        // Removal clears the peer's queue.
+        q.clear(&b);
+        assert!(q.take(&b).is_empty());
+    }
 }
