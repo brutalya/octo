@@ -108,6 +108,8 @@ export const api = {
   files: async (space: Space): Promise<FileEntry[]> => (await request(`/files/${space}`)).json(),
   fileText: async (space: Space, path: string): Promise<string> =>
     (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).text(),
+  fileBlob: async (space: Space, path: string): Promise<Blob> =>
+    (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).blob(),
   upload: async (space: Space, dir: string, file: File): Promise<void> => {
     const form = new FormData();
     form.append('file', file, file.name);

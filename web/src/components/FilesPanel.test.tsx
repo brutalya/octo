@@ -53,4 +53,10 @@ describe('FilesPanel', () => {
     render(<FilesPanel />);
     expect(screen.getByText('hello body')).toBeInTheDocument();
   });
+
+  it('shows an image preview without a text block', () => {
+    useFilesStore.setState({ preview: { space: 'private', path: 'x.png', text: '', imageUrl: 'blob:abc' } });
+    render(<FilesPanel />);
+    expect(screen.getByRole('img', { name: 'x.png' })).toHaveAttribute('src', 'blob:abc');
+  });
 });

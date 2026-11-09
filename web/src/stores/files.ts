@@ -9,7 +9,11 @@ interface Preview {
   space: Space;
   path: string;
   text: string;
+  /** Object URL of an image preview (revoked when the preview goes away). */
+  imageUrl?: string;
 }
+
+const IMAGE_RE = /\.(png|jpe?g|webp|gif)$/i;
 
 interface FilesState {
   entries: Record<Space, FileEntry[]>;
@@ -50,6 +54,13 @@ export const useFilesStore = create<FilesState>((set, get) => {
     }
   };
 
+  /** Replaces the preview and releases the previous object URL. */
+  const setPreview = (next: Preview | null) => {
+    const old = get().preview?.imageUrl;
+    if (old) URL.revokeObjectURL(old);
+    set({ preview: next });
+  };
+
   return {
     entries: { private: [], public: [] },
     preview: null,
@@ -76,17 +87,22 @@ export const useFilesStore = create<FilesState>((set, get) => {
       await run(async () => {
         await api.deleteFile(space, path);
         const p = get().preview;
-        if (p && p.space === space && (p.path === path || p.path.startsWith(path + '/'))) set({ preview: null });
+        if (p && p.space === space && (p.path === path || p.path.startsWith(path + '/'))) setPreview(null);
       });
       await load(space);
     },
     open: (space, path) =>
       run(async () => {
         const gen = nodeGeneration();
+        if (IMAGE_RE.test(path)) {
+          const blob = await api.fileBlob(space, path);
+          if (gen === nodeGeneration()) setPreview({ space, path, text: '', imageUrl: URL.createObjectURL(blob) });
+          return;
+        }
         let text = await api.fileText(space, path);
         if (text.length > PREVIEW_MAX) text = text.slice(0, PREVIEW_MAX) + '…';
-        if (gen === nodeGeneration()) set({ preview: { space, path, text } });
+        if (gen === nodeGeneration()) setPreview({ space, path, text });
       }),
-    closePreview: () => set({ preview: null }),
+    closePreview: () => setPreview(null),
   };
 });

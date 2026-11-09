@@ -89,4 +89,34 @@ describe('files store', () => {
     expect(text.length).toBe(200_000 + 1);
     expect(text.endsWith('a…')).toBe(true);
   });
+
+  it('open on an image fetches a blob and previews it via an object URL', async () => {
+    const f = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } }));
+    vi.stubGlobal('fetch', f);
+    const create = vi.fn(() => 'blob:abc');
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }));
+    await useFilesStore.getState().open('private', 'photos/x.PNG');
+    expect(call(f)[0]).toBe('/api/files/private/content?path=photos%2Fx.PNG');
+    expect(useFilesStore.getState().error).toBeNull();
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(useFilesStore.getState().preview).toEqual({
+      space: 'private',
+      path: 'photos/x.PNG',
+      text: '',
+      imageUrl: 'blob:abc',
+    });
+    useFilesStore.getState().closePreview();
+    expect(revoke).toHaveBeenCalledWith('blob:abc');
+    expect(useFilesStore.getState().preview).toBeNull();
+  });
+
+  it('replacing an image preview revokes the old object URL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]))));
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: () => 'blob:1', revokeObjectURL: revoke }));
+    await useFilesStore.getState().open('public', 'a.jpg');
+    await useFilesStore.getState().open('public', 'b.jpeg');
+    expect(revoke).toHaveBeenCalledWith('blob:1');
+  });
 });

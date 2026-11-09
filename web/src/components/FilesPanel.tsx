@@ -139,7 +139,11 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
               <X size={12} />
             </button>
           </div>
-          <pre className="overflow-auto whitespace-pre-wrap px-2 pb-2 font-mono text-xs text-slate-700">{preview.text}</pre>
+          {preview.imageUrl ? (
+            <img src={preview.imageUrl} alt={preview.path} className="min-h-0 object-contain px-2 pb-2" />
+          ) : (
+            <pre className="overflow-auto whitespace-pre-wrap px-2 pb-2 font-mono text-xs text-slate-700">{preview.text}</pre>
+          )}
         </div>
       )}
     </aside>
