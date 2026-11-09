@@ -226,3 +226,74 @@ fn pdf(content: &str) -> Vec<u8> {
     );
     out
 }
+
+async fn send_many(app: &Router, id: &str, paths: &[String]) -> Response<Body> {
+    let atts: Vec<Value> = paths
+        .iter()
+        .map(|p| json!({"space": "private", "path": p}))
+        .collect();
+    call(
+        app,
+        "POST",
+        &format!("/api/threads/{id}/messages"),
+        Some(json!({"content": "x", "attachments": atts})),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn more_than_ten_attachments_is_413() {
+    let (url, _, _) = fake_ollama(&["completion"]).await;
+    let (app, _d) = app(&url);
+    let mut paths = vec![];
+    for i in 0..11 {
+        let n = format!("f{i}.txt");
+        upload(&app, "private", &n, b"hi").await;
+        paths.push(n);
+    }
+    let id = new_thread(&app, "llama3").await;
+    assert_eq!(
+        send_many(&app, &id, &paths).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        send_many(&app, &id, &paths[..10]).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn more_than_40_mb_in_total_is_413() {
+    let (url, chats, _) = fake_ollama(&["completion", "vision"]).await;
+    let (app, _d) = app(&url);
+    let mut img = PNG.to_vec();
+    img.resize(9 * 1024 * 1024, 0);
+    let mut paths = vec![];
+    for i in 0..5 {
+        let n = format!("p{i}.png");
+        upload(&app, "private", &n, &img).await;
+        paths.push(n);
+    }
+    let id = new_thread(&app, "llava").await;
+    assert_eq!(
+        send_many(&app, &id, &paths).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert!(chats.lock().unwrap().is_empty());
+    no_messages_stored(&app, &id).await;
+}
+
+#[tokio::test]
+async fn a_non_vision_verdict_is_not_cached() {
+    let (url, _, shows) = fake_ollama(&["completion"]).await;
+    let (app, _d) = app(&url);
+    upload(&app, "private", "photo.png", PNG).await;
+    let id = new_thread(&app, "llama3").await;
+    for _ in 0..2 {
+        assert_eq!(
+            send(&app, &id, "photo.png").await.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+    }
+    assert_eq!(shows.load(Ordering::SeqCst), 2);
+}

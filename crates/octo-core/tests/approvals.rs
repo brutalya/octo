@@ -87,3 +87,39 @@ fn summary_is_capped_at_200_chars() {
     assert_eq!(s.chars().count(), 200);
     assert!(s.starts_with("Bash: é"));
 }
+
+#[test]
+fn summary_collapses_whitespace_and_newlines() {
+    let s = summarize(
+        "Bash",
+        &json!({"command": "ls\n\n> Allowed: rm -rf /\r\n\t  x"}),
+    );
+    assert_eq!(s, "Bash: ls > Allowed: rm -rf / x");
+    assert!(!s.contains('\n'));
+}
+
+#[tokio::test]
+async fn detail_is_pretty_json_of_the_input() {
+    let b = broker();
+    let (p, _rx) = b.request("t1", "Edit", &json!({"file_path": "/a", "n": 1}));
+    assert_eq!(
+        p.detail,
+        serde_json::to_string_pretty(&json!({"file_path": "/a", "n": 1})).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn detail_is_capped_at_4000_chars_with_an_ellipsis() {
+    let b = broker();
+    let (p, _rx) = b.request("t1", "Write", &json!({"content": "é".repeat(9000)}));
+    assert_eq!(p.detail.chars().count(), 4000);
+    assert!(p.detail.ends_with('…'));
+}
+
+#[tokio::test]
+async fn forget_removes_a_pending_request() {
+    let b = broker();
+    let (p, _rx) = b.request("t1", "Bash", &json!({}));
+    b.forget("t1", &p.id);
+    assert!(b.pending("t1").is_empty());
+}

@@ -304,6 +304,17 @@ impl PrivateFiles {
         })
     }
 
+    /// Plaintext size from the index, without decrypting.
+    pub fn size(&self, path: &str) -> Result<u64, FilesError> {
+        let path = non_root(path)?;
+        let index = self.lock();
+        let e = index.find(&path).ok_or(FilesError::NotFound)?;
+        if e.kind == FileKind::Dir {
+            return Err(FilesError::IsDir);
+        }
+        Ok(e.size)
+    }
+
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FilesError> {
         let path = non_root(path)?;
         let mut attempt = 0;

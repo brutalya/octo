@@ -13,6 +13,8 @@ pub struct PendingApproval {
     pub id: String,
     pub tool: String,
     pub summary: String,
+    /// Full tool input as pretty JSON, at most 4000 chars.
+    pub detail: String,
 }
 
 const SUMMARY_MAX: usize = 200;
@@ -27,7 +29,21 @@ pub fn summarize(tool: &str, input: &Value) -> String {
         Some(k) => format!("{tool}: {k}"),
         None => tool.to_string(),
     };
-    full.chars().take(SUMMARY_MAX).collect()
+    // one line: no markdown can be forged through newlines
+    let one_line = full.split_whitespace().collect::<Vec<_>>().join(" ");
+    one_line.chars().take(SUMMARY_MAX).collect()
+}
+
+const DETAIL_MAX: usize = 4000;
+
+fn detail_of(input: &Value) -> String {
+    let full = serde_json::to_string_pretty(input).unwrap_or_default();
+    if full.chars().count() <= DETAIL_MAX {
+        return full;
+    }
+    let mut s: String = full.chars().take(DETAIL_MAX - 1).collect();
+    s.push('…');
+    s
 }
 
 struct Entry {
@@ -87,6 +103,7 @@ impl ApprovalBroker {
             id: uuid::Uuid::new_v4().to_string(),
             tool: tool.to_string(),
             summary: summarize(tool, input),
+            detail: detail_of(input),
         };
         lock(&self.open)
             .entry(thread.to_string())
@@ -122,6 +139,11 @@ impl ApprovalBroker {
             }
             None => false,
         }
+    }
+
+    /// Drops an open request without deciding it (its receiver sees a closed channel).
+    pub fn forget(&self, thread: &str, id: &str) {
+        let _ = take(&self.open, thread, id);
     }
 
     /// Denies every open request of the thread.

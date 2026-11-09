@@ -110,6 +110,14 @@ impl Files {
         }
     }
 
+    /// File size (plaintext for private files) without reading the content.
+    pub fn size(&self, space: Space, path: &str) -> Result<u64, FilesError> {
+        match space {
+            Space::Public => self.public.size(path),
+            Space::Private => self.private()?.size(path),
+        }
+    }
+
     /// Private files are decrypted in memory only.
     pub fn read(&self, space: Space, path: &str) -> Result<Vec<u8>, FilesError> {
         match space {

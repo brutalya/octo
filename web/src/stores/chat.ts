@@ -89,8 +89,10 @@ export const useChatStore = create<ChatState>((set, get) => {
             setStreaming(threadId, { text, tool: e.summary || e.name });
           } else if (e.type === 'approval') {
             setApprovals(threadId, (l) =>
-              l.some((a) => a.id === e.id) ? l : [...l, { id: e.id, tool: e.tool, summary: e.summary }],
+              l.some((a) => a.id === e.id) ? l : [...l, { id: e.id, tool: e.tool, summary: e.summary, detail: e.detail }],
             );
+          } else if (e.type === 'approval_done') {
+            setApprovals(threadId, (l) => l.filter((a) => a.id !== e.id));
           } else if (e.type === 'error') {
             sawDone = true;
             fail(e.message);

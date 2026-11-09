@@ -3,7 +3,7 @@
 Today `confirm` = non-interactive deny: claude `--permission-mode default` and agy `toolPermission=request-review` auto-deny anything needing a prompt in print mode (agy lists them in `result.denied_actions`; claude in `result.permission_denials`). Goal: ask the user in the UI instead.
 
 ## Claude: `--permission-prompt-tool`
-`claude -p ... --permission-prompt-tool mcp__octo__approve --mcp-config <json> --strict-mcp-config`. Claude calls this MCP tool whenever a tool use needs permission; the tool returns JSON text:
+`claude -p ... --permission-prompt-tool mcp__octo__approve --mcp-config <json>`. Claude calls this MCP tool whenever a tool use needs permission; the tool returns JSON text:
 - in: `{tool_name, input, tool_use_id}`
 - out: `{"behavior":"allow","updatedInput":<input>}` or `{"behavior":"deny","message":"..."}`
 (`--permission-prompts host` is the default in -p, so no extra flag.)
@@ -38,7 +38,7 @@ Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so oct
 - `confirm` for Claude becomes interactive; `auto` unchanged. agy `confirm` stays non-interactive deny until step 2.
 - MCP endpoint in octo-server: `POST /mcp/:run_token`, minimal JSON-RPC over Streamable HTTP with single JSON responses (`initialize`, `notifications/initialized` -> 202, `tools/list`, `tools/call`; anything else -> JSON-RPC error). One tool `approve` (input `{tool_name, input, tool_use_id}`). No new dependency.
 - Auth: `run_token` = 32 random bytes hex, one per run, compared in constant time, invalid after the run ends. The route is outside the bearer-token layer, refused through the tunnel (not in the allow-list) and subject to the Host check.
-- Claude gets `--permission-prompt-tool mcp__octo__approve --mcp-config <json> --strict-mcp-config` (config JSON in argv is fine: no prompt, no secret beyond the per-run token). The URL uses the actually bound API address: the server binds first, then builds the hub with `Config.local_api` set (one config source).
+- Claude gets `--permission-prompt-tool mcp__octo__approve --mcp-config <json>` (config JSON in argv is fine: no prompt, no secret beyond the per-run token). The URL uses the actually bound API address: the server binds first, then builds the hub with `Config.local_api` set (one config source).
 - Core `ApprovalBroker` (per hub): `request(thread, tool, input) -> oneshot<bool>`, `resolve(thread, id, allow) -> bool`, `cancel_thread(thread)` (deny all). Timeout 10 min -> deny. Run cancel/finish -> deny pending.
 - `AgentEvent::Approval {id, tool, summary}` on the thread SSE (summary = tool name + short input: command / file path / url, max 200 chars). Decision recorded in the assistant message as `> Allowed: <summary>` / `> Denied: <summary>`.
 - `POST /api/threads/:id/approvals/:aid {allow: bool}` -> 204, 404 if unknown. Through the tunnel it requires the `agents` permission (policy + test).
@@ -55,6 +55,12 @@ Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so oct
 - A wildcard bind address (`0.0.0.0`) is dialed on loopback by Claude.
 - The UI loads open requests when a thread is opened; it learns about later ones only from its own stream.
 - E2E tests use `tests/fixtures/fake_claude_mcp.sh` (bash `/dev/tcp`, unix only) instead of a Rust helper.
+
+- Spec change: `--strict-mcp-config` is not passed, so the user's own MCP servers (settings, project `.mcp.json`) still load as in the terminal. The `octo` server is added on top.
+- The per-run token is part of `--mcp-config` in argv, so local users can see it in the process list. Impact: they can only add approval prompts to that run (they cannot approve anything; deciding needs the API token).
+- `AgentEvent::Approval` and `PendingApproval` carry `detail` (full tool input as pretty JSON, max 4000 chars, `…` when cut); the UI shows it when the summary is clicked. `summary` has all whitespace collapsed to single spaces so decision lines cannot forge markdown.
+- `AgentEvent::ApprovalDone {id}` is emitted whenever a request stops being open (decided, timeout, cancel, or the MCP caller went away, in which case the broker entry is dropped too). UIs remove the row on it.
+- At run end the run token is removed before pending requests are denied.
 
 ## agy ACP spike (findings)
 - `agy acp` speaks ACP v1 over stdio (newline JSON-RPC). `session/new {cwd, mcpServers}` -> `sessionId` (= agy conversation id); `session/load` resumes in a new process and first replays the whole history as `session/update`; `session/prompt` result carries `stopReason` (`end_turn` | `cancelled`) and `usage`. Updates: `agent_message_chunk` (text deltas), `agent_thought_chunk`, `tool_call`, `tool_call_update` (`pending` | `in_progress` | `completed` | `failed`), `user_message_chunk` (echo), `session_info_update` (title). `session/cancel` with a pending permission request ends the turn cleanly.

@@ -179,6 +179,7 @@ impl IntoResponse for ApiError {
             CoreError::Busy => StatusCode::CONFLICT,
             CoreError::Invalid(_) => StatusCode::BAD_REQUEST,
             CoreError::UnsupportedMedia(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            CoreError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             CoreError::Upstream(_) => StatusCode::BAD_GATEWAY,
             CoreError::Policy(_) => StatusCode::FORBIDDEN,
             CoreError::Settings(octo_core::settings::SettingsError::BadUrl)

@@ -32,7 +32,7 @@ export function parseSse(buffer: string): { messages: SseMessage[]; rest: string
   return { messages, rest };
 }
 
-const KNOWN = new Set(['session', 'text_delta', 'tool', 'approval', 'done', 'error']);
+const KNOWN = new Set(['session', 'text_delta', 'tool', 'approval', 'approval_done', 'done', 'error']);
 
 export function toAgentEvent(msg: SseMessage): AgentEvent | null {
   let parsed: unknown;

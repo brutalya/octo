@@ -28,3 +28,6 @@ Sniffing (png/jpeg/webp/gif/pdf/text/binary), size caps, PDF extraction on a sma
 - Sniffing: text is "no NUL byte and valid UTF-8", so an empty file is text. A non-vision or unknown-capability check failure of `/api/show` (unreachable, non-2xx) is an upstream error (502), and is not cached. The vision cache key is (`ollama_url`, model).
 - Images ride on the last message only, passed to `stream_chat` as a separate `images` argument (`ChatMessage` is unchanged). For CLI providers images are referenced by absolute public path and never inlined; the vision check applies to Ollama only.
 - Web: image preview is chosen by file extension (png, jpg, jpeg, webp, gif); the object URL is revoked when the preview is closed or replaced.
+- Limits: at most 10 attachments and 40 MB raw in total per message (413). File sizes are checked before reading (public: metadata, private: plaintext size from the index, so nothing larger than 20 MB, the biggest per-kind cap, is read or decrypted); the per-kind caps then apply after sniffing. PDFs with more than 300 pages are 415.
+- `catch_unwind` does not cover pathological loops or huge allocations inside the PDF parser (accepted risk; input is capped at 20 MB and 300 pages).
+- The vision cache keeps only positive answers; a thread without a model is rejected (400) before any `/api/show` call.

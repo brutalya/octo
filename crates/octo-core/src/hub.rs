@@ -1,5 +1,7 @@
 use crate::approvals::{ApprovalBroker, PendingApproval};
-use crate::attachments::{Loaded, build_prompt, load, with_image_paths};
+use crate::attachments::{
+    Loaded, MAX_ATTACHMENTS, MAX_READ_BYTES, MAX_TOTAL_BYTES, build_prompt, load, with_image_paths,
+};
 use crate::config::Config;
 use crate::error::CoreError;
 use crate::files::Files;
@@ -341,14 +343,25 @@ impl Hub {
     ) -> Result<bool, CoreError> {
         let (thread, events) = self.lookup_token(token).ok_or(CoreError::NotFound)?;
         let (p, rx) = self.approvals.request(&thread, tool, input);
+        // if the caller goes away while waiting, forget the request and tell the UIs
+        let mut guard = DropGuard {
+            broker: self.approvals.clone_handle(),
+            thread,
+            id: p.id.clone(),
+            events: events.clone(),
+            armed: true,
+        };
         let _ = events
             .send(AgentEvent::Approval {
-                id: p.id,
+                id: p.id.clone(),
                 tool: p.tool,
                 summary: p.summary.clone(),
+                detail: p.detail,
             })
             .await;
         let allow = rx.await.unwrap_or(false);
+        guard.armed = false;
+        let _ = events.send(AgentEvent::ApprovalDone { id: p.id }).await;
         let word = if allow { "Allowed" } else { "Denied" };
         let _ = events
             .send(AgentEvent::TextDelta {
@@ -449,10 +462,30 @@ impl Hub {
         for a in attachments {
             check_attachment(thread.space, a.space)?;
         }
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(CoreError::TooLarge(format!(
+                "more than {MAX_ATTACHMENTS} attachments"
+            )));
+        }
         let store = self.files.clone();
         let refs = attachments.to_vec();
         let loaded = tokio::task::spawn_blocking(move || {
             let mut out = vec![];
+            let mut total = 0usize;
+            for a in &refs {
+                // sizes first (metadata / index): nothing big is ever read or decrypted
+                let size = store.size(a.space, &a.path)? as usize;
+                if size > MAX_READ_BYTES {
+                    return Err(CoreError::UnsupportedMedia(format!(
+                        "{}: larger than 20 MB",
+                        a.path
+                    )));
+                }
+                total += size;
+                if total > MAX_TOTAL_BYTES {
+                    return Err(CoreError::TooLarge("attachments larger than 40 MB".into()));
+                }
+            }
             for a in &refs {
                 let data = store.read(a.space, &a.path)?;
                 out.push((a.path.clone(), a.space, load(&a.path, &data)?));
@@ -489,7 +522,10 @@ impl Hub {
 
     /// 415 unless the Ollama model has the `vision` capability (checked once per model).
     async fn require_vision(&self, settings: &Settings, thread: &Thread) -> Result<(), CoreError> {
-        let model = thread.model.clone().unwrap_or_default();
+        let model = thread
+            .model
+            .clone()
+            .ok_or(CoreError::Invalid("model is required"))?;
         let key = (settings.ollama_url.clone(), model.clone());
         let cached = self
             .vision
@@ -501,10 +537,13 @@ impl Hub {
             Some(v) => v,
             None => {
                 let v = ollama::has_vision(&self.http, &settings.ollama_url, &model).await?;
-                self.vision
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(key, v);
+                // only positive answers are cached: a model may be pulled or updated later
+                if v {
+                    self.vision
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(key, true);
+                }
                 v
             }
         };
@@ -616,10 +655,11 @@ impl Hub {
         tokio::spawn(async move {
             drive(&storage, &id, &ctl, has_session, events, &out).await;
             // release the thread before the client sees the stream end
-            broker.cancel_thread(&id);
+            // no new requests can arrive once the token is gone; then deny the open ones
             if let Some(t) = token {
                 tokens.lock().unwrap_or_else(|e| e.into_inner()).remove(&t);
             }
+            broker.cancel_thread(&id);
             runs.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
             drop(out);
         });
@@ -803,6 +843,25 @@ fn merge(
         }
     });
     rx
+}
+
+struct DropGuard {
+    broker: ApprovalBroker,
+    thread: String,
+    id: String,
+    events: mpsc::Sender<AgentEvent>,
+    armed: bool,
+}
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.broker.forget(&self.thread, &self.id);
+            let _ = self.events.try_send(AgentEvent::ApprovalDone {
+                id: self.id.clone(),
+            });
+        }
+    }
 }
 
 struct RunApproval {

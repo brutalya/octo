@@ -49,7 +49,10 @@ async fn next(rx: &mut Receiver<AgentEvent>) -> Option<AgentEvent> {
 
 async fn until_approval(rx: &mut Receiver<AgentEvent>) -> (String, String, String) {
     while let Some(e) = next(rx).await {
-        if let AgentEvent::Approval { id, tool, summary } = e {
+        if let AgentEvent::Approval {
+            id, tool, summary, ..
+        } = e
+        {
             return (id, tool, summary);
         }
         assert!(
@@ -110,6 +113,12 @@ async fn confirm_allow_round_trip() {
     let saved = assistant(&e, &id);
     assert!(saved.contains("> Allowed: Bash: ls"), "{saved}");
     assert!(saved.contains("RESULT:ALLOWED"), "{saved}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ApprovalDone { id } if *id == aid)),
+        "{events:?}"
+    );
     assert!(e.hub.pending_approvals(&id).is_empty());
     assert!(e.hub.run_token(&id).is_none());
 }
@@ -211,4 +220,37 @@ async fn timeout_denies_a_forgotten_request() {
     let events = rest(&mut rx).await;
     assert!(text_of(&events).contains("RESULT:DENIED"), "{events:?}");
     assert!(hub.pending_approvals(&t.id).is_empty());
+}
+
+#[tokio::test]
+async fn a_dropped_mcp_request_is_forgotten_and_announced() {
+    let e = env(true).await;
+    let id = thread(&e, Approval::Confirm);
+    let mut rx = e.hub.send_message(&id, "go", &[]).await.unwrap();
+    let (first, _, _) = until_approval(&mut rx).await;
+    let token = e.hub.run_token(&id).unwrap();
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(200),
+        e.hub
+            .mcp_approve(&token, "Bash", &serde_json::json!({"command": "pwd"})),
+    )
+    .await;
+    assert!(dropped.is_err(), "still waiting for a decision");
+    let pending = e.hub.pending_approvals(&id);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].id, first);
+    // the UI is told: an Approval for the dropped request, then its ApprovalDone
+    let mut asked = vec![];
+    let mut done = vec![];
+    while done.is_empty() {
+        match next(&mut rx).await {
+            Some(AgentEvent::Approval { id, .. }) => asked.push(id),
+            Some(AgentEvent::ApprovalDone { id }) => done.push(id),
+            Some(_) => {}
+            None => panic!("stream ended"),
+        }
+    }
+    assert_eq!(asked.last(), done.first());
+    e.hub.resolve_approval(&id, &first, true).unwrap();
+    rest(&mut rx).await;
 }

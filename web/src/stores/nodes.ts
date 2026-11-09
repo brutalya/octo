@@ -73,7 +73,8 @@ export const useNodesStore = create<NodesState>((set, get) => ({
     set({ selectedId: target });
     useChatStore.getState().reset();
     useThreadsStore.setState({ threads: [], activeId: null, error: null });
-    useFilesStore.setState({ entries: { private: [], public: [] }, preview: null, error: null });
+    useFilesStore.getState().closePreview();
+    useFilesStore.setState({ entries: { private: [], public: [] }, error: null });
     void useThreadsStore.getState().load();
     void useThreadsStore.getState().loadProviders();
   },

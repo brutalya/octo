@@ -15,6 +15,8 @@ pub enum CoreError {
     #[error("{0}")]
     UnsupportedMedia(String),
     #[error("{0}")]
+    TooLarge(String),
+    #[error("{0}")]
     Upstream(String),
     #[error(transparent)]
     Policy(#[from] PolicyError),

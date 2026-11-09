@@ -32,7 +32,6 @@ pub fn args(
             // variadic: must be followed by another flag
             "--mcp-config".into(),
             cfg.to_string(),
-            "--strict-mcp-config".into(),
         ]);
     }
     if let Some(m) = extra.model {

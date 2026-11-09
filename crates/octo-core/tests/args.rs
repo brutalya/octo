@@ -122,7 +122,8 @@ fn claude_confirm_with_endpoint_uses_the_mcp_permission_prompt() {
     let cfg: serde_json::Value = serde_json::from_str(&pair(&a, "--mcp-config").unwrap()).unwrap();
     assert_eq!(cfg["mcpServers"]["octo"]["type"], "http");
     assert_eq!(cfg["mcpServers"]["octo"]["url"], URL);
-    assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+    // the user's own MCP servers keep loading, as in the terminal
+    assert!(!a.iter().any(|x| x == "--strict-mcp-config"));
     // --mcp-config is variadic: the next argument must be a flag
     let i = a.iter().position(|x| x == "--mcp-config").unwrap();
     assert!(a[i + 2].starts_with("--"), "{a:?}");

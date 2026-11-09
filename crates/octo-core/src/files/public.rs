@@ -80,6 +80,16 @@ impl PublicFiles {
         })
     }
 
+    /// Size in bytes from metadata, without reading the file.
+    pub fn size(&self, path: &str) -> Result<u64, FilesError> {
+        let (_, p) = self.target(path)?;
+        match fs::metadata(&p) {
+            Ok(md) if md.is_dir() => Err(FilesError::IsDir),
+            Ok(md) => Ok(md.len()),
+            Err(e) => Err(not_found(e)),
+        }
+    }
+
     pub fn read(&self, path: &str) -> Result<Vec<u8>, FilesError> {
         let (_, p) = self.target(path)?;
         match fs::metadata(&p) {

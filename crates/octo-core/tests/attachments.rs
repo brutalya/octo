@@ -291,3 +291,50 @@ fn hostile_pdfs_never_panic() {
         Err(CoreError::UnsupportedMedia(_))
     ));
 }
+
+fn pdf_pages(n: usize) -> Vec<u8> {
+    let kids: String = (0..n).map(|i| format!("{} 0 R ", 4 + i)).collect();
+    let mut objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{kids}] /Count {n} >>"),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for i in 0..n {
+        objs.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>", 4 + n + i));
+    }
+    for _ in 0..n {
+        let c = "BT /F1 10 Tf 40 800 Td (page) Tj ET";
+        objs.push(format!(
+            "<< /Length {} >>\nstream\n{c}\nendstream",
+            c.len() + 1
+        ));
+    }
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = vec![];
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+#[test]
+fn pdf_page_count_is_capped_at_300() {
+    assert!(pdf_text("a.pdf", &pdf_pages(300)).is_ok());
+    assert!(matches!(
+        pdf_text("a.pdf", &pdf_pages(301)),
+        Err(CoreError::UnsupportedMedia(_))
+    ));
+}

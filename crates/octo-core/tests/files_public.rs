@@ -49,3 +49,14 @@ fn non_utf8_names_are_skipped_in_listing() {
     let names: Vec<String> = s.list().unwrap().into_iter().map(|e| e.path).collect();
     assert_eq!(names, vec!["ok.txt"]);
 }
+
+#[test]
+fn size_comes_from_metadata() {
+    let d = tempfile::tempdir().unwrap();
+    let s = PublicFiles::open(d.path()).unwrap();
+    s.write("a.txt", b"12345").unwrap();
+    s.mkdir("dir").unwrap();
+    assert_eq!(s.size("a.txt").unwrap(), 5);
+    assert!(s.size("dir").is_err());
+    assert!(s.size("missing").is_err());
+}

@@ -95,6 +95,11 @@ pub enum AgentEvent {
         id: String,
         tool: String,
         summary: String,
+        detail: String,
+    },
+    /// The request is no longer open (decided, timed out, cancelled or abandoned).
+    ApprovalDone {
+        id: String,
     },
     Done,
     Error {

@@ -7,7 +7,7 @@ import { useChatStore } from '../stores/chat';
 const json = (v: unknown, status = 200) =>
   new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
 
-const pending = { id: 'a1', tool: 'Bash', summary: 'Bash: rm -rf build' };
+const pending = { id: 'a1', tool: 'Bash', summary: 'Bash: rm -rf build', detail: '{\n  "command": "rm -rf build"\n}' };
 
 beforeEach(() => {
   useChatStore.setState({
@@ -49,6 +49,16 @@ describe('approval row', () => {
     await waitFor(() => expect(screen.queryByText('Bash: rm -rf build')).toBeNull());
     const call = fetchMock.mock.calls.find(([u]) => u === '/api/threads/t1/approvals/a1') as unknown as [string, RequestInit];
     expect(JSON.parse(String(call[1].body))).toEqual({ allow: false });
+  });
+
+  it('clicking the summary toggles the full input', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const { container } = render(<Feed threadId="t1" />);
+    expect(container.querySelector('pre')).toBeNull();
+    await userEvent.click(screen.getByText('Bash: rm -rf build'));
+    expect(container.querySelector('pre')?.textContent).toBe(pending.detail);
+    await userEvent.click(screen.getByText('Bash: rm -rf build'));
+    expect(container.querySelector('pre')).toBeNull();
   });
 
   it('renders nothing for a thread without requests', () => {
@@ -94,6 +104,32 @@ describe('chat store approvals', () => {
     release();
     await p;
     expect(useChatStore.getState().approvals['t1'] ?? []).toEqual([]);
+  });
+
+  it('an approval_done event removes the row', async () => {
+    useChatStore.setState({ messages: {}, streaming: {}, approvals: {} });
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const enc = new TextEncoder();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (!url.endsWith('/messages')) return json([]);
+      const body = new ReadableStream<Uint8Array>({
+        async start(c) {
+          c.enqueue(enc.encode(`data: ${JSON.stringify({ type: 'approval', ...pending })}\n\n`));
+          c.enqueue(enc.encode('data: {"type":"approval_done","id":"a1"}\n\n'));
+          await gate;
+          c.enqueue(enc.encode('data: {"type":"done"}\n\n'));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }));
+    const p = useChatStore.getState().send('t1', 'go');
+    await waitFor(() => expect(useChatStore.getState().streaming['t1']).toBeDefined());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(useChatStore.getState().approvals['t1'] ?? []).toEqual([]);
+    release();
+    await p;
   });
 
   it('a duplicate approval event does not duplicate the row', async () => {

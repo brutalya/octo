@@ -146,3 +146,12 @@ fn rename_does_not_touch_blobs() {
     after.sort();
     assert_eq!(before, after);
 }
+
+#[test]
+fn size_comes_from_the_index_without_decrypting() {
+    let d = tempfile::tempdir().unwrap();
+    let s = PrivateFiles::open(d.path(), key(), "n0").unwrap();
+    s.write("a.txt", b"12345").unwrap();
+    assert_eq!(s.size("a.txt").unwrap(), 5);
+    assert!(matches!(s.size("nope"), Err(FilesError::NotFound)));
+}

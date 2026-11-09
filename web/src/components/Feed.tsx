@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../stores/chat';
 import type { Message, PendingApproval } from '../api/types';
 import { Check, X } from 'lucide-react';
@@ -24,15 +24,21 @@ function Bubble({ role, content }: { role: Message['role']; content: string }) {
 function ApprovalRow({ threadId, a }: { threadId: string; a: PendingApproval }) {
   const resolve = useChatStore((s) => s.resolveApproval);
   const decide = (allow: boolean) => void resolve(threadId, a.id, allow).catch(() => {});
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex items-center gap-2 text-sm text-slate-600">
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">{a.summary}</span>
+    <div className="text-sm text-slate-600">
+    <div className="flex items-center gap-2">
+      <button type="button" className="min-w-0 flex-1 truncate text-left font-mono text-xs" onClick={() => setOpen((o) => !o)}>
+        {a.summary}
+      </button>
       <button type="button" aria-label="Allow" className="rounded p-1 hover:bg-slate-100" onClick={() => decide(true)}>
         <Check size={16} />
       </button>
       <button type="button" aria-label="Deny" className="rounded p-1 hover:bg-slate-100" onClick={() => decide(false)}>
         <X size={16} />
       </button>
+    </div>
+      {open && <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 font-mono text-xs">{a.detail}</pre>}
     </div>
   );
 }

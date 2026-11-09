@@ -31,6 +31,18 @@ describe('nodes store', () => {
     expect(f.mock.calls.at(-1)?.[0]).toBe('/api/threads');
   });
 
+  it('switching node revokes the image preview object URL', async () => {
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', Object.assign(URL, { revokeObjectURL: revoke }));
+    await useNodesStore.getState().load();
+    useFilesStore.setState({
+      preview: { space: 'private', path: 'a.png', imageUrl: 'blob:x' } as never,
+    });
+    useNodesStore.getState().select('vps');
+    expect(revoke).toHaveBeenCalledWith('blob:x');
+    expect(useFilesStore.getState().preview).toBeNull();
+  });
+
   it('restores stored selection once the node is known', async () => {
     localStorage.setItem('octo.node', 'vps');
     await useNodesStore.getState().load();

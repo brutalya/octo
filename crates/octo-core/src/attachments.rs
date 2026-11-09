@@ -59,6 +59,11 @@ pub enum Loaded {
 }
 
 pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
+pub const MAX_PDF_PAGES: usize = 300;
+/// Largest file ever read for an attachment: the biggest per-kind cap.
+pub const MAX_READ_BYTES: usize = MAX_PDF_BYTES;
+pub const MAX_ATTACHMENTS: usize = 10;
+pub const MAX_TOTAL_BYTES: usize = 40 * 1024 * 1024;
 
 pub fn sniff(data: &[u8]) -> Kind {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -107,9 +112,18 @@ pub fn pdf_text(path: &str, data: &[u8]) -> Result<String, CoreError> {
         return Err(unsupported("PDF larger than 20 MB"));
     }
     // the parser may panic on hostile input
-    let extracted = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(data))
-        .map_err(|_| unsupported("cannot read PDF"))?
-        .map_err(|_| unsupported("cannot read PDF"))?;
+    let extracted = std::panic::catch_unwind(|| {
+        let pages = pdf_extract::Document::load_mem(data)
+            .map_err(|_| "cannot read PDF")?
+            .get_pages()
+            .len();
+        if pages > MAX_PDF_PAGES {
+            return Err("PDF has more than 300 pages");
+        }
+        pdf_extract::extract_text_from_mem(data).map_err(|_| "cannot read PDF")
+    })
+    .map_err(|_| unsupported("cannot read PDF"))?
+    .map_err(unsupported)?;
     let text = extracted.trim();
     if text.chars().all(char::is_whitespace) {
         return Err(unsupported("PDF has no text layer"));
