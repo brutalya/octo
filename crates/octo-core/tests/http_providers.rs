@@ -681,3 +681,273 @@ async fn openrouter_eof_without_finish_is_an_error_but_finish_without_done_is_do
     assert_eq!(text(&evs), "all");
     assert_eq!(evs.last(), Some(&AgentEvent::Done));
 }
+
+// ---- stage 6: images and PDF ----
+use base64::Engine as _;
+
+type Shows = Arc<Mutex<Vec<Value>>>;
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR\0\0\0\x01\0\0\0\x01";
+
+fn b64(data: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+async fn fake_ollama_caps(caps: &'static [&'static str]) -> (String, Seen, Shows) {
+    let seen = Seen::default();
+    let shows = Shows::default();
+    let s2 = shows.clone();
+    let app = Router::new()
+        .route(
+            "/api/show",
+            post(move |body: Bytes| {
+                let shows = s2.clone();
+                async move {
+                    shows
+                        .lock()
+                        .unwrap()
+                        .push(serde_json::from_slice(&body).unwrap());
+                    json!({"capabilities": caps}).to_string()
+                }
+            }),
+        )
+        .route("/api/chat", post(ollama_chat))
+        .with_state(seen.clone());
+    (serve(app).await, seen, shows)
+}
+
+fn thread(e: &Env, kind: ProviderKind, space: Space, model: &str) -> String {
+    e.hub
+        .create_thread_in(kind, space, Approval::Confirm, Some(model), None)
+        .unwrap()
+        .id
+}
+
+fn aref(space: Space, path: &str) -> AttachmentRef {
+    AttachmentRef {
+        space,
+        path: path.into(),
+    }
+}
+
+#[tokio::test]
+async fn ollama_gets_images_as_base64_and_vision_is_checked_once() {
+    let (url, seen, shows) = fake_ollama_caps(&["completion", "vision"]).await;
+    let e = env(&url, "", None);
+    e.hub.files().write(Space::Private, "p/a.png", PNG).unwrap();
+    let id = thread(&e, ProviderKind::Ollama, Space::Private, "llava");
+    let refs = [aref(Space::Private, "p/a.png")];
+    let evs = collect(e.hub.send_message(&id, "describe", &refs).await.unwrap()).await;
+    assert_eq!(evs.last(), Some(&AgentEvent::Done));
+    let msgs = seen.last_body()["messages"].clone();
+    assert_eq!(
+        msgs,
+        json!([{"role": "user", "content": "describe", "images": [b64(PNG)]}])
+    );
+    assert_eq!(shows.lock().unwrap().len(), 1);
+    assert_eq!(shows.lock().unwrap()[0]["model"], "llava");
+    wait_idle(&e.hub, &id).await;
+
+    // second image turn: capability is cached, the earlier turn is re-sent without its image
+    collect(e.hub.send_message(&id, "and again", &refs).await.unwrap()).await;
+    let msgs = seen.last_body()["messages"].clone();
+    assert_eq!(msgs[0], json!({"role": "user", "content": "describe"}));
+    assert_eq!(msgs[2]["images"], json!([b64(PNG)]));
+    assert_eq!(shows.lock().unwrap().len(), 1, "cached per model");
+    wait_idle(&e.hub, &id).await;
+    // the stored message keeps the plain text and the ref
+    let m = e.hub.list_messages(&id).unwrap();
+    assert_eq!(
+        (m[0].content.as_str(), m[0].attachments.clone()),
+        ("describe", refs.to_vec())
+    );
+}
+
+#[tokio::test]
+async fn ollama_text_only_turns_never_call_show() {
+    let (url, _seen, shows) = fake_ollama_caps(&["completion"]).await;
+    let e = env(&url, "", None);
+    let id = thread(&e, ProviderKind::Ollama, Space::Private, "m");
+    collect(e.hub.send_message(&id, "hi", &[]).await.unwrap()).await;
+    assert!(shows.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn model_without_vision_rejects_images_and_stores_nothing() {
+    let (url, seen, shows) = fake_ollama_caps(&["completion"]).await;
+    let e = env(&url, "", None);
+    e.hub.files().write(Space::Private, "a.png", PNG).unwrap();
+    let id = thread(&e, ProviderKind::Ollama, Space::Private, "llama3");
+    let r = e
+        .hub
+        .send_message(&id, "describe", &[aref(Space::Private, "a.png")])
+        .await;
+    assert!(matches!(r, Err(CoreError::UnsupportedMedia(_))));
+    assert_eq!(
+        shows.lock().unwrap().len(),
+        1,
+        "rejected because of the capability check"
+    );
+    assert!(seen.chats.lock().unwrap().is_empty());
+    assert!(e.hub.list_messages(&id).unwrap().is_empty());
+    assert!(!e.hub.is_running(&id));
+}
+
+#[tokio::test]
+async fn pdf_text_is_inlined_like_a_text_attachment() {
+    let (url, seen, shows) = fake_ollama_caps(&["completion"]).await;
+    let e = env(&url, "", None);
+    let pdf = crate_pdf(&["Hemoglobin 14.2 g/dL"]);
+    e.hub
+        .files()
+        .write(Space::Private, "lab.pdf", &pdf)
+        .unwrap();
+    let id = thread(&e, ProviderKind::Ollama, Space::Private, "llama3");
+    collect(
+        e.hub
+            .send_message(&id, "summarise", &[aref(Space::Private, "lab.pdf")])
+            .await
+            .unwrap(),
+    )
+    .await;
+    let p = prompt_of(&seen.last_body());
+    assert!(p.starts_with("summarise\n\nlab.pdf:\n```\n"), "{p}");
+    assert!(p.contains("Hemoglobin 14.2 g/dL"), "{p}");
+    assert!(
+        !p.contains("%PDF") && !p.contains("Tj"),
+        "raw PDF syntax leaked: {p}"
+    );
+    assert!(seen.last_body()["messages"][0].get("images").is_none());
+    assert!(
+        shows.lock().unwrap().is_empty(),
+        "a pdf needs no vision model"
+    );
+}
+
+#[tokio::test]
+async fn scanned_pdf_is_rejected_before_anything_is_stored() {
+    let (url, seen, _s) = fake_ollama_caps(&["completion"]).await;
+    let e = env(&url, "", None);
+    e.hub
+        .files()
+        .write(Space::Public, "scan.pdf", &crate_pdf(&[]))
+        .unwrap();
+    let id = thread(&e, ProviderKind::Ollama, Space::Public, "m");
+    let r = e
+        .hub
+        .send_message(&id, "read", &[aref(Space::Public, "scan.pdf")])
+        .await;
+    assert!(matches!(r, Err(CoreError::UnsupportedMedia(_))));
+    assert!(seen.chats.lock().unwrap().is_empty());
+    assert!(e.hub.list_messages(&id).unwrap().is_empty());
+}
+
+/// Same minimal PDF as tests/attachments.rs; no lines means a page without a text layer.
+fn crate_pdf(lines: &[&str]) -> Vec<u8> {
+    let mut content = String::new();
+    if !lines.is_empty() {
+        content.push_str("BT /F1 10 Tf 12 TL 40 800 Td\n");
+        for l in lines {
+            content.push_str(&format!("({l}) Tj T*\n"));
+        }
+        content.push_str("ET");
+    }
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len() + 1),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = vec![];
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+#[tokio::test]
+async fn openrouter_gets_image_content_parts() {
+    let seen = Seen::default();
+    let app = Router::new()
+        .route(
+            "/chat/completions",
+            post(|State(seen): State<Seen>, body: Bytes| async move {
+                let v: Value = serde_json::from_slice(&body).unwrap();
+                seen.chats.lock().unwrap().push((None, v));
+                streaming(
+                    vec![
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: [DONE]\n\n",
+                    ],
+                    false,
+                )
+            }),
+        )
+        .with_state(seen.clone());
+    let url = serve(app).await;
+    let e = env("http://127.0.0.1:1", &url, Some(KEY));
+    e.hub.files().write(Space::Public, "a.png", PNG).unwrap();
+    let id = thread(&e, ProviderKind::OpenRouter, Space::Public, "vendor/vision");
+    let evs = collect(
+        e.hub
+            .send_message(&id, "look", &[aref(Space::Public, "a.png")])
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(evs.last(), Some(&AgentEvent::Done));
+    assert_eq!(
+        seen.last_body()["messages"],
+        json!([{"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", b64(PNG))}}
+        ]}])
+    );
+}
+
+#[tokio::test]
+async fn cli_provider_accepts_a_public_image() {
+    // the CLI gets "Attached image: <path>" in the prompt (unit-tested); here it must not be refused
+    let dir = tempfile::tempdir().unwrap();
+    let fake = std::path::PathBuf::from(format!(
+        "{}/../../tests/fixtures/fake_cli.sh",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    let cfg = Config {
+        data_dir: dir.path().to_path_buf(),
+        claude_bin: fake.clone(),
+        agy_bin: fake,
+        ..Config::new(None)
+    };
+    let hub = Hub::new(cfg, "test-node").unwrap();
+    hub.files().write(Space::Public, "a.png", PNG).unwrap();
+    let t = hub
+        .create_thread_in(
+            ProviderKind::Claude,
+            Space::Public,
+            Approval::Confirm,
+            None,
+            None,
+        )
+        .unwrap();
+    let mut rx = hub
+        .send_message(&t.id, "look", &[aref(Space::Public, "a.png")])
+        .await
+        .unwrap();
+    while rx.recv().await.is_some() {}
+}

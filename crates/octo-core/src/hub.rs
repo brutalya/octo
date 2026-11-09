@@ -1,5 +1,5 @@
 use crate::approvals::{ApprovalBroker, PendingApproval};
-use crate::attachments::{build_prompt, decode_text};
+use crate::attachments::{Loaded, build_prompt, load, with_image_paths};
 use crate::config::Config;
 use crate::error::CoreError;
 use crate::files::Files;
@@ -7,8 +7,8 @@ use crate::import::{self, SessionData, SessionSummary};
 use crate::policy::PolicyError;
 use crate::policy::{check_attachment, check_thread};
 use crate::providers::{
-    AgentEvent, ChatMessage, CliExtra, Invocation, ModelInfo, ProviderKind, ProviderStatus,
-    build_invocation, detect, history, ollama, openrouter,
+    AgentEvent, ChatMessage, CliExtra, ImageData, Invocation, ModelInfo, ProviderKind,
+    ProviderStatus, build_invocation, detect, history, ollama, openrouter,
 };
 use crate::registry::ProcessRegistry;
 use crate::run::{RunCtl, cli_events, drive};
@@ -38,6 +38,8 @@ pub struct Hub {
     run_tokens: Arc<Mutex<HashMap<String, RunApproval>>>,
     /// Serializes imports so the same session is never imported twice.
     import_lock: Mutex<()>,
+    /// Ollama vision capability per (url, model), for the process lifetime.
+    vision: Mutex<HashMap<(String, String), bool>>,
 }
 
 impl Hub {
@@ -59,6 +61,7 @@ impl Hub {
             net: tokio::sync::watch::channel(settings.net()).0,
             settings: RwLock::new(settings),
             http,
+            vision: Mutex::new(HashMap::new()),
             approvals: ApprovalBroker::new(config.approval_timeout),
             run_tokens: Arc::default(),
             runs: Arc::default(),
@@ -434,29 +437,84 @@ impl Hub {
         }
     }
 
-    /// Reads the attached text files (policy first) and inlines them into the prompt.
+    /// Reads the attachments (policy first). Text and PDF text are inlined into the prompt;
+    /// images are returned separately (HTTP providers) or referenced by path (CLIs).
     async fn prompt_with_attachments(
         &self,
         thread: &Thread,
+        settings: &Settings,
         content: &str,
         attachments: &[AttachmentRef],
-    ) -> Result<String, CoreError> {
+    ) -> Result<(String, Vec<ImageData>), CoreError> {
         for a in attachments {
             check_attachment(thread.space, a.space)?;
         }
         let store = self.files.clone();
         let refs = attachments.to_vec();
-        let files = tokio::task::spawn_blocking(move || {
-            let mut files = vec![];
+        let loaded = tokio::task::spawn_blocking(move || {
+            let mut out = vec![];
             for a in &refs {
                 let data = store.read(a.space, &a.path)?;
-                files.push((a.path.clone(), decode_text(&a.path, &data)?));
+                out.push((a.path.clone(), a.space, load(&a.path, &data)?));
             }
-            Ok::<_, CoreError>(files)
+            Ok::<_, CoreError>(out)
         })
         .await
         .map_err(|_| CoreError::Internal("file task failed"))??;
-        Ok(build_prompt(content, &files))
+        let mut files = vec![];
+        let mut images = vec![];
+        let mut image_paths = vec![];
+        for (path, space, l) in loaded {
+            match l {
+                Loaded::Text(t) => files.push((path, t)),
+                Loaded::Image { mime, data } => {
+                    if space == Space::Public {
+                        let abs = self.files.public_dir().join(&path);
+                        image_paths.push(abs.to_string_lossy().into_owned());
+                    }
+                    images.push(ImageData { mime, data });
+                }
+            }
+        }
+        if !images.is_empty() && thread.provider == ProviderKind::Ollama {
+            self.require_vision(settings, thread).await?;
+        }
+        let mut prompt = build_prompt(content, &files);
+        if thread.provider.is_http() {
+            return Ok((prompt, images));
+        }
+        prompt = with_image_paths(&prompt, &image_paths);
+        Ok((prompt, vec![]))
+    }
+
+    /// 415 unless the Ollama model has the `vision` capability (checked once per model).
+    async fn require_vision(&self, settings: &Settings, thread: &Thread) -> Result<(), CoreError> {
+        let model = thread.model.clone().unwrap_or_default();
+        let key = (settings.ollama_url.clone(), model.clone());
+        let cached = self
+            .vision
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+            .copied();
+        let ok = match cached {
+            Some(v) => v,
+            None => {
+                let v = ollama::has_vision(&self.http, &settings.ollama_url, &model).await?;
+                self.vision
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(key, v);
+                v
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(CoreError::UnsupportedMedia(format!(
+                "model {model} cannot read images"
+            )))
+        }
     }
 
     fn history(
@@ -510,8 +568,8 @@ impl Hub {
         if thread.provider == ProviderKind::OpenRouter && key.is_none() {
             return Err(CoreError::Invalid("OpenRouter API key is not configured"));
         }
-        let prompt = self
-            .prompt_with_attachments(&thread, content, attachments)
+        let (prompt, images) = self
+            .prompt_with_attachments(&thread, &settings, content, attachments)
             .await?;
 
         let ctl = Arc::new(RunCtl::default());
@@ -527,6 +585,7 @@ impl Hub {
             &thread,
             &settings,
             &prompt,
+            images,
             key,
             model,
             &ctl,
@@ -588,6 +647,7 @@ impl Hub {
         thread: &Thread,
         settings: &Settings,
         prompt: &str,
+        images: Vec<ImageData>,
         key: Option<String>,
         model: Option<String>,
         ctl: &Arc<RunCtl>,
@@ -595,7 +655,7 @@ impl Hub {
         attachments: &[AttachmentRef],
         mcp_url: Option<&str>,
     ) -> Result<mpsc::Receiver<AgentEvent>, CoreError> {
-        let plan = self.prepare(thread, settings, prompt, mcp_url)?;
+        let plan = self.prepare(thread, settings, prompt, images, mcp_url)?;
         let msg = self
             .storage
             .add_message_with(&thread.id, Role::User, content, attachments)?;
@@ -625,6 +685,7 @@ impl Hub {
         thread: &Thread,
         settings: &Settings,
         prompt: &str,
+        images: Vec<ImageData>,
         mcp_url: Option<&str>,
     ) -> Result<Plan, CoreError> {
         let kind = thread.provider;
@@ -632,6 +693,7 @@ impl Hub {
             let h = self.history(&thread.id, prompt.to_string(), settings.history_char_budget)?;
             return Ok(Plan::Http {
                 history: h,
+                images,
                 ollama_url: settings.ollama_url.clone(),
             });
         }
@@ -672,7 +734,7 @@ impl Hub {
         ctl: &Arc<RunCtl>,
     ) -> Result<mpsc::Receiver<AgentEvent>, CoreError> {
         let kind = thread.provider;
-        let (history, ollama_url) = match plan {
+        let (history, images, ollama_url) = match plan {
             Plan::Cli(inv) => {
                 let handle = self.registry.spawn(&thread.id, inv.command, inv.stdin)?;
                 return Ok(cli_events(
@@ -684,8 +746,9 @@ impl Hub {
             }
             Plan::Http {
                 history,
+                images,
                 ollama_url,
-            } => (history, ollama_url),
+            } => (history, images, ollama_url),
         };
         let (tx, rx) = mpsc::channel(64);
         let http = self.http.clone();
@@ -697,9 +760,15 @@ impl Hub {
                 match kind {
                     ProviderKind::OpenRouter => {
                         let key = key.unwrap_or_default();
-                        openrouter::stream_chat(&http, &or_base, &key, &model, &history, &tx).await
+                        openrouter::stream_chat(
+                            &http, &or_base, &key, &model, &history, &images, &tx,
+                        )
+                        .await
                     }
-                    _ => ollama::stream_chat(&http, &ollama_url, &model, &history, &tx).await,
+                    _ => {
+                        ollama::stream_chat(&http, &ollama_url, &model, &history, &images, &tx)
+                            .await
+                    }
                 }
             };
             tokio::select! {
@@ -749,6 +818,7 @@ enum Plan {
     Cli(Invocation),
     Http {
         history: Vec<ChatMessage>,
+        images: Vec<ImageData>,
         ollama_url: String,
     },
 }

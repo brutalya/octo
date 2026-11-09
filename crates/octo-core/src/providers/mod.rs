@@ -135,6 +135,13 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// An image attached to the current turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageData {
+    pub mime: &'static str,
+    pub data: Vec<u8>,
+}
+
 /// Extra CLI inputs that are not part of the session handling.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CliExtra<'a> {
@@ -278,6 +285,16 @@ pub(crate) fn join_url(base: &str, path: &str) -> String {
 /// Request body shared by the OpenAI-style and Ollama chat endpoints.
 pub(crate) fn chat_body(model: &str, history: &[ChatMessage]) -> serde_json::Value {
     serde_json::json!({"model": model, "messages": history, "stream": true})
+}
+
+/// Mutable access to the last message of a `chat_body`, where the current turn's images go.
+fn last_message(body: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+    body["messages"].as_array_mut()?.last_mut()
+}
+
+fn b64(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 /// A JSON string field as an owned `String`.

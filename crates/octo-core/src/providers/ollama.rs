@@ -1,5 +1,7 @@
 use super::lines::{Pumped, pump};
-use super::{AgentEvent, ChatMessage, ModelInfo, chat_body, join_url};
+use super::{
+    AgentEvent, ChatMessage, ImageData, ModelInfo, b64, chat_body, join_url, last_message,
+};
 use crate::error::CoreError;
 use serde_json::Value;
 use std::time::Duration;
@@ -68,17 +70,55 @@ pub fn parse_line(line: &str) -> Vec<AgentEvent> {
     out
 }
 
+/// `/api/chat` body; the images ride on the last (current) user message.
+pub fn body(model: &str, history: &[ChatMessage], images: &[ImageData]) -> Value {
+    let mut body = chat_body(model, history);
+    if !images.is_empty()
+        && let Some(m) = last_message(&mut body)
+    {
+        m["images"] = images.iter().map(|i| b64(&i.data)).collect();
+    }
+    body
+}
+
+/// Whether the model reports the `vision` capability (`POST /api/show`).
+pub async fn has_vision(
+    http: &reqwest::Client,
+    base: &str,
+    model: &str,
+) -> Result<bool, CoreError> {
+    let resp = http
+        .post(join_url(base, "/api/show"))
+        .json(&serde_json::json!({"model": model}))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| CoreError::Upstream(format!("cannot reach Ollama at {base}")))?;
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        return Err(CoreError::Upstream(format!("Ollama answered HTTP {code}")));
+    }
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|_| CoreError::Upstream("unreadable answer from Ollama".into()))?;
+    Ok(v["capabilities"]
+        .as_array()
+        .is_some_and(|c| c.iter().any(|x| x == "vision")))
+}
+
 /// Streams a chat turn. Always ends with `Done` or `Error` unless the receiver is gone.
 pub async fn stream_chat(
     http: &reqwest::Client,
     base: &str,
     model: &str,
     history: &[ChatMessage],
+    images: &[ImageData],
     tx: &mpsc::Sender<AgentEvent>,
 ) {
     let sent = http
         .post(join_url(base, "/api/chat"))
-        .json(&chat_body(model, history))
+        .json(&body(model, history, images))
         .send()
         .await;
     let resp = match sent {

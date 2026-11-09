@@ -1,5 +1,7 @@
 use super::lines::{Pumped, pump};
-use super::{AgentEvent, ChatMessage, ModelInfo, chat_body, join_url};
+use super::{
+    AgentEvent, ChatMessage, ImageData, ModelInfo, b64, chat_body, join_url, last_message,
+};
 use crate::error::CoreError;
 use serde_json::Value;
 use std::time::Duration;
@@ -95,6 +97,22 @@ pub async fn models(
     Ok(parse_models(&body))
 }
 
+/// Request body; with images the last message becomes `[text, image_url...]` content parts.
+pub fn body(model: &str, history: &[ChatMessage], images: &[ImageData]) -> Value {
+    let mut body = chat_body(model, history);
+    if !images.is_empty()
+        && let Some(m) = last_message(&mut body)
+    {
+        let mut parts = vec![serde_json::json!({"type": "text", "text": m["content"]})];
+        for i in images {
+            let url = format!("data:{};base64,{}", i.mime, b64(&i.data));
+            parts.push(serde_json::json!({"type": "image_url", "image_url": {"url": url}}));
+        }
+        m["content"] = Value::Array(parts);
+    }
+    body
+}
+
 /// Streams a chat turn. Always ends with `Done` or `Error` unless the receiver is gone.
 pub async fn stream_chat(
     http: &reqwest::Client,
@@ -102,12 +120,13 @@ pub async fn stream_chat(
     key: &str,
     model: &str,
     history: &[ChatMessage],
+    images: &[ImageData],
     tx: &mpsc::Sender<AgentEvent>,
 ) {
     let sent = http
         .post(join_url(base, "/chat/completions"))
         .bearer_auth(key)
-        .json(&chat_body(model, history))
+        .json(&body(model, history, images))
         .send()
         .await;
     let resp = match sent {
