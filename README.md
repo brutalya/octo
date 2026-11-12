@@ -60,7 +60,7 @@ Add the private key as repo secret `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNI
 
 ## Android
 
-Built only in CI (`android.yml`, on tag `v*` or manual run); no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`.
+Built only in CI (`android.yml`, manual run only: Actions → Android → Run workflow); no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`.
 
 Install: open the workflow run, download the artifact `octo-android-apk`, unzip, copy the `.apk` to the phone, allow installing from unknown sources for your file manager/browser, and open the APK. The app is a debug-signed build for arm64 devices.
 
