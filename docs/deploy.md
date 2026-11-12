@@ -4,7 +4,7 @@
 
 | Option | For | How |
 |---|---|---|
-| Desktop app | PC | Installer from the GitHub Releases page (Windows, macOS, Linux). |
+| Desktop app | PC | Installer from the GitHub Releases page (Windows, Linux). |
 | From source | development | `scripts/dev.sh`, or `cd web && npm ci && npm run build` then `cargo run --release -p octo-server`. |
 | Docker relay | public/own relay | `deploy/relay/docker-compose.yml`, below. |
 | Docker node | own server node | `deploy/node/docker-compose.yml`, below. |

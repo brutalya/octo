@@ -14,8 +14,6 @@ jobs:
         include:
           - os: windows-latest
             bundles: nsis
-          - os: macos-latest
-            bundles: dmg
           - os: ubuntu-22.04
             bundles: appimage,deb
     runs-on: ${{ matrix.os }}

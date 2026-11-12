@@ -48,7 +48,7 @@ cargo tauri dev      # opens the window
 cargo tauri build    # installer in target/release/bundle
 ```
 
-Release: push a tag `v*` (`git tag v0.2.0 && git push --tags`). `release.yml` builds Windows (NSIS), macOS (dmg), Linux (AppImage, deb) and attaches them to a draft GitHub Release.
+Release: push a tag `v*` (`git tag v0.2.0 && git push --tags`). `release.yml` builds Windows (NSIS) and Linux (AppImage, deb) and attaches them to a draft GitHub Release.
 
 Updater signing key (one time, optional; without it releases build but have no auto-update):
 
