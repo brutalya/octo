@@ -37,6 +37,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev build-essential pkg-config
+      - name: Build web
+        working-directory: web
+        run: npm ci && npm run build
       - name: Updater artifacts (only when a signing key is configured)
         shell: bash
         run: |

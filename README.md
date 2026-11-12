@@ -42,12 +42,13 @@ Build locally (Linux also needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-a
 
 ```
 cargo install tauri-cli --version "^2" --locked
+(cd web && npm ci && npm run build)   # the app embeds web/dist; rebuild after web changes
 cd crates/octo-desktop
-cargo tauri dev      # builds web/, opens the window
+cargo tauri dev      # opens the window
 cargo tauri build    # installer in target/release/bundle
 ```
 
-Release: push a tag `v*` (`git tag v0.1.0 && git push --tags`). `release.yml` builds Windows (NSIS), macOS (dmg), Linux (AppImage, deb) and attaches them to a draft GitHub Release.
+Release: push a tag `v*` (`git tag v0.2.0 && git push --tags`). `release.yml` builds Windows (NSIS), macOS (dmg), Linux (AppImage, deb) and attaches them to a draft GitHub Release.
 
 Updater signing key (one time, optional; without it releases build but have no auto-update):
 

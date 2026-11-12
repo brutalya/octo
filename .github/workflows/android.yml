@@ -28,6 +28,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Build web
+        working-directory: web
+        run: npm ci && npm run build
       - run: cargo install tauri-cli --version "^2" --locked
       # gen/android is not committed (gitignored); it is generated here.
       - name: Generate Android project
