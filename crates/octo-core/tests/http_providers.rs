@@ -920,6 +920,7 @@ async fn openrouter_gets_image_content_parts() {
     );
 }
 
+#[cfg(unix)] // the fake CLI is a shell script
 #[tokio::test]
 async fn cli_provider_accepts_a_public_image() {
     // the CLI gets "Attached image: <path>" in the prompt (unit-tested); here it must not be refused

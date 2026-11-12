@@ -45,7 +45,9 @@ fn non_utf8_names_are_skipped_in_listing() {
     let s = PublicFiles::open(d.path()).unwrap();
     s.write("ok.txt", b"x").unwrap();
     let bad = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
-    std::fs::write(d.path().join(bad), b"y").unwrap();
+    if std::fs::write(d.path().join(bad), b"y").is_err() {
+        return; // the filesystem rejects non-UTF-8 names (e.g. APFS), nothing to skip
+    }
     let names: Vec<String> = s.list().unwrap().into_iter().map(|e| e.path).collect();
     assert_eq!(names, vec!["ok.txt"]);
 }
