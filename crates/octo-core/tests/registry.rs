@@ -1,7 +1,6 @@
 #![cfg(unix)] // shell-script based (sh, sleep); unix only
 use octo_core::CoreError;
 use octo_core::registry::{ProcEvent, ProcessRegistry};
-use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -12,13 +11,7 @@ fn sh(script: &str) -> Command {
 }
 
 async fn gone(pid: u32) -> bool {
-    for _ in 0..50 {
-        if !Path::new(&format!("/proc/{pid}")).exists() {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    false
+    all_gone(&[pid]).await
 }
 
 #[tokio::test]
@@ -88,14 +81,17 @@ async fn failure_reports_stderr() {
     );
 }
 
+// `ps` instead of /proc so this also works on macOS; a zombie counts as gone
 fn alive(pid: u32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(s) => !s
-            .rsplit(')')
-            .next()
-            .unwrap_or("")
-            .trim_start()
-            .starts_with('Z'),
+    match std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+    {
+        Ok(o) => {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        }
         Err(_) => false,
     }
 }
