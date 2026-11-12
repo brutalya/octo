@@ -103,3 +103,24 @@ describe('App phone layout', () => {
     expect(upload).toHaveBeenCalledWith('public', '', [f]);
   });
 });
+
+describe('App thread switch', () => {
+  it('shows only the active thread feed after switching threads', async () => {
+    mockWidth(1024);
+    const msg = (id: string, thread: string, content: string) => ({
+      id, thread_id: thread, role: 'user' as const, content, attachments: [], created_at: 1,
+    });
+    useChatStore.setState({
+      messages: { a: [msg('1', 'a', 'only in a')], b: [msg('2', 'b', 'only in b')] },
+    } as never);
+    const { rerender } = render(<App />);
+    expect(screen.getByText('only in a')).toBeInTheDocument();
+    for (const id of ['b', 'a', 'b']) {
+      useThreadsStore.setState({ activeId: id } as never);
+      rerender(<App />);
+    }
+    expect(screen.getByText('only in b')).toBeInTheDocument();
+    expect(screen.queryByText('only in a')).toBeNull();
+    expect(document.querySelectorAll('textarea')).toHaveLength(1);
+  });
+});

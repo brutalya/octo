@@ -38,9 +38,9 @@ export function App() {
 
   const chat = activeId && (
     <>
-      <Feed key={activeId} threadId={activeId} />
+      <Feed key={`feed-${activeId}`} threadId={activeId} />
       <ChatInput
-        key={activeId}
+        key={`input-${activeId}`}
         space={space}
         streaming={streaming}
         disabled={offline}

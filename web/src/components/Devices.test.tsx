@@ -34,6 +34,16 @@ afterEach(() => {
 });
 
 describe('Devices', () => {
+  it('fields and actions are visibly labelled', async () => {
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    expect(screen.getByPlaceholderText('Device name')).toBe(screen.getByLabelText('Node name'));
+    expect(screen.getByPlaceholderText('Relay: wss://host/relay')).toBe(screen.getByLabelText('Relay URL'));
+    expect(screen.getByRole('button', { name: 'Add device' })).toHaveTextContent('Add device');
+    await userEvent.click(screen.getByRole('button', { name: 'Join' }));
+    expect(screen.getByPlaceholderText('Code from the other device')).toBe(screen.getByLabelText('Code'));
+  });
+
   it('shows node name, relay url and members', async () => {
     render(<Devices />);
     expect(await screen.findByLabelText('Node name')).toHaveValue('Home');

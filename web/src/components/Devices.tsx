@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Lock, Plus, Terminal, X } from 'lucide-react';
+import { Check, Lock, Terminal, X } from 'lucide-react';
 import { api } from '../api/client';
 import { useNodesStore } from '../stores/nodes';
 import { errMsg } from '../lib/format';
@@ -143,6 +143,7 @@ export function Devices() {
         <>
           <input
             aria-label="Node name"
+            placeholder="Device name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onBlur={() => name !== (settings.node_name ?? '') && void save({ node_name: name })}
@@ -150,6 +151,7 @@ export function Devices() {
           />
           <input
             aria-label="Relay URL"
+            placeholder="Relay: wss://host/relay"
             value={relay}
             onChange={(e) => setRelay(e.target.value)}
             onBlur={() => relay !== (settings.relay_url ?? '') && void save({ relay_url: relay })}
@@ -167,7 +169,7 @@ export function Devices() {
             />
             {n.name}
             {n.trust === 'full' && <Lock data-testid="trust-lock" size={12} className="text-slate-500" />}
-            <label className="ml-auto flex max-md:p-3">
+            <label title="Private data" className="ml-auto flex max-md:p-3">
               <input
                 type="checkbox"
                 aria-label={`Trust private ${n.name}`}
@@ -175,7 +177,7 @@ export function Devices() {
                 onChange={(e) => void act(() => api.setNodeTrust(n.node_id, e.target.checked ? 'full' : 'public'))}
               />
             </label>
-            <label className="flex max-md:p-3">
+            <label title="Agents" className="flex max-md:p-3">
               <input
                 type="checkbox"
                 aria-label={`Allow agents ${n.name}`}
@@ -233,6 +235,7 @@ export function Devices() {
         <div className="flex items-center gap-2">
           <input
             aria-label="Code"
+            placeholder="Code from the other device"
             autoFocus
             value={mode.code}
             onChange={(e) => setMode({ kind: 'join', code: e.target.value })}
@@ -244,8 +247,8 @@ export function Devices() {
         </div>
       ) : mode.kind === 'idle' ? (
         <div className="flex gap-2">
-          <button aria-label="Add device" onClick={() => void invite()} className={btn}>
-            <Plus size={14} />
+          <button onClick={() => void invite()} className={btn}>
+            Add device
           </button>
           <button onClick={() => setMode({ kind: 'join', code: '' })} className={btn}>
             Join
