@@ -1,3 +1,17 @@
 [workspace]
 resolver = "2"
 members = ["crates/octo-core", "crates/octo-net", "crates/octo-server", "crates/octo-desktop"]
+
+# Crypto in debug builds is ~10x slower; relay/session tests push tens of MB through Noise.
+[profile.dev.package.snow]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
