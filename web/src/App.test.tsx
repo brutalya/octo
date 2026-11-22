@@ -71,6 +71,16 @@ describe('App phone layout', () => {
     expect(screen.queryByText('Second')).toBeNull();
   });
 
+  it('phone: the drawer close button does not cover the new thread button', async () => {
+    mockWidth(375);
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
+    // "+" sits at the sidebar's top right; the close button takes the empty top left.
+    const close = screen.getByRole('button', { name: 'Close menu' });
+    expect(close.className).toMatch(/\bleft-1\b/);
+    expect(close.className).not.toMatch(/\bright-1\b/);
+  });
+
   it('phone: selecting a thread closes the drawer', async () => {
     mockWidth(375);
     render(<App />);

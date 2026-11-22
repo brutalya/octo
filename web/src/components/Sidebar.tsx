@@ -161,7 +161,9 @@ function NewThreadMenu() {
   const choice = 'px-2 py-0.5 rounded-md text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-30 disabled:hover:bg-transparent';
 
   return (
-    <div ref={ref} className="relative">
+    // Positioned against the sidebar header (see Sidebar), not this button: the menu opens from
+    // the sidebar's left edge towards the page, so a wide session list never leaves the screen.
+    <div ref={ref}>
       <button
         aria-label="New thread"
         onClick={() => (open ? close() : setOpen(true))}
@@ -172,7 +174,7 @@ function NewThreadMenu() {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full mt-1 z-10 min-w-48 rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+          className="absolute left-2 top-full z-20 mt-1 w-80 max-w-[calc(100vw-1rem)] rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
         >
           <div className="flex justify-end px-2 pb-1">
             <button
@@ -250,7 +252,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
 
   return (
     <aside className="flex h-full w-64 max-w-[85vw] shrink-0 flex-col border-r border-slate-200 bg-white">
-      <div className="flex justify-end p-2">
+      <div className="relative flex justify-end p-2">
         <NewThreadMenu />
       </div>
       <ul className="flex-1 overflow-y-auto px-2 pb-2">
