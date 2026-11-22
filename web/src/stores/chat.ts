@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, nodeGeneration } from '../api/client';
+import { ApiError, api, nodeGeneration } from '../api/client';
 import { errMsg } from '../lib/format';
 import type { AttachmentRef, Message, PendingApproval } from '../api/types';
 import { useThreadsStore } from './threads';
@@ -68,7 +68,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       const live = () => gen === nodeGeneration();
       const ctrl = new AbortController();
       controllers.set(threadId, ctrl);
-      append(threadId, local(threadId, 'user', content));
+      const mine = local(threadId, 'user', content);
+      append(threadId, mine);
+      // An HTTP error instead of a stream: the server stored nothing, the input gets the text back.
+      let rejected = false;
       setStreaming(threadId, { text: '', tool: null });
       let text = '';
       let sawDone = false;
@@ -107,6 +110,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           else if (text) append(threadId, local(threadId, 'assistant', text));
         }
       } catch (err) {
+        if (err instanceof ApiError && live()) {
+          rejected = true;
+          set((s) => ({ messages: { ...s.messages, [threadId]: (s.messages[threadId] ?? []).filter((m) => m !== mine) } }));
+        }
         if (live() && !ctrl.signal.aborted) fail(errMsg(err));
       } finally {
         if (controllers.get(threadId) === ctrl) controllers.delete(threadId);
@@ -128,7 +135,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         // keep the local messages
       }
       await useThreadsStore.getState().load();
-      return true;
+      return !rejected;
     },
 
     stop: async (threadId) => {
