@@ -67,5 +67,22 @@ describe('FilesPanel', () => {
     expect(upload).toHaveBeenCalledWith('public', '', [file]);
     expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument();
   });
-});
 
+  it('opens the preview in a dialog that Escape closes', async () => {
+    const closePreview = vi.fn();
+    useFilesStore.setState({ preview: { space: 'public', path: 'docs/a.md', text: 'hello body' }, closePreview });
+    render(<FilesPanel />);
+    const dialog = screen.getByRole('dialog', { name: 'docs/a.md' });
+    expect(dialog).toHaveTextContent('hello body');
+    await userEvent.keyboard('{Escape}');
+    expect(closePreview).toHaveBeenCalled();
+  });
+
+  it('a click outside the preview closes it', async () => {
+    const closePreview = vi.fn();
+    useFilesStore.setState({ preview: { space: 'public', path: 'a.md', text: 'x' }, closePreview });
+    render(<FilesPanel />);
+    await userEvent.click(screen.getByTestId('preview-backdrop'));
+    expect(closePreview).toHaveBeenCalled();
+  });
+});

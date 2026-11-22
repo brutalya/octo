@@ -123,7 +123,8 @@ function NewThreadMenu() {
   const create = useThreadsStore((s) => s.create);
   const importSession = useThreadsStore((s) => s.importSession);
   const [approval, setApproval] = useState<Approval>('confirm');
-  const [open, setOpen] = useState(false);
+  const open = useThreadsStore((s) => s.menuOpen);
+  const setOpen = useThreadsStore((s) => s.openMenu);
   const [pending, setPending] = useState<{ kind: ProviderKind; space: Space } | null>(null);
   const [sessionsOf, setSessionsOf] = useState<ProviderKind | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -132,7 +133,7 @@ function NewThreadMenu() {
     setOpen(false);
     setPending(null);
     setSessionsOf(null);
-  }, []);
+  }, [setOpen]);
   useClickOutside(ref, open, close);
 
   const pick = (kind: ProviderKind, space: Space) => {
@@ -259,7 +260,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
         {threads.map((t) => (
           <li key={t.id} className="group relative">
             <button
-              aria-label={t.title || t.provider}
+              aria-label={t.title || 'Untitled'}
               aria-current={t.id === activeId}
               onClick={() => {
                 select(t.id);
@@ -269,7 +270,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void } = {}) {
                 t.id === activeId ? 'bg-slate-100' : 'hover:bg-slate-100/60'
               }`}
             >
-              <span className="w-full truncate pr-6 text-sm text-slate-800 max-md:pr-24">{t.title || ' '}</span>
+              <span className="w-full truncate pr-6 text-sm text-slate-800 max-md:pr-24">
+                {t.title || <span className="text-slate-400">Untitled</span>}
+              </span>
               <span className="text-xs text-slate-400">{t.model ? `${t.provider} · ${shortModel(t.model)}` : t.provider}</span>
             </button>
             <button
