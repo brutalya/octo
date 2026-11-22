@@ -176,6 +176,50 @@ where
     }
 }
 
+/// Splits the relay key off a relay URL: `wss://host/relay?key=K` -> (`wss://host/relay`, `K`).
+/// Other query parameters are kept.
+pub fn split_relay_key(relay_url: &str) -> Result<(String, Option<String>)> {
+    let mut u = url::Url::parse(relay_url).map_err(|e| NetError::Relay(e.to_string()))?;
+    let mut key = None;
+    let rest: Vec<(String, String)> = u
+        .query_pairs()
+        .filter_map(|(k, v)| {
+            if k == "key" {
+                key = Some(v.into_owned());
+                None
+            } else {
+                Some((k.into_owned(), v.into_owned()))
+            }
+        })
+        .collect();
+    if rest.is_empty() {
+        u.set_query(None);
+    } else {
+        u.query_pairs_mut().clear().extend_pairs(rest);
+    }
+    Ok((u.to_string(), key.filter(|k| !k.is_empty())))
+}
+
+/// The upgrade request: the relay key goes into `Authorization`, never into the request line
+/// (where reverse proxies would log it).
+fn relay_request(
+    relay_url: &str,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let (wire, key) = split_relay_key(relay_url)?;
+    let mut req = wire.into_client_request().map_err(werr)?;
+    if let Some(k) = key {
+        let v = format!("Bearer {k}")
+            .parse()
+            .map_err(|_| NetError::Relay("invalid relay key".into()))?;
+        req.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
+            v,
+        );
+    }
+    Ok(req)
+}
+
 /// TLS for `wss://` relays: explicit crypto provider (several are linked into the binary, so the
 /// process default is ambiguous) and the bundled Mozilla roots (same on every platform).
 fn tls_connector() -> Result<tokio_tungstenite::Connector> {
@@ -205,7 +249,7 @@ async fn session(
 ) -> Result<()> {
     let to = Duration::from_secs(10);
     let connect = tokio_tungstenite::connect_async_tls_with_config(
-        cfg.url.as_str(),
+        relay_request(&cfg.url)?,
         None,
         false,
         Some(tls_connector()?),

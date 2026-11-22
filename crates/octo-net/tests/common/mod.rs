@@ -21,6 +21,18 @@ pub fn serve_on(l: tokio::net::TcpListener, limits: RelayLimits) -> (SocketAddr,
     (addr, h)
 }
 
+/// Relay that admits only clients presenting `secret`.
+pub async fn spawn_private_relay(secret: &str) -> (SocketAddr, JoinHandle<()>) {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let relay = Relay::with_secret(RelayLimits::default(), Some(secret.to_owned())).unwrap();
+    let app = router(relay);
+    let h = tokio::spawn(async move {
+        let _ = axum::serve(l, app).await;
+    });
+    (addr, h)
+}
+
 pub fn url(addr: SocketAddr) -> String {
     format!("ws://{addr}/relay")
 }

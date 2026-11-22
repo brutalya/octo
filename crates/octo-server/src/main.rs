@@ -41,6 +41,10 @@ struct Args {
     /// Run only the relay (needs --relay-addr); no API listener, hub or node.
     #[arg(long, requires = "relay_addr")]
     relay_only: bool,
+    /// Private relay: admit only nodes whose relay URL carries `?key=<secret>`. The secret is
+    /// read from this file; a random one (0600) is created on first start.
+    #[arg(long, requires = "relay_addr")]
+    relay_secret_file: Option<PathBuf>,
 }
 
 /// Resolves on Ctrl-C or SIGTERM.
@@ -93,6 +97,10 @@ async fn main() -> Result<()> {
     if let Some(p) = &args.token_file {
         args.token = Some(octo_server::load_or_create_token(p)?);
     }
+    let relay_secret = match &args.relay_secret_file {
+        Some(p) => Some(octo_server::load_or_create_token(p)?),
+        None => None,
+    };
     if let Some(t) = &args.token {
         octo_server::check_token(t).map_err(anyhow::Error::msg)?;
     }
@@ -120,7 +128,11 @@ async fn main() -> Result<()> {
         Some(sock) => {
             let l = tokio::net::TcpListener::bind(sock).await?;
             println!("Octo relay: ws://{}/relay", l.local_addr()?);
-            let relay = octo_net::relay::Relay::new(Default::default())?;
+            let secret = relay_secret.clone();
+            if secret.is_some() {
+                println!("Octo relay: private (clients need ?key=<secret> in the relay URL)");
+            }
+            let relay = octo_net::relay::Relay::with_secret(Default::default(), secret)?;
             let app = octo_server::relay_app(relay);
             let stop = stop_rx.clone();
             Some(tokio::spawn(async move {

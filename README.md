@@ -94,11 +94,14 @@ Quick start (relay):
     docker compose up -d
     # NPM: host relay.example.com -> octo-relay:7443, Websockets ON, SSL
     curl https://relay.example.com/healthz
+    docker compose exec octo-relay cat /data/relay-secret
+    # relay URL for Octo: wss://relay.example.com/relay?key=<secret>
 
 ## Security
 
 - The relay sees: node IPs, `network_id` (a hash, not a key), node ids, frame sizes and timing. It does not see: content (Noise IK end to end), keys, names, request streams.
 - The relay holds no keys; a malicious relay can only cut the connection. Put it behind a TLS proxy (`wss://`) to protect metadata.
+- The deployed relay is private: only nodes with its secret (`?key=` in the relay URL) can connect, so strangers cannot use it to link their own devices. The secret is not an Octo network key; pairing still needs a one-time code and SAS confirmation.
 - Two keys: `network_key` (membership and routing, held by every node) and `private_key` (private space sync, 32 bytes, with an epoch).
 - Device trust levels: `full` (gets `private_key`, may read private threads and `/files/private`) and `public` (public data only). A new device is `public` by default; the host chooses when confirming the SAS.
 - Policy is enforced on the target node before the request is handled; the thread list is filtered for `public`, private threads, files and attachments return 403.

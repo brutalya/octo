@@ -493,3 +493,71 @@ async fn wss_url_starts_tls_handshake() {
     s.read_exact(&mut b).await.unwrap();
     assert_eq!(b[0], 0x16, "expected a TLS ClientHello");
 }
+
+async fn reaches_online(url: String) -> bool {
+    let key = NodeKey::generate();
+    let mut cfg = fast_cfg("127.0.0.1:1".parse().unwrap(), &key, NET1);
+    cfg.url = url;
+    let h = RelayHandle::connect(cfg);
+    h.wait_online(Duration::from_secs(2)).await.is_ok()
+}
+
+#[tokio::test]
+async fn private_relay_admits_only_the_right_key() {
+    let (addr, _s) = spawn_private_relay("s3cret-key").await;
+    assert!(reaches_online(format!("{}?key=s3cret-key", url(addr))).await);
+    assert!(!reaches_online(url(addr)).await, "no key");
+    assert!(
+        !reaches_online(format!("{}?key=wrong", url(addr))).await,
+        "wrong key"
+    );
+}
+
+#[tokio::test]
+async fn private_relay_refuses_upgrade_without_key() {
+    // Rejected before the WebSocket upgrade: plain HTTP 401.
+    let (addr, _s) = spawn_private_relay("s3cret-key").await;
+    let err = tokio_tungstenite::connect_async(url(addr))
+        .await
+        .unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(r) = err else {
+        panic!("expected an HTTP error, got {err:?}");
+    };
+    assert_eq!(r.status(), 401);
+}
+
+#[tokio::test]
+async fn open_relay_ignores_a_key() {
+    let (addr, _s) = spawn_relay(RelayLimits::default()).await;
+    assert!(reaches_online(format!("{}?key=anything", url(addr))).await);
+}
+
+/// The key travels in the Authorization header, never in the request line (proxy logs).
+#[tokio::test]
+async fn key_is_sent_as_header_not_in_the_path() {
+    use tokio::io::AsyncReadExt;
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let key = NodeKey::generate();
+    let mut cfg = fast_cfg(addr, &key, NET1);
+    cfg.url = format!("ws://{addr}/relay?key=s3cret-key");
+    let _h = RelayHandle::connect(cfg);
+    let (mut s, _) = tokio::time::timeout(Duration::from_secs(5), l.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut buf = vec![0u8; 4096];
+    let mut req = String::new();
+    while !req.contains("\r\n\r\n") {
+        let n = s.read(&mut buf).await.unwrap();
+        assert!(n > 0, "connection closed before headers");
+        req.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    let line = req.lines().next().unwrap();
+    assert_eq!(line, "GET /relay HTTP/1.1");
+    assert!(
+        req.lines()
+            .any(|h| h.eq_ignore_ascii_case("authorization: Bearer s3cret-key")),
+        "{req}"
+    );
+}

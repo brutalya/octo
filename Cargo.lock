@@ -3245,6 +3245,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "url",
  "webpki-roots 1.0.12",
  "x25519-dalek",
  "zeroize",

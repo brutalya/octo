@@ -88,7 +88,17 @@ pub struct PairingCode {
 
 impl fmt::Debug for PairingCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PairingCode({}#..)", self.relay_url)
+        // The relay key (if any) is a secret too.
+        let url = crate::relay_client::split_relay_key(&self.relay_url)
+            .map(|(u, k)| {
+                if k.is_some() {
+                    format!("{u}?key=..")
+                } else {
+                    u
+                }
+            })
+            .unwrap_or_else(|_| "..".into());
+        write!(f, "PairingCode({url}#..)")
     }
 }
 

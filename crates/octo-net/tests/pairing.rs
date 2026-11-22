@@ -321,3 +321,26 @@ fn announcement_applies_only_with_known_sender() {
     apply_announcement(&mut mb, &a.node_id(), cm).unwrap();
     assert!(mb.get(&c.node_id()).is_some());
 }
+
+#[test]
+fn code_keeps_relay_key_and_debug_hides_it() {
+    let k = NodeKey::generate();
+    let tok = octo_net::pairing::PairingToken::generate(k.node_id()).to_string();
+    let c = PairingCode::parse(&format!("wss://h/relay?key=s3cret-key#{tok}")).unwrap();
+    assert_eq!(c.relay_url, "wss://h/relay?key=s3cret-key");
+    assert!(!format!("{c:?}").contains("s3cret-key"), "{c:?}");
+}
+
+#[tokio::test]
+async fn pairs_through_a_private_relay() {
+    let (addr, _s) = spawn_private_relay("s3cret-key").await;
+    let relay_url = format!("{}?key=s3cret-key", url(addr));
+    let (kh, kj) = (NodeKey::generate(), NodeKey::generate());
+    let mut host = PairHost::start(&relay_url, &kh, "host", TTL).await.unwrap();
+    // The joiner learns the relay (with its key) from the code alone.
+    let code = PairingCode::parse(&host.code().to_string()).unwrap();
+    let joiner = tokio::spawn(async move { join(&code, &kj, "b", Duration::from_secs(5)).await });
+    let hp = host.wait_peer().await.unwrap();
+    let jp = joiner.await.unwrap().unwrap();
+    assert_eq!(hp.sas(), jp.sas());
+}

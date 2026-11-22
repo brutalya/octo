@@ -28,7 +28,11 @@ The relay serves only `/relay` (WebSocket) and `/healthz` on port 7443 and sees 
 
 Verify: `curl https://relay.example.com/healthz` returns `ok`.
 
-Client setup: in Octo settings set the relay URL to `wss://relay.example.com/relay` on every device of the network.
+The compose file runs a **private** relay: it admits only nodes that know its secret, created on first start in the `relay-data` volume. Read it with `docker compose exec octo-relay cat /data/relay-secret`.
+
+Client setup: in Octo settings (Devices → relay field) set `wss://relay.example.com/relay?key=<secret>` on the first device. Devices that join with a pairing code get the relay URL, key included, from the code. The key is sent in the `Authorization` header, not in the request path, so proxy access logs do not contain it. Changing the secret (delete the file, restart) requires the new URL on every device.
+
+For an open relay (any Octo node may use it) remove `command` and the volume from the compose file.
 
 Update: `docker compose pull && docker compose up -d`.
 
@@ -46,16 +50,16 @@ Update: `docker compose pull && docker compose up -d`.
 
 ## Flags
 
-`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing; **preferred**: `--token <secret>` is visible in the process list), `--token <secret>` (must not be empty), `--relay-addr`, `--relay-only`, `--data-dir`, `--web-dir <dir>` (default `./web/dist` if it exists; an explicit path that is not a directory is a startup error), `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
+`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing; **preferred**: `--token <secret>` is visible in the process list), `--token <secret>` (must not be empty), `--relay-addr`, `--relay-only`, `--relay-secret-file <path>` (private relay: clients need `?key=<secret>` in the relay URL; created with a random secret, mode 0600, if missing), `--data-dir`, `--web-dir <dir>` (default `./web/dist` if it exists; an explicit path that is not a directory is a startup error), `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
 
 An empty `--token` or an empty token file is a startup error. Configuration is validated before any port is bound. SIGTERM and Ctrl-C stop accepting connections, end running agent processes and exit.
 
 Without a token the API only answers requests whose `Host` header is `127.0.0.1`, `localhost`, `[::1]` or the host of `--addr` (protection against DNS rebinding); with a token the header is not checked.
 
-The relay listener (`--relay-addr`) needs no authentication by design: it only forwards end-to-end encrypted frames between nodes of one network id and sees no plaintext. Limit exposure with the reverse proxy, not with a token.
+The relay listener (`--relay-addr`) only forwards end-to-end encrypted frames between nodes of one network id and sees no plaintext. Without `--relay-secret-file` it is open to any Octo node; with it, upgrades without `Authorization: Bearer <secret>` get 401 before any handshake. `/healthz` stays open.
 
 ## Troubleshooting
 
 - 502 from NPM: NPM cannot reach the container. Check both are on the same Docker network (`docker network inspect <network>`), the forward host is the container name, and the container is healthy (`docker compose ps`, `docker compose logs`).
 - `pull access denied`: GHCR login missing or the token lacks `read:packages`.
-- Client cannot connect: the relay URL must be `wss://.../relay` and Websockets Support must be ON in NPM.
+- Client cannot connect: the relay URL must be `wss://.../relay` (plus `?key=<secret>` for a private relay) and Websockets Support must be ON in NPM. A wrong or missing key shows as 401 in the relay's proxy log.
