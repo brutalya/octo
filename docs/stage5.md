@@ -18,7 +18,7 @@ Goal: the phone is a full Octo node (own identity, pairing, relay link, private 
 - Tests first (vitest): drawer opens/closes, thread select closes the drawer, files sheet, layout switch by width (mock `matchMedia`).
 
 ## Build
-- Built only in CI (no Android SDK on dev machines needed): `android.yml` on tag `v*` and manual dispatch: setup-java 17, Android SDK/NDK via `android-actions/setup-android`, `rustup target add aarch64-linux-android`, `cargo tauri android build --apk --target aarch64`. Unsigned debug-signed APK as artifact; release signing via repo secrets later (documented placeholders).
+- Built only in CI (no Android SDK on dev machines needed): `android.yml` on manual dispatch only: setup-java 17, Android SDK/NDK via `android-actions/setup-android`, `rustup target add aarch64-linux-android`, `cargo tauri android build --apk --target aarch64`. Unsigned debug-signed APK as artifact; release signing via repo secrets later (documented placeholders).
 - README: how to install the APK (download artifact, allow unknown sources).
 
 ## Deviations

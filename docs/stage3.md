@@ -15,6 +15,6 @@ Goal: one installable app per OS; no sidecar, no Python, no second process.
 
 ## Build / release
 - `cargo tauri dev` for local dev (uses vite dev server).
-- GitHub Actions `release.yml` on tag `v*`: tauri-action matrix windows-latest (NSIS `.exe`), macos-latest (`.dmg`), ubuntu-22.04 (`.AppImage`, `.deb`). Artifacts attached to a draft GitHub Release.
+- GitHub Actions `release.yml` on tag `v*`: tauri-action matrix windows-latest (NSIS `.exe`), ubuntu-22.04 (`.AppImage`, `.deb`). Artifacts attached to a draft GitHub Release.
 - Updater: wired (`tauri-plugin-updater`, endpoint `https://github.com/brutalya/octo/releases/latest/download/latest.json`) but signing key is a repo secret the owner adds (`TAURI_SIGNING_PRIVATE_KEY`); document the one-time `cargo tauri signer generate` step in README. Build must not fail when the secret is absent (updater artifacts skipped).
 - CI (`ci.yml`) additionally runs `cargo check -p octo-desktop` on all 3 OS.

@@ -30,7 +30,7 @@ Add HTTP providers next to CLI ones. `ProviderKind { Claude, Antigravity, Ollama
 Path validation: relative, no `..`, no absolute, normalized — pure fn with tests (traversal attempts).
 
 ## Attachments
-`POST /threads/:id/messages` body `{content, attachments?: [{space, path}]}`. Attachment space must equal thread space (policy). Text files (utf-8, <=200 KB) are inlined into the prompt as fenced blocks with the path as header; other types rejected with 415 for now. Message stores attachment refs (`attachments TEXT JSON`).
+`POST /threads/:id/messages` body `{content, attachments?: [{space, path}]}`. Attachment space must equal thread space (policy). Text files (utf-8, <=200 KB) are inlined into the prompt as fenced blocks with the path as header; images and PDFs: see `docs/stage6.md`; other types rejected with 415. Message stores attachment refs (`attachments TEXT JSON`).
 
 ## Web
 - Right side panel, collapsible: file tree with two tabs `Private` / `Public` (VS Code-like: tree, drag-drop upload, context actions rename/delete/new folder, click = preview text). Active tab follows the active thread's space by default.
