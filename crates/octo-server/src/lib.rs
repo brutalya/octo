@@ -793,6 +793,8 @@ fn node_routes(node: Arc<Node>) -> Router {
         .route("/nodes/{id}/trust", axum::routing::patch(set_node_trust))
         .route("/nodes/{id}/agents", axum::routing::patch(set_node_agents))
         .route("/nodes/{id}/{*rest}", any(forward_to_node))
+        .route("/relay", get(relay_status))
+        .route("/relay/check", post(relay_check))
         .route("/pairing/invite", post(pairing_invite))
         .route("/pairing/join", post(pairing_join))
         .route("/pairing/pending", get(pairing_pending))
@@ -811,6 +813,44 @@ async fn forward_to_node(
     req: Request,
 ) -> Result<Response, NodeError> {
     Ok(n.forward(&id, &rest, req).await?.into_response())
+}
+
+async fn relay_status(State(n): State<Arc<Node>>) -> impl IntoResponse {
+    Json(n.relay_status())
+}
+
+#[derive(Deserialize, Default)]
+struct RelayCheckBody {
+    relay_url: Option<String>,
+}
+
+async fn relay_check(State(n): State<Arc<Node>>, body: axum::body::Bytes) -> Response {
+    let b: RelayCheckBody = if body.is_empty() {
+        RelayCheckBody::default()
+    } else if let Ok(b) = serde_json::from_slice(&body) {
+        b
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid request body"})),
+        )
+            .into_response();
+    };
+    let url = b.relay_url.map(|u| u.trim().to_string());
+    if url
+        .as_deref()
+        .is_some_and(|u| !(u.starts_with("ws://") || u.starts_with("wss://")))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "relay_url must start with ws:// or wss://"})),
+        )
+            .into_response();
+    }
+    match n.relay_check(url).await {
+        Ok(c) => Json(c).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 async fn pairing_invite(State(n): State<Arc<Node>>) -> Result<impl IntoResponse, NodeError> {

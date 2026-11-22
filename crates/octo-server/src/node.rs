@@ -9,14 +9,16 @@ use axum::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode}
 use octo_core::Hub;
 use octo_core::files::FilesError;
 use octo_core::files::private::{Action, SyncEntry, plan};
-use octo_core::nodes::{NodeInfo, PairingInvite, PairingPending, TrustLevel};
+use octo_core::nodes::{
+    NodeInfo, PairingInvite, PairingPending, RelayCheck, RelayStatus, TrustLevel,
+};
 use octo_core::settings::NetSettings;
 use octo_net::NetError;
 use octo_net::identity::{NodeId, NodeKey};
 use octo_net::membership::{Membership, Trust};
 use octo_net::mux::{Mux, Stream};
 use octo_net::pairing::{self, PAIR_TTL, PairHost, PairingCode};
-use octo_net::relay_client::{Event, RelayClientConfig, RelayHandle};
+use octo_net::relay_client::{Event, LinkStatus, RelayClientConfig, RelayHandle};
 use octo_net::session::{Handled, Sessions};
 use std::collections::HashMap;
 use std::path::Path;
@@ -130,6 +132,8 @@ struct Shared {
     /// Every task spawned on behalf of the node (sync runs, streams, peer tasks, body pumps);
     /// aborted when the node is dropped.
     tasks: Mutex<tokio::task::JoinSet<()>>,
+    /// Status view of the actor's current relay link (None while no link is kept).
+    link: Mutex<Option<LinkStatus>>,
 }
 
 /// At most one sync run per peer; `dirty` requests another run after the current one.
@@ -285,6 +289,7 @@ impl Node {
             hint: tokio::sync::Notify::new(),
             sync: Mutex::new(HashMap::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
+            link: Mutex::new(None),
         });
         let actor = tokio::spawn(run(sh.clone(), sessions, cmd_rx));
         let task = actor.abort_handle();
@@ -590,6 +595,42 @@ impl Node {
         if p.gen_ == gen_ && !matches!(p.st, Pair::Idle) {
             p.abort = Some(task.abort_handle());
         }
+    }
+
+    pub fn relay_status(&self) -> RelayStatus {
+        let link = self
+            .sh
+            .link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        RelayStatus {
+            configured: self.sh.net().relay_url.is_some(),
+            active: link.is_some(),
+            online: link.as_ref().is_some_and(LinkStatus::online),
+            error: link.and_then(|l| l.last_error()),
+        }
+    }
+
+    /// One connection attempt to `url` (default: the configured relay), never touching this
+    /// node's own link.
+    pub async fn relay_check(&self, url: Option<String>) -> Result<RelayCheck, NodeError> {
+        let url = match url {
+            Some(u) => u,
+            None => self.relay_url()?,
+        };
+        Ok(
+            match octo_net::relay_client::probe(&url, Duration::from_secs(10)).await {
+                Ok(()) => RelayCheck {
+                    ok: true,
+                    error: None,
+                },
+                Err(e) => RelayCheck {
+                    ok: false,
+                    error: Some(octo_net::relay_client::describe(&e)),
+                },
+            },
+        )
     }
 
     pub fn pending(&self) -> Option<PairingPending> {
@@ -1075,6 +1116,8 @@ impl Actor {
                 backoff_max: Duration::from_secs(10),
             }));
         }
+        *self.sh.link.lock().unwrap_or_else(|e| e.into_inner()) =
+            self.relay.as_ref().map(RelayHandle::status);
     }
 
     async fn send(&self, to: NodeId, frame: Vec<u8>) {

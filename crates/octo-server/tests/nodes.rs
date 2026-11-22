@@ -1240,3 +1240,73 @@ async fn oversized_forward_body_is_413() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+async fn private_relay(secret: &str) -> String {
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let app = router(Relay::with_secret(Default::default(), Some(secret.into())).unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(l, app).await;
+    });
+    format!("ws://{addr}/relay")
+}
+
+#[tokio::test]
+async fn relay_check_reports_a_wrong_key_and_accepts_the_right_one() {
+    let url = private_relay("s3cret").await;
+    let n = start(&url, "alpha", None, None).await;
+    // [1/3] configured URL lacks the key
+    let (s, v) = n.json("POST", "/api/relay/check", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["error"], "relay key missing or wrong", "{v}");
+    // [2/3] an unsaved URL can be checked before saving it
+    let keyed = format!("{url}?key=s3cret");
+    let (_, v) = n
+        .json(
+            "POST",
+            "/api/relay/check",
+            Some(json!({"relay_url": keyed})),
+        )
+        .await;
+    assert_eq!(v["ok"], true, "{v}");
+    assert!(v["error"].is_null(), "{v}");
+    // [3/3] not a relay URL
+    let (s, _) = n
+        .json(
+            "POST",
+            "/api/relay/check",
+            Some(json!({"relay_url": "http://x"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn relay_status_follows_the_link() {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    // No members yet: configured, but no link is kept open.
+    let (s, v) = a.json("GET", "/api/relay", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v,
+        json!({"configured": true, "active": false, "online": false, "error": null})
+    );
+    let b = start(&url, "beta", None, None).await;
+    pair_nodes(&a, &b, None).await;
+    let id_b = b.id().await;
+    wait_online(&a, &id_b).await;
+    let (_, v) = a.json("GET", "/api/relay", None).await;
+    assert_eq!(v["active"], true, "{v}");
+    assert_eq!(v["online"], true, "{v}");
+}
+
+#[tokio::test]
+async fn relay_routes_are_not_reachable_through_the_tunnel() {
+    let (a, _b, id_b) = paired(None, None).await;
+    let r = a
+        .call("GET", &format!("/api/nodes/{id_b}/relay"), None)
+        .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+}

@@ -53,7 +53,71 @@ pub struct RelayHandle {
     cmd: Option<mpsc::Sender<(NodeId, Vec<u8>)>>,
     events: mpsc::Receiver<Event>,
     online: watch::Receiver<bool>,
+    last_error: LastError,
     task: Option<JoinHandle<()>>,
+}
+
+type LastError = Arc<Mutex<Option<String>>>;
+
+/// Read-only view of a link, cheap to clone: whether it is up and why the last attempt failed.
+#[derive(Clone)]
+pub struct LinkStatus {
+    online: watch::Receiver<bool>,
+    last_error: LastError,
+}
+
+impl LinkStatus {
+    pub fn online(&self) -> bool {
+        *self.online.borrow()
+    }
+
+    /// Why the last connection attempt failed or the link dropped; `None` once it is up.
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+/// Human-readable reason for a link failure (without the "relay:" prefix of `NetError::Relay`).
+pub fn describe(e: &NetError) -> String {
+    match e {
+        NetError::Relay(m) => m.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// One connection attempt with a throwaway identity and network (so it never displaces this
+/// node's own link): Ok when the relay accepts the connection, including its key if private.
+pub async fn probe(relay_url: &str, timeout: Duration) -> Result<()> {
+    let mut network_id = [0u8; 32];
+    rand::fill(&mut network_id);
+    let h = RelayHandle::connect(RelayClientConfig {
+        url: relay_url.to_owned(),
+        key: NodeKey::generate(),
+        network_id,
+        backoff_base: timeout,
+        backoff_max: timeout,
+    });
+    let st = h.status();
+    let mut on = h.online.clone();
+    let outcome = tokio::time::timeout(timeout, async {
+        loop {
+            if st.online() {
+                return Ok(());
+            }
+            if let Some(e) = st.last_error() {
+                return Err(NetError::Relay(e));
+            }
+            tokio::select! {
+                _ = on.changed() => {}
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+    })
+    .await;
+    outcome.unwrap_or_else(|_| Err(NetError::Relay("relay did not answer in time".into())))
 }
 
 /// Dropping aborts the connection immediately (queued frames are lost); use `shutdown` to flush.
@@ -84,12 +148,21 @@ impl RelayHandle {
         let (cmd, cmd_rx) = mpsc::channel(256);
         let (ev_tx, events) = mpsc::channel(1024);
         let (on_tx, online) = watch::channel(false);
-        let task = tokio::spawn(run(cfg, cmd_rx, ev_tx, on_tx));
+        let last_error = LastError::default();
+        let task = tokio::spawn(run(cfg, cmd_rx, ev_tx, on_tx, last_error.clone()));
         Self {
             cmd: Some(cmd),
             events,
             online,
+            last_error,
             task: Some(task),
+        }
+    }
+
+    pub fn status(&self) -> LinkStatus {
+        LinkStatus {
+            online: self.online.clone(),
+            last_error: self.last_error.clone(),
         }
     }
 
@@ -137,11 +210,15 @@ async fn run(
     mut cmd: mpsc::Receiver<(NodeId, Vec<u8>)>,
     events: mpsc::Sender<Event>,
     online: watch::Sender<bool>,
+    last_error: LastError,
 ) {
     let mut attempt = 0u32;
     loop {
         let mut ready = false;
-        let _ = session(&cfg, &mut cmd, &events, &online, &mut ready).await;
+        let r = session(&cfg, &mut cmd, &events, &online, &mut ready, &last_error).await;
+        if let Err(e) = r {
+            *last_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(describe(&e));
+        }
         if *online.borrow() {
             let _ = online.send(false);
             let _ = events.try_send(Event::Disconnected);
@@ -237,6 +314,14 @@ fn tls_connector() -> Result<tokio_tungstenite::Connector> {
 }
 
 fn werr(e: tokio_tungstenite::tungstenite::Error) -> NetError {
+    use tokio_tungstenite::tungstenite::Error;
+    match &e {
+        Error::Http(r) if r.status() == 401 => {
+            return NetError::Relay("relay key missing or wrong".into());
+        }
+        Error::Http(r) => return NetError::Relay(format!("relay answered HTTP {}", r.status())),
+        _ => {}
+    }
     NetError::Relay(e.to_string())
 }
 
@@ -246,6 +331,7 @@ async fn session(
     events: &mpsc::Sender<Event>,
     online: &watch::Sender<bool>,
     ready: &mut bool,
+    last_error: &LastError,
 ) -> Result<()> {
     let to = Duration::from_secs(10);
     let connect = tokio_tungstenite::connect_async_tls_with_config(
@@ -283,6 +369,7 @@ async fn session(
         return Err(NetError::Relay("expected READY".into()));
     }
     *ready = true;
+    *last_error.lock().unwrap_or_else(|p| p.into_inner()) = None;
     let _ = online.send(true);
     let _ = events.try_send(Event::Connected);
     let (sink, stream) = ws.split();
