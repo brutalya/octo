@@ -176,6 +176,22 @@ where
     }
 }
 
+/// TLS for `wss://` relays: explicit crypto provider (several are linked into the binary, so the
+/// process default is ambiguous) and the bundled Mozilla roots (same on every platform).
+fn tls_connector() -> Result<tokio_tungstenite::Connector> {
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| NetError::Relay(e.to_string()))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    Ok(tokio_tungstenite::Connector::Rustls(Arc::new(cfg)))
+}
+
 fn werr(e: tokio_tungstenite::tungstenite::Error) -> NetError {
     NetError::Relay(e.to_string())
 }
@@ -188,7 +204,13 @@ async fn session(
     ready: &mut bool,
 ) -> Result<()> {
     let to = Duration::from_secs(10);
-    let (mut ws, _) = tokio::time::timeout(to, tokio_tungstenite::connect_async(cfg.url.as_str()))
+    let connect = tokio_tungstenite::connect_async_tls_with_config(
+        cfg.url.as_str(),
+        None,
+        false,
+        Some(tls_connector()?),
+    );
+    let (mut ws, _) = tokio::time::timeout(to, connect)
         .await
         .map_err(|_| NetError::Timeout)?
         .map_err(werr)?;
