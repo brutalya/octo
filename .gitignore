@@ -5,3 +5,7 @@ web/dist/
 .env
 *.tsbuildinfo
 crates/octo-desktop/gen/
+
+# protect-mcp Claude Code plugin: tool-call receipts and signing key (local, per machine)
+receipts/
+protect-mcp.key
