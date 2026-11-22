@@ -4,13 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { FilesPanel } from './FilesPanel';
 import { useFilesStore } from '../stores/files';
 import { useThreadsStore } from '../stores/threads';
-import type { Thread } from '../api/types';
+import type { FileEntry, Thread } from '../api/types';
 
 const th = (id: string, space: Thread['space']): Thread => ({
   id, title: id, provider: 'ollama', space, approval: 'confirm', model: 'm', cwd: null, origin: 'octo', created_at: 1, updated_at: 1,
 });
 const load = vi.fn(async () => {});
-const upload = vi.fn(async () => {});
+const upload = vi.fn(async () => [] as FileEntry[]);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -59,4 +59,13 @@ describe('FilesPanel', () => {
     render(<FilesPanel />);
     expect(screen.getByRole('img', { name: 'x.png' })).toHaveAttribute('src', 'blob:abc');
   });
+
+  it('has an upload button on desktop too', async () => {
+    render(<FilesPanel />);
+    const file = new File(['x'], 'x.txt');
+    await userEvent.upload(screen.getByLabelText('Upload file'), file);
+    expect(upload).toHaveBeenCalledWith('public', '', [file]);
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeInTheDocument();
+  });
 });
+

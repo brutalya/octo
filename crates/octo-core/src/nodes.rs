@@ -33,6 +33,24 @@ pub struct PairingInvite {
     pub expires_at: u64,
 }
 
+/// This node's link to its relay. `active`: a link is kept open (only when there are members).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RelayStatus {
+    pub configured: bool,
+    pub active: bool,
+    pub online: bool,
+    pub error: Option<String>,
+}
+
+/// Result of a one-off connection attempt to a relay.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RelayCheck {
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PairingPending {

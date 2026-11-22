@@ -561,3 +561,47 @@ async fn key_is_sent_as_header_not_in_the_path() {
         "{req}"
     );
 }
+
+#[tokio::test]
+async fn link_reports_a_rejected_key_and_clears_it_when_connected() {
+    let (addr, _s) = spawn_private_relay("s3cret-key").await;
+    let key = NodeKey::generate();
+    let mut cfg = fast_cfg(addr, &key, NET1);
+    let h = RelayHandle::connect(cfg.clone());
+    let status = h.status();
+    let mut err = None;
+    for _ in 0..100 {
+        err = status.last_error();
+        if err.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let err = err.expect("no error recorded");
+    assert!(err.contains("key"), "{err}");
+    assert!(!status.online());
+    drop(h);
+    cfg.url = format!("{}?key=s3cret-key", url(addr));
+    let h = RelayHandle::connect(cfg);
+    h.wait_online(Duration::from_secs(5)).await.unwrap();
+    assert!(h.status().online());
+    assert_eq!(h.status().last_error(), None);
+}
+
+#[tokio::test]
+async fn probe_tells_ok_wrong_key_and_unreachable_apart() {
+    use octo_net::relay_client::probe;
+    let (addr, _s) = spawn_private_relay("s3cret-key").await;
+    let t = Duration::from_secs(5);
+    probe(&format!("{}?key=s3cret-key", url(addr)), t)
+        .await
+        .unwrap();
+    let e = probe(&url(addr), t).await.unwrap_err().to_string();
+    assert!(e.contains("key"), "{e}");
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let e = probe(&url(dead), t).await.unwrap_err().to_string();
+    assert!(!e.contains("key"), "{e}");
+}

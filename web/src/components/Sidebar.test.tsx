@@ -224,4 +224,16 @@ describe('Sidebar session picker', () => {
     expect(importSession).toHaveBeenCalledWith('claude', 's1');
     expect(screen.queryByRole('menu')).toBeNull();
   });
+
+  it('new thread menu grows from the sidebar edge into the page, never past the left edge', async () => {
+    render(<Sidebar />);
+    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    const menu = screen.getByRole('menu');
+    // Anchored to the sidebar's left edge (not to the right edge of the "+" button) and capped
+    // to the viewport, so a wide session list stays on screen.
+    expect(menu.className).toMatch(/\bleft-2\b/);
+    expect(menu.className).not.toMatch(/\bright-0\b/);
+    expect(menu.className).toMatch(/max-w-\[calc\(100vw/);
+  });
 });
+

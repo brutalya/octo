@@ -119,4 +119,24 @@ describe('ChatInput restore', () => {
     expect(screen.getByTitle('docs/a.md')).toHaveTextContent('a.md');
     expect(screen.getByTitle('docs/a.md')).not.toHaveTextContent('docs');
   });
+
+  it('paperclip uploads a file from the device and attaches it', async () => {
+    const stored = [{ path: 'photo.png', kind: 'file' as const, size: 3, modified: 1 }];
+    const upload = vi.fn(async () => stored);
+    useFilesStore.setState({ entries: { private: [], public: [] }, upload });
+    const onSend = vi.fn();
+    render(<ChatInput space="public" streaming={false} onSend={onSend} onStop={() => {}} />);
+    // [1/3] the menu offers an upload even when the space has no files yet
+    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
+    expect(screen.getByRole('menuitem', { name: 'Upload file' })).toBeInTheDocument();
+    // [2/3] picking a file uploads it to the thread's space
+    const file = new File(['png'], 'photo.png', { type: 'image/png' });
+    await userEvent.upload(screen.getByLabelText('Upload attachment'), file);
+    expect(upload).toHaveBeenCalledWith('public', '', [file]);
+    // [3/3] and attaches what the server stored
+    expect(await screen.findByText('photo.png')).toBeInTheDocument();
+    await userEvent.type(screen.getByRole('textbox'), 'look{Enter}');
+    expect(onSend).toHaveBeenCalledWith('look', [{ space: 'public', path: 'photo.png' }]);
+  });
 });
+

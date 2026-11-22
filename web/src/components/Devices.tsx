@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Lock, Terminal, X } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, Lock, Terminal, X } from 'lucide-react';
 import { api } from '../api/client';
 import { useNodesStore } from '../stores/nodes';
 import { errMsg } from '../lib/format';
-import type { PairingPending, SettingsView } from '../api/types';
+import { joinRelay, splitRelay } from '../lib/relay';
+import type { PairingPending, RelayStatus, SettingsView } from '../api/types';
 
 type Mode =
   | { kind: 'idle' }
   | { kind: 'invite'; code: string; expires: number }
-  | { kind: 'join'; code: string }
   | { kind: 'joining' };
+
+/** Result of the last "Check", shown until the relay fields change. */
+type Checked = { ok: boolean; error: string | null } | 'checking' | null;
 
 const input =
   'min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-800 outline-none focus:border-indigo-500';
@@ -23,7 +26,12 @@ function clock(ms: number): string {
 export function Devices() {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [name, setName] = useState('');
-  const [relay, setRelay] = useState('');
+  const [address, setAddress] = useState('');
+  const [relayKey, setRelayKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [status, setStatus] = useState<RelayStatus | null>(null);
+  const [checked, setChecked] = useState<Checked>(null);
+  const [code, setCode] = useState('');
   const nodes = useNodesStore((s) => s.nodes);
   const [mode, setMode] = useState<Mode>({ kind: 'idle' });
   const [pending, setPending] = useState<PairingPending | null>(null);
@@ -40,11 +48,46 @@ export function Devices() {
     api.settings().then((s) => {
       setSettings(s);
       setName(s.node_name ?? '');
-      setRelay(s.relay_url ?? '');
+      const r = splitRelay(s.relay_url);
+      setAddress(r.address);
+      setRelayKey(r.key);
     }).catch((e: unknown) => setError(errMsg(e)));
     void useNodesStore.getState().load();
   }, []);
 
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const s = await api.relayStatus().catch(() => null);
+      if (stopped) return;
+      setStatus(s);
+      timer = setTimeout(() => void poll(), 3000);
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const relayUrl = joinRelay(address, relayKey);
+
+  const saveRelay = () => {
+    if (!settings || relayUrl === (settings.relay_url ?? '')) return;
+    setChecked(null);
+    void save({ relay_url: relayUrl });
+  };
+
+  const check = async () => {
+    setChecked('checking');
+    try {
+      const c = await api.relayCheck(relayUrl || undefined);
+      setChecked({ ok: c.ok, error: c.error });
+    } catch (e) {
+      setChecked({ ok: false, error: errMsg(e) });
+    }
+  };
   const active = mode.kind === 'invite' || mode.kind === 'joining';
   const expires = mode.kind === 'invite' ? mode.expires : 0;
 
@@ -107,6 +150,7 @@ export function Devices() {
     try {
       await api.pairingJoin(code.trim(), settings?.node_name || name || 'Octo');
       setMode({ kind: 'joining' });
+      setCode('');
       setError(null);
     } catch (e) {
       setError(errMsg(e));
@@ -149,14 +193,50 @@ export function Devices() {
             onBlur={() => name !== (settings.node_name ?? '') && void save({ node_name: name })}
             className={input}
           />
-          <input
-            aria-label="Relay URL"
-            placeholder="Relay: wss://host/relay"
-            value={relay}
-            onChange={(e) => setRelay(e.target.value)}
-            onBlur={() => relay !== (settings.relay_url ?? '') && void save({ relay_url: relay })}
-            className={input}
-          />
+          <div className="flex items-center gap-2">
+            <input
+              aria-label="Relay address"
+              placeholder="relay.example.com"
+              value={address}
+              onChange={(e) => {
+                setAddress(e.target.value);
+                setChecked(null);
+              }}
+              onBlur={saveRelay}
+              className={input}
+            />
+            <button
+              aria-label="Check relay"
+              disabled={!relayUrl || checked === 'checking'}
+              onClick={() => void check()}
+              className={btn}
+            >
+              Check
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              aria-label="Relay key"
+              placeholder="Relay key"
+              type={showKey ? 'text' : 'password'}
+              autoComplete="off"
+              value={relayKey}
+              onChange={(e) => {
+                setRelayKey(e.target.value);
+                setChecked(null);
+              }}
+              onBlur={saveRelay}
+              className={input}
+            />
+            <button
+              aria-label={showKey ? 'Hide key' : 'Show key'}
+              onClick={() => setShowKey((v) => !v)}
+              className={btn}
+            >
+              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <RelayLine status={status} checked={checked} />
         </>
       )}
       <ul className="flex flex-col">
@@ -229,33 +309,59 @@ export function Devices() {
       ) : mode.kind === 'invite' ? (
         <div className="flex items-center gap-2">
           <code className="min-w-0 flex-1 select-all break-all text-xs text-slate-800">{mode.code}</code>
+          <button
+            aria-label="Copy code"
+            onClick={() => void navigator.clipboard?.writeText(mode.code)}
+            className={btn}
+          >
+            <Copy size={14} />
+          </button>
           <span className="text-xs tabular-nums text-slate-500">{clock(left)}</span>
         </div>
-      ) : mode.kind === 'join' ? (
-        <div className="flex items-center gap-2">
-          <input
-            aria-label="Code"
-            placeholder="Code from the other device"
-            autoFocus
-            value={mode.code}
-            onChange={(e) => setMode({ kind: 'join', code: e.target.value })}
-            className={input}
-          />
-          <button disabled={!mode.code.trim()} onClick={() => void join(mode.code)} className={btn}>
-            Connect
-          </button>
-        </div>
       ) : mode.kind === 'idle' ? (
-        <div className="flex gap-2">
-          <button onClick={() => void invite()} className={btn}>
-            Add device
-          </button>
-          <button onClick={() => setMode({ kind: 'join', code: '' })} className={btn}>
-            Join
-          </button>
-        </div>
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              aria-label="Code"
+              placeholder="Code from the other device"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className={input}
+            />
+            <button disabled={!code.trim()} onClick={() => void join(code)} className={btn}>
+              Join
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => void invite()} className={btn}>
+              Add device
+            </button>
+          </div>
+        </>
       ) : null}
       {error && <span className="text-xs text-red-500">{error}</span>}
     </section>
+  );
+}
+
+function RelayLine({ status, checked }: { status: RelayStatus | null; checked: Checked }) {
+  let text = '';
+  let tone: 'ok' | 'bad' | 'idle' = 'idle';
+  if (checked === 'checking') {
+    text = 'Checking...';
+  } else if (checked) {
+    text = checked.ok ? 'Relay OK' : (checked.error ?? 'Relay check failed');
+    tone = checked.ok ? 'ok' : 'bad';
+  } else if (status?.active) {
+    text = status.online ? 'Connected' : (status.error ?? 'Connecting...');
+    tone = status.online ? 'ok' : status.error ? 'bad' : 'idle';
+  }
+  if (!text) return null;
+  const dot = tone === 'ok' ? 'bg-emerald-500' : tone === 'bad' ? 'bg-red-500' : 'bg-slate-300';
+  return (
+    <div role="status" className="flex items-center gap-2 px-1 text-xs text-slate-600">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      <span className="min-w-0 break-words">{text}</span>
+    </div>
   );
 }

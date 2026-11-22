@@ -1,6 +1,6 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, PendingApproval, ProviderKind, ProviderStatus,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
@@ -82,6 +82,9 @@ export const api = {
     await request('/pairing/join', jsonInit('POST', { code, name }), true);
   },
   /** null when no pairing is pending (404). */
+  relayStatus: async (): Promise<RelayStatus> => (await request('/relay')).json(),
+  relayCheck: async (relayUrl?: string): Promise<RelayCheck> =>
+    (await request('/relay/check', jsonInit('POST', relayUrl ? { relay_url: relayUrl } : {}))).json(),
   pairingPending: async (): Promise<PairingPending | null> => {
     try {
       return await (await request('/pairing/pending', undefined, true)).json();
@@ -110,10 +113,11 @@ export const api = {
     (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).text(),
   fileBlob: async (space: Space, path: string): Promise<Blob> =>
     (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).blob(),
-  upload: async (space: Space, dir: string, file: File): Promise<void> => {
+  /** Returns the stored entries (their paths are what attachments refer to). */
+  upload: async (space: Space, dir: string, file: File): Promise<FileEntry[]> => {
     const form = new FormData();
     form.append('file', file, file.name);
-    await request(`/files/${space}?path=${encodeURIComponent(dir)}`, { method: 'POST', body: form });
+    return (await request(`/files/${space}?path=${encodeURIComponent(dir)}`, { method: 'POST', body: form })).json();
   },
   mkdir: async (space: Space, path: string): Promise<void> => {
     await request(`/files/${space}/dir?path=${encodeURIComponent(path)}`, { method: 'POST' });

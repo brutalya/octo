@@ -79,7 +79,7 @@ export function App() {
         <div className="fixed inset-0 z-30 flex">
           <div className="relative flex h-full">
             <Sidebar onNavigate={() => setDrawer(false)} />
-            <button aria-label="Close menu" onClick={() => setDrawer(false)} className={`absolute right-1 top-1 ${iconBtn}`}>
+            <button aria-label="Close menu" onClick={() => setDrawer(false)} className={`absolute left-1 top-1 ${iconBtn}`}>
               <X size={18} />
             </button>
           </div>

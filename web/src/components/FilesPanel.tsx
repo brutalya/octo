@@ -80,29 +80,25 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
           >
             <FolderPlus size={14} />
           </button>
-          {sheet && (
-            <>
-              <input
-                ref={fileInput}
-                type="file"
-                multiple
-                aria-label="Upload file"
-                className="hidden"
-                onChange={(e) => {
-                  const files = Array.from(e.target.files ?? []);
-                  if (files.length) void useFilesStore.getState().upload(space, '', files);
-                  e.target.value = '';
-                }}
-              />
-              <button
-                aria-label="Upload"
-                onClick={() => fileInput.current?.click()}
-                className="rounded-md p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-              >
-                <Upload size={16} />
-              </button>
-            </>
-          )}
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            aria-label="Upload file"
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) void useFilesStore.getState().upload(space, '', files);
+              e.target.value = '';
+            }}
+          />
+          <button
+            aria-label="Upload"
+            onClick={() => fileInput.current?.click()}
+            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+          >
+            <Upload size={sheet ? 16 : 14} />
+          </button>
           <button
             aria-label={sheet ? 'Close files' : 'Collapse files'}
             onClick={() => (sheet ? onClose?.() : setCollapsed(true))}
