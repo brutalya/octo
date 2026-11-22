@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
-import { ArrowUp, Paperclip, Square, X } from 'lucide-react';
+import { ArrowUp, Paperclip, Square, Upload, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
 import { useClickOutside } from '../lib/useClickOutside';
@@ -16,14 +16,33 @@ interface Props {
 
 const EMPTY: never[] = [];
 
-function Picker({ space, picked, onPick }: { space: Space; picked: AttachmentRef[]; onPick: (path: string) => void }) {
+function Picker({
+  space,
+  picked,
+  onPick,
+  onUpload,
+}: {
+  space: Space;
+  picked: AttachmentRef[];
+  onPick: (path: string) => void;
+  onUpload: () => void;
+}) {
   const entries = useFilesStore((s) => s.entries[space] ?? EMPTY);
   const files = entries.filter((e) => e.kind === 'file' && !picked.some((a) => a.path === e.path));
   return (
     <div
       role="menu"
-      className="absolute bottom-full left-0 z-10 mb-1 max-h-60 min-w-48 overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
+      className="absolute bottom-full left-0 z-10 mb-1 max-h-60 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
     >
+      <button
+        role="menuitem"
+        onClick={onUpload}
+        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
+      >
+        <Upload size={14} className="text-slate-500" />
+        Upload file
+      </button>
+      {files.length > 0 && <div className="my-1 border-t border-slate-200" />}
       {files.map((f) => (
         <button
           key={f.path}
@@ -43,6 +62,13 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [picking, setPicking] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const uploadAndAttach = async (files: File[]) => {
+    if (!space || !files.length) return;
+    const stored = await useFilesStore.getState().upload(space, '', files);
+    for (const e of stored) if (e.kind === 'file') add({ space, path: e.path });
+  };
 
   const closePicker = useCallback(() => setPicking(false), []);
   useClickOutside(ref, picking, closePicker);
@@ -115,6 +141,18 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
       <div className="flex items-end gap-2">
         {space && (
           <div ref={ref} className="relative">
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              aria-label="Upload attachment"
+              className="hidden"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = '';
+                void uploadAndAttach(files);
+              }}
+            />
             <button
               aria-label="Attach"
               onClick={() => {
@@ -132,6 +170,10 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
                 onPick={(path) => {
                   add({ space, path });
                   setPicking(false);
+                }}
+                onUpload={() => {
+                  setPicking(false);
+                  fileInput.current?.click();
                 }}
               />
             )}

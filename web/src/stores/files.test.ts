@@ -23,10 +23,13 @@ describe('files store', () => {
     expect(useFilesStore.getState().entries.private).toEqual([]);
   });
 
-  it('upload posts multipart to the dir and reloads', async () => {
-    const f = vi.fn(async (url: string) => (url.includes('?') ? new Response(null, { status: 200 }) : json(entries)));
+  it('upload posts multipart to the dir, reloads and returns the stored entries', async () => {
+    // The server answers an upload with the entries it stored.
+    const saved = [{ path: 'docs/n.txt', kind: 'file', size: 2, modified: 1 }];
+    const f = vi.fn(async (url: string) => (url.includes('?') ? json(saved) : json(entries)));
     vi.stubGlobal('fetch', f);
-    await useFilesStore.getState().upload('private', 'docs/', [new File(['hi'], 'n.txt')]);
+    const got = await useFilesStore.getState().upload('private', 'docs/', [new File(['hi'], 'n.txt')]);
+    expect(got).toEqual(saved);
     const [url, init] = call(f);
     expect(url).toBe('/api/files/private?path=docs%2F');
     expect(init.method).toBe('POST');

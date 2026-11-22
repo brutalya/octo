@@ -20,7 +20,8 @@ interface FilesState {
   preview: Preview | null;
   error: string | null;
   load: (space: Space) => Promise<void>;
-  upload: (space: Space, dir: string, files: File[]) => Promise<void>;
+  /** Returns the entries the server stored (fewer than `files` if some failed). */
+  upload: (space: Space, dir: string, files: File[]) => Promise<FileEntry[]>;
   mkdir: (space: Space, path: string) => Promise<void>;
   rename: (space: Space, path: string, newPath: string) => Promise<void>;
   remove: (space: Space, path: string) => Promise<void>;
@@ -67,13 +68,15 @@ export const useFilesStore = create<FilesState>((set, get) => {
     error: null,
     load,
     upload: async (space, dir, files) => {
+      const stored: FileEntry[] = [];
       await run(async () => {
         try {
-          for (const f of files) await api.upload(space, dir, f);
+          for (const f of files) stored.push(...(await api.upload(space, dir, f)));
         } finally {
           await load(space);
         }
       });
+      return stored;
     },
     mkdir: async (space, path) => {
       await run(() => api.mkdir(space, path));
