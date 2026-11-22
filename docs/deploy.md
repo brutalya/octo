@@ -4,20 +4,20 @@
 
 | Option | For | How |
 |---|---|---|
-| Desktop app | PC | Installer from the GitHub Releases page (Windows, Linux). |
+| Desktop app | PC, phone | Latest release on the GitHub Releases page (Windows, Linux, Android APK). |
 | From source | development | `scripts/dev.sh`, or `cd web && npm ci && npm run build` then `cargo run --release -p octo-server`. |
 | Docker relay | public/own relay | `deploy/relay/docker-compose.yml`, below. |
 | Docker node | own server node | `deploy/node/docker-compose.yml`, below. |
 | systemd | no Docker | `deploy/systemd/` (units, Caddyfile example); binary at `/opt/octo/bin/octo-server`, user and paths adjustable. |
 
-Images (built by `.github/workflows/docker.yml` on push to `main` and `v*` tags, linux/amd64 + arm64):
+Images (built by `.github/workflows/docker.yml` on merges to `main` that change code or deploy files, and for every release tag; linux/amd64):
 `ghcr.io/<owner>/<repo>-relay` and `ghcr.io/<owner>/<repo>-node`, tags `main`, `sha-<short>`, `X.Y.Z`, `X.Y`.
 
 ## Relay (behind Nginx Proxy Manager)
 
 The relay serves only `/relay` (WebSocket) and `/healthz` on port 7443 and sees no plaintext.
 
-1. Log in to GHCR (the repo is private; use a personal access token with `read:packages`):
+1. Log in to GHCR (packages are private unless made public in the package settings; use a personal access token with `read:packages`):
    `echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin`
 2. Copy `deploy/relay/docker-compose.yml` to the server, replace `OWNER/REPO` in `image:` with the lowercase repository path.
 3. Find the NPM network (`docker inspect <npm-container> --format '{{json .NetworkSettings.Networks}}'`); default is `npm_default`. If different: `export NPM_NETWORK=<name>` or put it in `.env` next to the compose file.
