@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState, type DragEvent, type KeyboardEvent } from 'react';
+import { useCallback, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
 import { ArrowUp, Paperclip, Square, Upload, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
 import { useClickOutside } from '../lib/useClickOutside';
+import { pastedName, uniqueName } from '../lib/files';
 import type { AttachmentRef, Space } from '../api/types';
 
 interface Props {
@@ -64,10 +65,37 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
   const ref = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  const [uploading, setUploading] = useState<string[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  /** Uploads to the space root under names that do not overwrite anything, then attaches. */
   const uploadAndAttach = async (files: File[]) => {
     if (!space || !files.length) return;
-    const stored = await useFilesStore.getState().upload(space, '', files);
-    for (const e of stored) if (e.kind === 'file') add({ space, path: e.path });
+    const store = useFilesStore.getState();
+    const taken = new Set((store.entries[space] ?? []).map((e) => e.path));
+    const named = files.map((f) => {
+      const name = uniqueName(f.name, taken);
+      taken.add(name);
+      return name === f.name ? f : new File([f], name, { type: f.type });
+    });
+    const names = named.map((f) => f.name);
+    setUploadError(null);
+    setUploading((cur) => [...cur, ...names]);
+    try {
+      const stored = await store.upload(space, '', named);
+      for (const e of stored) if (e.kind === 'file') add({ space, path: e.path });
+      const failed = names.filter((n) => !stored.some((e) => e.path === n));
+      if (failed.length) setUploadError(`${failed.join(', ')}: ${useFilesStore.getState().error ?? 'upload failed'}`);
+    } finally {
+      setUploading((cur) => cur.filter((n) => !names.includes(n)));
+    }
+  };
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (!files.length || !space) return;
+    e.preventDefault();
+    void uploadAndAttach(files.map((f) => new File([f], pastedName(f.type), { type: f.type })));
   };
 
   const closePicker = useCallback(() => setPicking(false), []);
@@ -97,10 +125,17 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
   };
 
   const onDragOver = (e: DragEvent) => {
-    if (e.dataTransfer.types?.includes(DRAG_TYPE)) e.preventDefault();
+    const types = e.dataTransfer.types;
+    if (types?.includes(DRAG_TYPE) || (space && types?.includes('Files'))) e.preventDefault();
   };
 
   const onDrop = (e: DragEvent) => {
+    const dropped = Array.from(e.dataTransfer.files ?? []);
+    if (dropped.length && space) {
+      e.preventDefault();
+      void uploadAndAttach(dropped);
+      return;
+    }
     const raw = e.dataTransfer.getData(DRAG_TYPE);
     if (!raw) return;
     e.preventDefault();
@@ -119,6 +154,16 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
       onDrop={onDrop}
       className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4 max-md:px-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))]"
     >
+      {uploading.length > 0 && (
+        <span role="status" className="px-1 text-xs text-slate-500">
+          Uploading {uploading.join(', ')}
+        </span>
+      )}
+      {uploadError && (
+        <span role="alert" className="px-1 text-xs text-red-500">
+          {uploadError}
+        </span>
+      )}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {attachments.map((a) => (
@@ -183,6 +228,7 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           rows={1}
           className="max-h-48 min-h-10 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-500"
         />

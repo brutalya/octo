@@ -88,7 +88,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
           }}
           onClick={() => (isDir ? toggle(entry.path) : void useFilesStore.getState().open(space, entry.path))}
           style={{ paddingLeft: depth * 12 + 4 }}
-          className="flex cursor-pointer items-center gap-1 rounded py-0.5 pr-1 text-sm text-slate-600 hover:bg-slate-100 max-md:min-h-10"
+          className="group flex cursor-pointer items-center gap-1 rounded py-0.5 pr-1 text-sm text-slate-600 hover:bg-slate-100 max-md:min-h-10"
         >
           {isDir ? (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />) : <span className="w-3.5" />}
           {isDir ? <Folder size={14} className="shrink-0" /> : <FileIcon size={14} className="shrink-0" />}
@@ -100,7 +100,7 @@ export function FileTree({ space, newRoot = false, onNewRootDone }: { space: Spa
               const r = e.currentTarget.getBoundingClientRect();
               setMenu({ x: r.left, y: r.bottom, entry });
             }}
-            className="ml-auto hidden h-10 w-10 shrink-0 items-center justify-center rounded text-slate-400 max-md:flex"
+            className="ml-auto hidden h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:text-slate-700 group-hover:flex max-md:flex max-md:h-10 max-md:w-10"
           >
             <MoreHorizontal size={16} />
           </button>

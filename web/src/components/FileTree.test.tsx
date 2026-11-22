@@ -104,4 +104,11 @@ describe('FileTree', () => {
     await userEvent.keyboard('{Enter}');
     expect(screen.getByText('a.md')).toBeInTheDocument();
   });
+
+  it('row actions button shows on hover on desktop, not only on phones', () => {
+    render(<FileTree space="public" />);
+    const btn = screen.getAllByRole('button', { name: 'Actions' })[0];
+    expect(btn.className).toMatch(/group-hover:flex/);
+  });
 });
+

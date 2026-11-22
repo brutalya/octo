@@ -138,5 +138,63 @@ describe('ChatInput restore', () => {
     await userEvent.type(screen.getByRole('textbox'), 'look{Enter}');
     expect(onSend).toHaveBeenCalledWith('look', [{ space: 'public', path: 'photo.png' }]);
   });
+
+  it('files dropped from the computer are uploaded and attached', async () => {
+    const upload = vi.fn(async (_s: string, _d: string, fs: File[]) =>
+      fs.map((f) => ({ path: f.name, kind: 'file' as const, size: f.size, modified: 1 })),
+    );
+    useFilesStore.setState({ entries: { private: [], public: [] }, upload });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    const file = new File(['%PDF'], 'labs.pdf', { type: 'application/pdf' });
+    fireEvent.drop(screen.getByTestId('chat-input'), { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } });
+    expect(await screen.findByText('labs.pdf')).toBeInTheDocument();
+    expect(upload).toHaveBeenCalledWith('public', '', [file]);
+  });
+
+  it('a pasted screenshot is uploaded under a fresh name and attached', async () => {
+    const upload = vi.fn(async (_s: string, _d: string, fs: File[]) =>
+      fs.map((f) => ({ path: f.name, kind: 'file' as const, size: f.size, modified: 1 })),
+    );
+    useFilesStore.setState({ entries: { private: [], public: [] }, upload });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    const shot = new File(['png'], 'image.png', { type: 'image/png' });
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [shot], getData: () => '' } });
+    const chip = await screen.findByText(/^pasted-\d{8}-\d{6}\.png$/);
+    expect(chip).toBeInTheDocument();
+    const sent = upload.mock.calls[0][2][0];
+    expect(sent.name).toMatch(/^pasted-/);
+    expect(sent.type).toBe('image/png');
+  });
+
+  it('pasting plain text does not upload anything', async () => {
+    const upload = vi.fn(async () => []);
+    useFilesStore.setState({ upload });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [], getData: () => 'hello' } });
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('an upload never overwrites a file of the same name', async () => {
+    const upload = vi.fn(async (_s: string, _d: string, fs: File[]) =>
+      fs.map((f) => ({ path: f.name, kind: 'file' as const, size: f.size, modified: 1 })),
+    );
+    useFilesStore.setState({ entries: { private: [], public: [{ path: 'a.md', kind: 'file', size: 1, modified: 1 }] }, upload });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    await userEvent.upload(screen.getByLabelText('Upload attachment'), new File(['new'], 'a.md'));
+    expect(await screen.findByText('a (1).md')).toBeInTheDocument();
+    expect(upload.mock.calls[0][2][0].name).toBe('a (1).md');
+  });
+
+  it('shows that an upload is running and when it failed', async () => {
+    let finish: (v: never[]) => void = () => {};
+    const upload = vi.fn(() => new Promise<never[]>((r) => (finish = r)));
+    useFilesStore.setState({ entries: { private: [], public: [] }, upload, error: null });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    await userEvent.upload(screen.getByLabelText('Upload attachment'), new File(['x'], 'big.pdf'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Uploading big.pdf');
+    useFilesStore.setState({ error: 'file too large' });
+    finish([]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('big.pdf: file too large');
+  });
 });
 
