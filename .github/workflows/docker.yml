@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    # Applies to branch pushes only; tag pushes always build.
+    # Branch pushes build only when code or deploy files change; tag pushes always build.
     paths:
       - 'crates/**'
       - 'web/**'
@@ -13,6 +13,8 @@ on:
       - 'Dockerfile'
       - 'deploy/**'
       - '.github/workflows/docker.yml'
+  # release.yml starts it on the new version tag (tags created by CI trigger no push event).
+  workflow_dispatch:
 permissions:
   contents: read
   packages: write

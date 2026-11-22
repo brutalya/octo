@@ -1,10 +1,20 @@
 name: Android
 on:
   workflow_dispatch:
+  # Called by release.yml, which passes the tag of the draft release to upload to.
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+
+permissions:
+  contents: write
 
 jobs:
   apk:
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -48,3 +58,12 @@ jobs:
           name: octo-android-apk
           path: crates/octo-desktop/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+      - name: Upload to release
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          apk=$(find crates/octo-desktop/gen/android/app/build/outputs/apk -name '*.apk' | head -n1)
+          cp "$apk" "octo-${TAG#v}-arm64-debug.apk"
+          gh release upload "$TAG" "octo-${TAG#v}-arm64-debug.apk" --repo "$GITHUB_REPOSITORY" --clobber

@@ -28,5 +28,10 @@ Source of truth: this file + `docs/`. The old project `tasktree` is reference on
 - Docs are concise and complete.
 - Docs never contain personal data (real domains, IPs, usernames, emails, keys, local paths of a specific machine); use placeholders (`relay.example.com`, `<owner>/<repo>`).
 
+## Workflow
+- `main` is production. Never commit or push to `main` directly: one branch per feature/fix/issue from `origin/main` (`feat/`, `fix/`, `docs/`, `ci/`, `test/`), checks pass locally, then a pull request.
+- CI runs by changed paths (`ci.yml`); `ci-ok` is the merge gate. Docs-only changes run no tests.
+- A release is a version bump (`tauri.conf.json` + `octo-desktop/Cargo.toml`) merged to `main`; `release.yml` tags and publishes it.
+
 ## Commits
 Conventional commits, small and focused.

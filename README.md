@@ -2,13 +2,26 @@
 
 AI interaction hub: Claude Code / agy CLI, Ollama, OpenRouter. Private / Public spaces.
 
-## Требования / Prerequisites
+## Download
+
+[Latest release](../../releases/latest):
+
+| Platform | File |
+|---|---|
+| Windows | `Octo_<version>_x64-setup.exe` |
+| Linux | `.AppImage`, `.deb` |
+| Android (arm64) | `octo-<version>-arm64-debug.apk` |
+| Server / relay | Docker images `ghcr.io/<owner>/<repo>-node`, `-relay` ([deploy](docs/deploy.md)) |
+
+Android: copy the APK to the phone, allow installing from unknown sources for your file manager/browser, open it. It is a debug-signed build.
+
+## Prerequisites (from source)
 
 - Rust (rustup): https://rustup.rs
 - Node 22+
-- Optional / по желанию: Claude Code (`claude`), `agy` CLI, Ollama
+- Optional: Claude Code (`claude`), `agy` CLI, Ollama
 
-## Запуск / Run (dev)
+## Run (dev)
 
 Linux / macOS:
 
@@ -20,35 +33,29 @@ Windows (PowerShell):
 
 Starts the server (127.0.0.1:7878) and Vite (http://localhost:5173).
 
-## Сборка / Production-like
+## Production-like (headless server with web UI)
 
     cd web && npm ci && npm run build
     cd .. && cargo run --release -p octo-server
 
-Open http://127.0.0.1:7878. `web/dist` is built locally and is not in git.
+Open http://127.0.0.1:7878. `web/dist` is built locally and is not in git. Flags: [docs/deploy.md](docs/deploy.md#flags).
 
-## Проверки / Checks
+## Checks
 
     cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
     cd web && npm run lint && npm test && npm run build
 
 Some tests use shell fake CLIs and run on unix only.
 
-## Desktop
+## Workflow
 
-Tauri v2 app (`crates/octo-desktop`): embeds the server on a random loopback port with a per-launch token; no sidecar.
+- `main` is production. Every change (feature, fix, issue) gets its own branch from `main` (`feat/...`, `fix/...`, `docs/...`, `ci/...`), is checked there and merged through a pull request. No direct pushes to `main`.
+- CI (`ci.yml`) runs only what a change touches: Rust jobs (Linux: fmt, clippy, tests; Windows: tests) for `crates/`, `Cargo.*`, `.cargo/`; web jobs for `web/`. Docs-only changes run no tests. `ci-ok` is the single status to require.
+- Docker images (`docker.yml`) are rebuilt on merges to `main` that change code or deploy files.
 
-Build locally (Linux also needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev build-essential pkg-config`):
+## Releases
 
-```
-cargo install tauri-cli --version "^2" --locked
-(cd web && npm ci && npm run build)   # the app embeds web/dist; rebuild after web changes
-cd crates/octo-desktop
-cargo tauri dev      # opens the window
-cargo tauri build    # installer in target/release/bundle
-```
-
-Release: push a tag `v*` (`git tag v0.2.2 && git push --tags`). `release.yml` builds Windows (NSIS) and Linux (AppImage, deb) and attaches them to a draft GitHub Release; they are also kept as run artifacts (Actions → Release → run → Artifacts).
+Bump the version in `crates/octo-desktop/tauri.conf.json` and `crates/octo-desktop/Cargo.toml` in a pull request. When it is merged, `release.yml` tags `v<version>` and publishes a release with the Windows, Linux and Android builds. Merges without a version change publish nothing.
 
 Updater signing key (one time, optional; without it releases build but have no auto-update):
 
@@ -58,11 +65,23 @@ cargo tauri signer generate -w ~/.tauri/octo.key
 
 Add the private key as repo secret `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set), and the public key as repo variable `OCTO_UPDATER_PUBKEY`.
 
-## Android
+## Desktop (build locally)
 
-Built only in CI (`android.yml`, manual run only: Actions → Android → Run workflow); no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`.
+Tauri v2 app (`crates/octo-desktop`): embeds the server on a random loopback port with a per-launch token; no sidecar.
 
-Install: open the workflow run, download the artifact `octo-android-apk`, unzip, copy the `.apk` to the phone, allow installing from unknown sources for your file manager/browser, and open the APK. The app is a debug-signed build for arm64 devices.
+Linux also needs `libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev build-essential pkg-config`:
+
+```
+cargo install tauri-cli --version "^2" --locked
+(cd web && npm ci && npm run build)   # the app embeds web/dist; rebuild after web changes
+cd crates/octo-desktop
+cargo tauri dev      # opens the window
+cargo tauri build    # installer in target/release/bundle
+```
+
+## Android (build)
+
+Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`. `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact.
 
 ## Deploy
 
@@ -76,11 +95,11 @@ Quick start (relay):
     # NPM: host relay.example.com -> octo-relay:7443, Websockets ON, SSL
     curl https://relay.example.com/healthz
 
-## Безопасность / Security
-- Relay видит: IP узлов, `network_id` (хэш, не ключ), id узлов, размеры и время кадров. Не видит: содержимое (Noise IK end-to-end), ключи, имена, потоки запросов.
-- Relay не хранит ключей; злонамеренный relay может лишь прервать связь. Для приватности метаданных ставьте TLS-прокси (`wss://`).
-- Два ключа: `network_key` (членство и маршрутизация, у всех узлов) и `private_key` (синхронизация приватного пространства, 32 байта, с эпохой).
-- Уровни доверия устройства: `full` (получает `private_key`, может читать приватные треды и `/files/private`) и `public` (только публичные данные). По умолчанию новое устройство `public`; хозяин выбирает при подтверждении SAS.
-- Политика применяется на целевом узле до обработки запроса; список тредов для `public` фильтруется, приватные треды, файлы и вложения дают 403.
-- Понижение или удаление устройства меняет `private_key` (новая эпоха) и рассылает его только оставшимся `full`. Ранее скопированные данные это не отзывает.
+## Security
 
+- The relay sees: node IPs, `network_id` (a hash, not a key), node ids, frame sizes and timing. It does not see: content (Noise IK end to end), keys, names, request streams.
+- The relay holds no keys; a malicious relay can only cut the connection. Put it behind a TLS proxy (`wss://`) to protect metadata.
+- Two keys: `network_key` (membership and routing, held by every node) and `private_key` (private space sync, 32 bytes, with an epoch).
+- Device trust levels: `full` (gets `private_key`, may read private threads and `/files/private`) and `public` (public data only). A new device is `public` by default; the host chooses when confirming the SAS.
+- Policy is enforced on the target node before the request is handled; the thread list is filtered for `public`, private threads, files and attachments return 403.
+- Downgrading or removing a device rotates `private_key` (new epoch) and sends it only to the remaining `full` devices. Data copied earlier is not revoked.
