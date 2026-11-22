@@ -19,7 +19,8 @@ export function setNodeBase(nodeId: string | null): void {
 /** Bumps on every node switch; loads drop results whose captured value is stale. */
 export const nodeGeneration = (): number => generation;
 
-class ApiError extends Error {
+/** An HTTP error response: the server refused the request (for a send: nothing was stored). */
+export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }

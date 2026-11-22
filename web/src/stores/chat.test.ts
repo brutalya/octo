@@ -97,6 +97,28 @@ describe('chat store', () => {
     expect(useChatStore.getState().streaming['t1']).toBeUndefined();
   });
 
+  it('a send the server rejects keeps nothing but the error and resolves false', async () => {
+    // [1/3] the server refuses before storing anything (e.g. unsupported attachment)
+    const stored: Message[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) =>
+        init?.method === 'POST'
+          ? json({ error: 'blob.bin: unsupported file type' }, 415)
+          : url.endsWith('/messages')
+            ? json(stored)
+            : json([thread]),
+      ),
+    );
+    // [2/3] send
+    const ok = await useChatStore.getState().send('t1', 'what is in this file?', [{ space: 'public', path: 'blob.bin' }]);
+    // [3/3] the input gets its text back (false); no ghost user bubble, the reason stays visible
+    expect(ok).toBe(false);
+    const msgs = useChatStore.getState().messages['t1'];
+    expect(msgs.map((m) => m.role)).toEqual(['error']);
+    expect(msgs[0].content).toContain('unsupported file type');
+  });
+
   it('stop aborts the request, posts cancel and reloads history', async () => {
     const history: Message[] = [
       { id: 'm1', thread_id: 't1', role: 'user', content: 'hi', attachments: [], created_at: 1 },
