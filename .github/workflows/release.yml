@@ -52,8 +52,14 @@ jobs:
           for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id"); do
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
           done
-          gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Octo $TAG" --generate-notes
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+          # The id comes from the create response: a listing right after creation may not show it yet.
+          id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" -f name="Octo $TAG" \
+            -F draft=true -F generate_release_notes=true --jq .id)
+          if [ -z "$id" ]; then
+            echo "::error::draft release was not created"
+            exit 1
+          fi
           echo "id=$id" >> "$GITHUB_OUTPUT"
 
   desktop:
