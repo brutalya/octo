@@ -69,3 +69,17 @@ fn concurrent_token_creation_agrees_on_one_complete_token() {
     // No temp files left behind.
     assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
 }
+
+#[tokio::test]
+async fn healthcheck_works_on_a_private_relay() {
+    let relay =
+        octo_net::relay::Relay::with_secret(Default::default(), Some("s3cret".into())).unwrap();
+    let app = octo_server::relay_app(relay);
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let a = l.local_addr().unwrap().to_string();
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    tokio::task::spawn_blocking(move || octo_server::healthcheck(&a))
+        .await
+        .unwrap()
+        .unwrap();
+}

@@ -165,6 +165,8 @@ struct Peer {
 
 struct Inner {
     limits: RelayLimits,
+    /// When set, only clients sending `Authorization: Bearer <secret>` are upgraded.
+    secret: Option<String>,
     static_key: Vec<u8>,
     nets: Mutex<HashMap<[u8; 32], HashMap<NodeId, Peer>>>,
     next_conn: AtomicU64,
@@ -175,11 +177,18 @@ struct Inner {
 pub struct Relay(Arc<Inner>);
 
 impl Relay {
+    /// An open relay: any Octo node may use it.
     pub fn new(limits: RelayLimits) -> Result<Self> {
+        Self::with_secret(limits, None)
+    }
+
+    /// `Some(secret)`: a private relay that refuses (401) clients without the secret.
+    pub fn with_secret(limits: RelayLimits, secret: Option<String>) -> Result<Self> {
         // The relay key is per process; clients do not pin it (the relay is untrusted).
         let kp = Builder::new(RELAY_PARAMS.parse()?).generate_keypair()?;
         Ok(Self(Arc::new(Inner {
             conns: Arc::new(Semaphore::new(limits.max_connections)),
+            secret,
             limits,
             static_key: kp.private,
             nets: Mutex::new(HashMap::new()),
@@ -220,7 +229,28 @@ pub fn router(relay: Relay) -> Router {
         .with_state(relay)
 }
 
-async fn ws_handler(State(relay): State<Relay>, ws: WebSocketUpgrade) -> Response {
+/// Constant-time check of the `Authorization: Bearer` header against the relay secret.
+fn authorized(secret: Option<&str>, headers: &axum::http::HeaderMap) -> bool {
+    let Some(secret) = secret else {
+        return true;
+    };
+    let given = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let (a, b) = (given.as_bytes(), secret.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
+}
+
+async fn ws_handler(
+    State(relay): State<Relay>,
+    headers: axum::http::HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if !authorized(relay.0.secret.as_deref(), &headers) {
+        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    }
     // The permit lives in the upgrade closure: it is released when the connection ends, and
     // also when the upgrade fails and the closure is dropped without running.
     let Ok(permit) = relay.0.conns.clone().try_acquire_owned() else {

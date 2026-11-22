@@ -4,11 +4,20 @@ services:
     image: ghcr.io/OWNER/REPO-relay:main   # replace OWNER/REPO with the GitHub repository path (lowercase)
     container_name: octo-relay
     restart: unless-stopped
+    # Private relay: only nodes whose relay URL has ?key=<secret> may connect. The secret is
+    # created on first start: docker compose exec octo-relay cat /data/relay-secret
+    # Remove this line (and the volume) for an open relay.
+    command: ["--relay-secret-file", "/data/relay-secret"]
+    volumes:
+      - relay-data:/data
     # Alternative without a shared network: publish the port and forward NPM to <docker-host>:7443
     # ports:
     #   - "7443:7443"
     networks:
       - npm
+
+volumes:
+  relay-data:
 
 networks:
   npm:

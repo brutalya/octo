@@ -29,6 +29,9 @@ RUN apt-get update \
 COPY --from=rust /src/target/release/octo-server /usr/local/bin/octo-server
 
 FROM base AS relay
+# /data holds the relay secret (--relay-secret-file, set in deploy/relay/docker-compose.yml).
+RUN mkdir -p /data && chown octo:octo /data
+VOLUME ["/data"]
 USER octo
 EXPOSE 7443
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
