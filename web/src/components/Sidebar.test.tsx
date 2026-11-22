@@ -17,7 +17,7 @@ const t = (id: string, title: string): Thread => ({
 });
 
 beforeEach(() => {
-  useThreadsStore.setState({ threads: [t('a', 'First'), t('b', 'Second')], providers, activeId: 'a' });
+  useThreadsStore.setState({ threads: [t('a', 'First'), t('b', 'Second')], providers, activeId: 'a', menuOpen: false });
 });
 
 describe('Sidebar', () => {
@@ -25,6 +25,19 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     expect(screen.getByText('First')).toBeInTheDocument();
     expect(screen.getAllByText('claude').length).toBe(2);
+  });
+
+  it('an untitled thread reads as Untitled, not a blank row', () => {
+    useThreadsStore.setState({ threads: [t('a', '')] });
+    render(<Sidebar />);
+    expect(screen.getByRole('button', { name: 'Untitled' })).toHaveTextContent('Untitled');
+  });
+
+  it('the new thread menu can be opened from outside the sidebar', () => {
+    render(<Sidebar />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    act(() => useThreadsStore.getState().openMenu(true));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
   });
 
   it('dropdown lists only installed providers', async () => {

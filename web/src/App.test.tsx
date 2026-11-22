@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from './App';
 import { useThreadsStore } from './stores/threads';
@@ -35,6 +35,7 @@ beforeEach(() => {
     threads: [t('a', 'First'), t('b', 'Second')],
     providers: [],
     activeId: 'a',
+    menuOpen: false,
     load: vi.fn().mockResolvedValue(undefined),
     loadProviders: vi.fn().mockResolvedValue(undefined),
   } as never);
@@ -111,6 +112,46 @@ describe('App phone layout', () => {
     const f = new File(['x'], 'a.txt');
     await userEvent.upload(input, f);
     expect(upload).toHaveBeenCalledWith('public', '', [f]);
+  });
+});
+
+describe('App orientation', () => {
+  it('with no threads the page offers to start one', async () => {
+    mockWidth(1024);
+    useThreadsStore.setState({ threads: [], activeId: null } as never);
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: 'Start a thread' }));
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('phone: starting a thread opens the drawer with the menu', async () => {
+    mockWidth(375);
+    useThreadsStore.setState({ threads: [], activeId: null } as never);
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: 'Start a thread' }));
+    expect(screen.getByRole('button', { name: 'Close menu' })).toBeInTheDocument();
+    expect(screen.getByRole('menu')).toBeInTheDocument();
+  });
+
+  it('phone: the top bar names the open thread', () => {
+    mockWidth(375);
+    render(<App />);
+    expect(screen.getByRole('banner')).toHaveTextContent('First');
+  });
+
+  it('phone: the top bar names a remote node', () => {
+    mockWidth(375);
+    useNodesStore.setState({
+      nodes: [
+        { node_id: 'me', name: 'laptop', is_self: true, online: true, trust: null, agents: null },
+        { node_id: 'pc', name: 'desk-pc', is_self: false, online: true, trust: 'full', agents: true },
+      ],
+      selectedId: 'pc',
+    } as never);
+    render(<App />);
+    expect(screen.getByRole('banner')).toHaveTextContent('desk-pc');
+    act(() => useNodesStore.setState({ selectedId: null } as never));
+    expect(screen.getByRole('banner')).not.toHaveTextContent('desk-pc');
   });
 });
 

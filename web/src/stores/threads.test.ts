@@ -71,3 +71,42 @@ describe('threads store import', () => {
     expect(useThreadsStore.getState().error).toBe('nope');
   });
 });
+
+describe('threads store keeps a thread open', () => {
+  const other: Thread = { ...thread, id: 't2', updated_at: 2 };
+
+  it('load opens the most recent thread when none is open', async () => {
+    useThreadsStore.setState({ threads: [], activeId: null });
+    vi.stubGlobal('fetch', vi.fn(async () => json([other, thread])));
+    await useThreadsStore.getState().load();
+    expect(useThreadsStore.getState().activeId).toBe('t2');
+  });
+
+  it('load keeps the open thread', async () => {
+    useThreadsStore.setState({ activeId: 't1' });
+    vi.stubGlobal('fetch', vi.fn(async () => json([other, thread])));
+    await useThreadsStore.getState().load();
+    expect(useThreadsStore.getState().activeId).toBe('t1');
+  });
+
+  it('load with no threads leaves nothing open', async () => {
+    useThreadsStore.setState({ threads: [], activeId: null });
+    vi.stubGlobal('fetch', vi.fn(async () => json([])));
+    await useThreadsStore.getState().load();
+    expect(useThreadsStore.getState().activeId).toBeNull();
+  });
+
+  it('deleting the open thread opens the next one', async () => {
+    useThreadsStore.setState({ threads: [other, thread], activeId: 't2' });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+    await useThreadsStore.getState().remove('t2');
+    expect(useThreadsStore.getState().activeId).toBe('t1');
+  });
+
+  it('deleting the last thread leaves nothing open', async () => {
+    useThreadsStore.setState({ threads: [thread], activeId: 't1' });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
+    await useThreadsStore.getState().remove('t1');
+    expect(useThreadsStore.getState().activeId).toBeNull();
+  });
+});

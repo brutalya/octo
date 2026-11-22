@@ -8,6 +8,9 @@ interface ThreadsState {
   providers: ProviderStatus[];
   activeId: string | null;
   error: string | null;
+  /** The new thread menu; opened from the sidebar or from an empty page. */
+  menuOpen: boolean;
+  openMenu: (open: boolean) => void;
   load: () => Promise<void>;
   loadProviders: () => Promise<void>;
   create: (provider: ProviderKind, space: Space, approval: Approval, model?: string) => Promise<void>;
@@ -47,10 +50,16 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
     providers: [],
     activeId: null,
     error: null,
+    menuOpen: false,
+    openMenu: (open) => set({ menuOpen: open }),
+    // The list is newest first; with nothing open the newest thread opens.
     load: () =>
       run(async (live) => {
         const threads = await api.threads();
-        if (live()) set({ threads, error: null });
+        if (!live()) return;
+        const { activeId } = get();
+        const keep = activeId !== null && threads.some((t) => t.id === activeId);
+        set({ threads, activeId: keep ? activeId : (threads[0]?.id ?? null), error: null });
       }),
     loadProviders: () =>
       run(async (live) => {
@@ -80,7 +89,8 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
         await api.deleteThread(id);
         if (!live()) return;
         const { threads, activeId } = get();
-        set({ threads: threads.filter((t) => t.id !== id), activeId: activeId === id ? null : activeId, error: null });
+        const rest = threads.filter((t) => t.id !== id);
+        set({ threads: rest, activeId: activeId === id ? (rest[0]?.id ?? null) : activeId, error: null });
       }),
     select: (id) => set({ activeId: id }),
   };

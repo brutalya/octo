@@ -123,25 +123,48 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
         <FileTree space={space} newRoot={newRoot} onNewRootDone={() => setNewRoot(false)} />
       </div>
       {error && <div className="px-2 py-1 text-xs text-red-500">{error}</div>}
-      {preview && (
-        <div className="flex max-h-[45%] flex-col border-t border-slate-200">
-          <div className="flex items-center justify-between px-2 py-1">
-            <span className="truncate text-xs text-slate-500">{preview.path}</span>
-            <button
-              aria-label="Close preview"
-              onClick={() => useFilesStore.getState().closePreview()}
-              className="rounded p-0.5 text-slate-400 hover:text-slate-700 max-md:p-3"
-            >
-              <X size={12} />
-            </button>
-          </div>
-          {preview.imageUrl ? (
-            <img src={preview.imageUrl} alt={preview.path} className="min-h-0 object-contain px-2 pb-2" />
-          ) : (
-            <pre className="overflow-auto whitespace-pre-wrap px-2 pb-2 font-mono text-xs text-slate-700">{preview.text}</pre>
-          )}
-        </div>
-      )}
+      {preview && <PreviewDialog />}
     </aside>
+  );
+}
+
+/** The open file over the page, big enough to read; Escape or a click outside closes it. */
+function PreviewDialog() {
+  const preview = useFilesStore((s) => s.preview);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') useFilesStore.getState().closePreview();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+  if (!preview) return null;
+  const close = () => useFilesStore.getState().closePreview();
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-4 max-md:p-0">
+      <div data-testid="preview-backdrop" className="absolute inset-0 bg-slate-900/30" onClick={close} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={preview.path}
+        className="relative flex max-h-[85vh] w-full max-w-3xl flex-col rounded-lg bg-white shadow-xl max-md:h-full max-md:max-h-none max-md:rounded-none"
+      >
+        <div className="flex items-center justify-between gap-2 border-b border-slate-200 px-3 py-1.5">
+          <span className="truncate text-sm text-slate-600">{preview.path}</span>
+          <button
+            aria-label="Close preview"
+            onClick={close}
+            className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 max-md:p-3"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {preview.imageUrl ? (
+          <img src={preview.imageUrl} alt={preview.path} className="min-h-0 flex-1 object-contain p-3" />
+        ) : (
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-3 font-mono text-sm text-slate-700">{preview.text}</pre>
+        )}
+      </div>
+    </div>
   );
 }
