@@ -474,3 +474,22 @@ async fn failed_upgrades_do_not_leak_connection_permits() {
     let k = NodeKey::generate();
     online(addr, &k, NET1).await;
 }
+
+/// `wss://` must speak TLS: the first byte on the wire is a TLS handshake record (0x16).
+#[tokio::test]
+async fn wss_url_starts_tls_handshake() {
+    use tokio::io::AsyncReadExt;
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let key = NodeKey::generate();
+    let mut cfg = fast_cfg(l.local_addr().unwrap(), &key, NET1);
+    cfg.url = format!("wss://localhost:{port}/relay");
+    let _h = RelayHandle::connect(cfg);
+    let (mut s, _) = tokio::time::timeout(Duration::from_secs(5), l.accept())
+        .await
+        .expect("client never connected")
+        .unwrap();
+    let mut b = [0u8; 1];
+    s.read_exact(&mut b).await.unwrap();
+    assert_eq!(b[0], 0x16, "expected a TLS ClientHello");
+}
