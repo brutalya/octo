@@ -156,20 +156,24 @@ async fn sustained_over_limit_closes_connection() {
     };
     let (addr, _s) = spawn_relay(limits).await;
     let (ka, kb) = (NodeKey::generate(), NodeKey::generate());
-    let a = online(addr, &ka, NET1).await;
+    let mut a = online(addr, &ka, NET1).await;
     let _b = online(addr, &kb, NET1).await;
     for _ in 0..2000 {
         if a.send(kb.node_id(), vec![1; 10]).await.is_err() {
             break;
         }
     }
-    for _ in 0..100 {
-        if !a.is_online() {
-            return;
+    // The client reconnects within milliseconds, so watch for the event, not the state.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(e) = a.recv().await {
+            if e == Event::Disconnected {
+                return true;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("abusive connection not closed");
+        false
+    })
+    .await;
+    assert_eq!(closed, Ok(true), "abusive connection not closed");
 }
 
 #[tokio::test]
