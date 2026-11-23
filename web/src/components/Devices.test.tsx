@@ -251,4 +251,29 @@ describe('Devices', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Copy code' }));
     expect(writeText).toHaveBeenCalledWith('ws://r/relay#TOK');
   });
+
+  it('each device names its permissions in words', async () => {
+    render(<Devices />);
+    await screen.findByText('Vps');
+    expect(screen.getAllByText('Private files')).toHaveLength(2);
+    expect(screen.getAllByText('Run agents here')).toHaveLength(2);
+    expect(screen.getByText('Syncs the private space with Vps')).toBeInTheDocument();
+    expect(screen.getByText('Vps can start Claude and Antigravity on Home')).toBeInTheDocument();
+  });
+
+  it('when adding a device the host shows whom the new device will meet and how', async () => {
+    pending = json({ sas: '123456', peer_name: 'Phone' });
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Add device' }));
+    await screen.findByText('123456', {}, { timeout: 4000 });
+    const meet = screen.getByRole('list', { name: 'Phone will also meet' });
+    // Without private trust the new device marks every member public.
+    expect(meet).toHaveTextContent('Vpspublic files only');
+    expect(meet).toHaveTextContent('Pcpublic files only');
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Trust private' }));
+    // With it, the new device takes this device's view: Pc is trusted, Vps is not.
+    expect(meet).toHaveTextContent('Pcprivate files');
+    expect(meet).toHaveTextContent('Vpspublic files only');
+  });
 });
