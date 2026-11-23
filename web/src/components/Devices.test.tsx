@@ -13,6 +13,7 @@ let f: ReturnType<typeof vi.fn>;
 let pending: Response | null;
 let relayStatus: unknown;
 let relayCheck: unknown;
+let pairing: unknown;
 const settings = { ollama_url: '', openrouter_api_key: null, history_char_budget: 1, relay_url: 'ws://r/relay', node_name: 'Home' };
 const calls = (m: string, u: string) =>
   f.mock.calls.filter((c) => c[0] === u && ((c[1] as RequestInit | undefined)?.method ?? 'GET') === m);
@@ -21,8 +22,10 @@ beforeEach(() => {
   pending = null;
   relayStatus = { configured: true, active: true, online: true, error: null };
   relayCheck = { ok: true, error: null };
+  pairing = { stage: 'idle', invite: null };
   f = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/settings') return json(settings);
+    if (url === '/api/pairing') return json(pairing);
     if (url === '/api/nodes') return json(nodes);
     if (url === '/api/pairing/invite') return json({ code: 'ws://r/relay#TOK', expires_at: Math.floor(Date.now() / 1000) + 300 });
     if (url === '/api/pairing/pending') return pending ?? json({}, 404);
@@ -275,5 +278,47 @@ describe('Devices', () => {
     // With it, the new device takes this device's view: Pc is trusted, Vps is not.
     expect(meet).toHaveTextContent('Pcprivate files');
     expect(meet).toHaveTextContent('Vpspublic files only');
+  });
+
+  it('reopening Settings during an invite shows the same code again', async () => {
+    console.log('[Step 1/2] the node is inviting with a code from before');
+    pairing = { stage: 'inviting', invite: { code: 'ws://r/relay#OLD', expires_at: Math.floor(Date.now() / 1000) + 200 } };
+    render(<Devices />);
+    console.log('[Step 2/2] the code card is back, no new invite was asked for');
+    expect(await screen.findByText('ws://r/relay#OLD')).toBeInTheDocument();
+    expect(screen.getByText('Waiting for the other device')).toBeInTheDocument();
+    expect(calls('POST', '/api/pairing/invite')).toHaveLength(0);
+  });
+
+  it('reopening Settings while joining shows the connecting card', async () => {
+    pairing = { stage: 'joining', invite: null };
+    render(<Devices />);
+    expect(await screen.findByText('Connecting to the other device')).toBeInTheDocument();
+  });
+
+  it('cancel on the code card ends the invite and brings back Join with a code', async () => {
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    await userEvent.click(screen.getByRole('button', { name: 'Add device' }));
+    await screen.findByText('ws://r/relay#TOK');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(calls('POST', '/api/pairing/cancel')).toHaveLength(1);
+    expect(screen.queryByText('ws://r/relay#TOK')).toBeNull();
+    expect(screen.getByLabelText('Code')).toBeInTheDocument();
+  });
+
+  it('cancel while connecting ends the join', async () => {
+    pairing = { stage: 'joining', invite: null };
+    render(<Devices />);
+    await screen.findByText('Connecting to the other device');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(calls('POST', '/api/pairing/cancel')).toHaveLength(1);
+    expect(screen.getByLabelText('Code')).toBeInTheDocument();
+  });
+
+  it('only the code card and the connecting card offer Cancel', async () => {
+    render(<Devices />);
+    await screen.findByLabelText('Node name');
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
   });
 });
