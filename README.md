@@ -81,7 +81,7 @@ cargo tauri build    # installer in target/release/bundle
 
 ## Android (build)
 
-Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init`. `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact.
+Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init` and then replaces its `MainActivity.kt` with `crates/octo-desktop/android/MainActivity.kt` (pads the WebView by the system bars and keyboard; Android 15+ draws apps edge to edge). `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact.
 
 ## Deploy
 
