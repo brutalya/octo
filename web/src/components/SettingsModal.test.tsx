@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsModal } from './SettingsModal';
 
@@ -76,25 +76,26 @@ describe('SettingsModal', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('Escape closes; backdrop closes only on a full click', async () => {
+  it('is a modal page that Escape closes', async () => {
     const onClose = vi.fn();
     render(<SettingsModal onClose={onClose} />);
-    expect(screen.getByRole('dialog')).toHaveAttribute('aria-modal', 'true');
-    const dialog = screen.getByRole('dialog');
-    const backdrop = dialog.parentElement as HTMLElement;
-    fireEvent.mouseDown(dialog);
-    fireEvent.mouseUp(backdrop);
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.mouseDown(backdrop);
-    fireEvent.mouseUp(backdrop);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('aria-modal', 'true');
     await userEvent.keyboard('{Escape}');
-    expect(onClose).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('renders no inputs until settings loaded', async () => {
     render(<SettingsModal onClose={() => {}} />);
     expect(screen.queryByLabelText('Ollama URL')).toBeNull();
     expect(await screen.findByLabelText('Ollama URL')).toBeInTheDocument();
+  });
+
+  it('is a page with sections for models, devices and relay', async () => {
+    render(<SettingsModal onClose={() => {}} />);
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    for (const name of ['Models', 'Devices', 'Relay']) {
+      expect(within(nav).getByRole('link', { name })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name })).toBeInTheDocument();
+    }
   });
 });

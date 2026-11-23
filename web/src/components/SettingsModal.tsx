@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronLeft } from 'lucide-react';
 import { api } from '../api/client';
 import { Devices } from './Devices';
 import { errMsg } from '../lib/format';
@@ -26,8 +26,8 @@ function Section({
     setBusy(false);
   };
   return (
-    <section className="flex flex-col gap-1.5">
-      <h3 className="text-sm text-slate-800">{title}</h3>
+    <section className="flex flex-col gap-2 rounded-xl border border-slate-200 bg-white p-4">
+      <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
       <div className="flex items-center gap-2">
         <input
           aria-label={label}
@@ -36,13 +36,13 @@ function Section({
           placeholder={placeholder}
           autoComplete="off"
           onChange={(e) => onChange(e.target.value)}
-          className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-sm text-slate-800 outline-none focus:border-indigo-500"
+          className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500"
         />
         <button
           aria-label={`Check ${title}`}
           disabled={busy}
           onClick={() => void check()}
-          className="rounded-lg px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+          className="h-10 shrink-0 rounded-lg border border-slate-300 px-3.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-40"
         >
           Check
         </button>
@@ -56,12 +56,17 @@ function Section({
   );
 }
 
+const SECTIONS = [
+  { id: 'settings-models', label: 'Models' },
+  { id: 'settings-devices', label: 'Devices' },
+  { id: 'settings-relay', label: 'Relay' },
+];
+
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const downOnBackdrop = useRef(false);
 
   useEffect(() => {
     api.settings().then((s) => {
@@ -89,53 +94,76 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-30 flex items-center justify-center bg-black/40"
-      onMouseDown={(e) => (downOnBackdrop.current = e.target === e.currentTarget)}
-      onMouseUp={(e) => {
-        if (downOnBackdrop.current && e.target === e.currentTarget) onClose();
-        downOnBackdrop.current = false;
-      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
+      className="fixed inset-0 z-30 flex bg-slate-50 text-slate-800 max-md:flex-col"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Settings"
-        className="flex max-h-[90vh] w-96 max-w-[90vw] flex-col overflow-y-auto gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-xl"
+      <nav
+        aria-label="Settings sections"
+        className="flex w-60 shrink-0 flex-col gap-0.5 border-r border-slate-200 bg-white p-3 max-md:w-full max-md:flex-row max-md:items-center max-md:gap-1 max-md:overflow-x-auto max-md:border-b max-md:border-r-0 max-md:p-2"
       >
         <button
           aria-label="Close"
           onClick={onClose}
-          className="self-end rounded-md p-1 text-slate-400 hover:text-slate-700 max-md:p-3"
+          className="mb-3 flex h-9 items-center gap-1.5 rounded-lg px-2 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800 max-md:mb-0 max-md:h-11 max-md:shrink-0"
         >
-          <X size={14} />
+          <ChevronLeft size={16} />
+          <span className="max-md:hidden">Back to chats</span>
         </button>
-        {settings && (
-          <>
-          <Section
-            title="Ollama"
-            label="Ollama URL"
-            type="text"
-            value={url}
-            onChange={setUrl}
-            onCheck={() => run(url !== settings?.ollama_url ? { ollama_url: url } : {}, 'ollama')}
-          />
-          <Section
-            title="OpenRouter"
-            label="OpenRouter key"
-            type="password"
-            value={key}
-            placeholder={settings?.openrouter_api_key ?? ''}
-            onChange={setKey}
-            onCheck={async () => {
-              const r = await run(key ? { openrouter_api_key: key } : {}, 'openrouter');
-              if (r.ok) setKey('');
-              return r;
+        <span className="px-2 pb-2 text-lg font-semibold max-md:hidden">Settings</span>
+        {SECTIONS.map((x) => (
+          <a
+            key={x.id}
+            href={`#${x.id}`}
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById(x.id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
             }}
-          />
-          </>
-        )}
-        {error && <span className="text-xs text-red-500">{error}</span>}
-        <Devices />
+            className="flex h-9 items-center rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800 max-md:h-11 max-md:shrink-0"
+          >
+            {x.label}
+          </a>
+        ))}
+      </nav>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-3xl flex-col gap-10 px-8 py-8 max-md:px-4 max-md:py-5">
+          <section aria-labelledby="settings-models" className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1">
+              <h2 id="settings-models" className="text-xl font-semibold text-slate-800">
+                Models
+              </h2>
+              <p className="text-sm text-slate-500">Local models through Ollama, cloud models through OpenRouter.</p>
+            </div>
+            {settings && (
+              <>
+                <Section
+                  title="Ollama"
+                  label="Ollama URL"
+                  type="text"
+                  value={url}
+                  onChange={setUrl}
+                  onCheck={() => run(url !== settings?.ollama_url ? { ollama_url: url } : {}, 'ollama')}
+                />
+                <Section
+                  title="OpenRouter"
+                  label="OpenRouter key"
+                  type="password"
+                  value={key}
+                  placeholder={settings?.openrouter_api_key ?? 'OpenRouter API key'}
+                  onChange={setKey}
+                  onCheck={async () => {
+                    const r = await run(key ? { openrouter_api_key: key } : {}, 'openrouter');
+                    if (r.ok) setKey('');
+                    return r;
+                  }}
+                />
+              </>
+            )}
+            {error && <span className="text-xs text-red-500">{error}</span>}
+          </section>
+          <Devices />
+        </div>
       </div>
     </div>
   );
