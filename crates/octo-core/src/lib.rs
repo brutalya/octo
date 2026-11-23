@@ -4,7 +4,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod files;
-mod fsutil;
+pub mod fsutil;
 pub mod hub;
 pub mod import;
 pub mod nodes;
