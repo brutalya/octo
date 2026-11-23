@@ -30,7 +30,7 @@ Verify: `curl https://relay.example.com/healthz` returns `ok`.
 
 The compose file runs a **private** relay: it admits only nodes that know its secret, created on first start in the `relay-data` volume. Read it with `docker compose exec octo-relay cat /data/relay-secret`.
 
-Client setup: in Octo settings (Devices → relay field) set `wss://relay.example.com/relay?key=<secret>` on the first device. Devices that join with a pairing code get the relay URL, key included, from the code. The key is sent in the `Authorization` header, not in the request path, so proxy access logs do not contain it. Changing the secret (delete the file, restart) requires the new URL on every device.
+Client setup: in Octo settings → Devices on the first device, enter `relay.example.com` as the relay address and the secret as the relay key (stored as `wss://relay.example.com/relay?key=<secret>`), then press Check. Devices that join with a pairing code get the relay URL, key included, from the code. The key is sent in the `Authorization` header, not in the request path, so proxy access logs do not contain it. Changing the secret (delete the file, restart) requires the new URL on every device.
 
 For an open relay (any Octo node may use it) remove `command` and the volume from the compose file.
 
