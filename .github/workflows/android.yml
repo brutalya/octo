@@ -46,6 +46,15 @@ jobs:
       - name: Generate Android project
         working-directory: crates/octo-desktop
         run: cargo tauri android init --ci
+      # Our MainActivity pads the WebView by system bars and keyboard (Android 15+ is edge to
+      # edge). Fail if the generated file moved, rather than silently shipping without it.
+      - name: Use our MainActivity
+        working-directory: crates/octo-desktop
+        run: |
+          dst=gen/android/app/src/main/java/com/octo/app/MainActivity.kt
+          test -f "$dst" || { echo "generated $dst not found"; find gen/android -name 'MainActivity*'; exit 1; }
+          echo "--- generated:"; cat "$dst"
+          cp android/MainActivity.kt "$dst"
       # Debug build: debug-signed APK, installable without a keystore, and the
       # debug manifest allows cleartext HTTP to the loopback server.
       # Release signing (later): repo secrets ANDROID_KEYSTORE_BASE64,

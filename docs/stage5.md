@@ -22,7 +22,7 @@ Goal: the phone is a full Octo node (own identity, pairing, relay link, private 
 - README: how to install the APK (download artifact, allow unknown sources).
 
 ## Deviations
-- `gen/android` is not committed (the whole `crates/octo-desktop/gen/` is gitignored); `android.yml` runs `cargo tauri android init --ci` before building.
+- `gen/android` is not committed (the whole `crates/octo-desktop/gen/` is gitignored); `android.yml` runs `cargo tauri android init --ci` before building, then copies `crates/octo-desktop/android/MainActivity.kt` over the generated one (insets: status bar, navigation bar, cutout, keyboard).
 - The APK is built with `--debug` (debug-signed, no keystore); the debug manifest also permits cleartext HTTP to the loopback server. Release signing is a later step.
 - Entry point lives in the lib (`octo_desktop::run`, crate types `staticlib`/`cdylib`/`rlib`); `main.rs` only calls it. Desktop-only plugins (single-instance, updater, window-state) are target-gated dependencies, and capabilities are split into `default.json` (desktop) and `mobile.json`.
 - The UI is served from Tauri's embedded assets (`frontendDist`) on all desktop/mobile builds via `asset_resolver()`, through `octo_server::WebAssets::Embedded`; the `web` resource bundling was removed. The server binary keeps `WebAssets::Dir`.
