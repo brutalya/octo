@@ -800,6 +800,8 @@ fn node_routes(node: Arc<Node>) -> Router {
         .route("/pairing/pending", get(pairing_pending))
         .route("/pairing/confirm", post(pairing_confirm))
         .route("/pairing/reject", post(pairing_reject))
+        .route("/pairing/cancel", post(pairing_cancel))
+        .route("/pairing", get(pairing_state))
         .with_state(node)
 }
 
@@ -936,6 +938,15 @@ async fn remove_node(
 ) -> Result<StatusCode, NodeError> {
     n.remove(&id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn pairing_state(State(n): State<Arc<Node>>) -> impl IntoResponse {
+    Json(n.pairing_state())
+}
+
+async fn pairing_cancel(State(n): State<Arc<Node>>) -> StatusCode {
+    n.cancel_pairing();
+    StatusCode::NO_CONTENT
 }
 
 async fn pairing_reject(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {

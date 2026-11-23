@@ -1339,3 +1339,88 @@ async fn joiner_keeps_the_relay_from_the_code() {
     wait_online(&a, &id_b).await;
     wait_online(&b, &id_a).await;
 }
+
+/// Leaving Settings must not lose a running invite: the code can be fetched again, and
+/// pressing Add device again returns the same code instead of "busy".
+#[tokio::test]
+async fn running_invite_can_be_shown_again() {
+    println!("[Step 1/3] idle node has no pairing");
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let (s, v) = a.json("GET", "/api/pairing", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"stage": "idle", "invite": null}));
+
+    println!("[Step 2/3] invite, then read it back and invite again");
+    let (_, inv) = a.json("POST", "/api/pairing/invite", None).await;
+    let (_, v) = a.json("GET", "/api/pairing", None).await;
+    assert_eq!(v["stage"], "inviting");
+    assert_eq!(v["invite"], inv);
+    let (s, again) = a.json("POST", "/api/pairing/invite", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(again, inv);
+
+    println!("[Step 3/3] cancel frees the slot; the next invite is a new code");
+    let s = a.call("POST", "/api/pairing/cancel", None).await.status();
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = a.json("GET", "/api/pairing", None).await;
+    assert_eq!(v, json!({"stage": "idle", "invite": null}));
+    let (s, next) = a.json("POST", "/api/pairing/invite", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_ne!(next["code"], inv["code"]);
+}
+
+/// A cancelled code is dead: a device joining with it never gets to the numbers.
+#[tokio::test]
+async fn cancelled_code_cannot_be_used() {
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let b = start(&url, "beta", None, None).await;
+    let (_, inv) = a.json("POST", "/api/pairing/invite", None).await;
+    assert!(
+        a.call("POST", "/api/pairing/cancel", None)
+            .await
+            .status()
+            .is_success()
+    );
+    let code = inv["code"].as_str().unwrap();
+    let _ = b
+        .json(
+            "POST",
+            "/api/pairing/join",
+            Some(json!({"code": code, "name": "beta"})),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (s, _) = a.json("GET", "/api/pairing/pending", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = b.json("GET", "/api/pairing/pending", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// Cancel also ends a join that is still connecting, and is harmless when idle.
+#[tokio::test]
+async fn cancel_ends_a_join_and_is_idempotent() {
+    let url = relay().await;
+    let b = start(&url, "beta", None, None).await;
+    assert_eq!(
+        b.call("POST", "/api/pairing/cancel", None).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let dead = format!("{url}#{}", "A".repeat(52));
+    let _ = b
+        .json(
+            "POST",
+            "/api/pairing/join",
+            Some(json!({"code": dead, "name": "beta"})),
+        )
+        .await;
+    assert!(
+        b.call("POST", "/api/pairing/cancel", None)
+            .await
+            .status()
+            .is_success()
+    );
+    let (_, v) = b.json("GET", "/api/pairing", None).await;
+    assert_eq!(v["stage"], "idle");
+}

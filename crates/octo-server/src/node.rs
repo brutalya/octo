@@ -10,7 +10,8 @@ use octo_core::Hub;
 use octo_core::files::FilesError;
 use octo_core::files::private::{Action, SyncEntry, plan};
 use octo_core::nodes::{
-    NodeInfo, PairingInvite, PairingPending, RelayCheck, RelayStatus, TrustLevel,
+    NodeInfo, PairingInvite, PairingPending, PairingStage, PairingState, RelayCheck, RelayStatus,
+    TrustLevel,
 };
 use octo_core::settings::NetSettings;
 use octo_net::NetError;
@@ -116,6 +117,8 @@ struct PairSlot {
     gen_: u64,
     st: Pair,
     abort: Option<AbortHandle>,
+    /// The code handed out by the running invite (kept until that pairing ends).
+    invite: Option<PairingInvite>,
 }
 
 struct Shared {
@@ -251,6 +254,7 @@ impl Shared {
         if p.gen_ == gen_ {
             p.st = Pair::Idle;
             p.abort = None;
+            p.invite = None;
         }
     }
 }
@@ -283,6 +287,7 @@ impl Node {
                 gen_: 0,
                 st: Pair::Idle,
                 abort: None,
+                invite: None,
             }),
             cmd: cmd_tx,
             ts_path,
@@ -540,7 +545,11 @@ impl Node {
         self.sh.net().relay_url.ok_or(NodeError::NoRelay)
     }
 
+    /// Starts an invite, or returns the running one (Settings may be reopened meanwhile).
     pub async fn invite(&self) -> Result<PairingInvite, NodeError> {
+        if let Some(i) = self.running_invite() {
+            return Ok(i);
+        }
         let url = self.relay_url()?;
         let gen_ = self.reserve(Pair::Starting)?;
         let mut host = match PairHost::start(&url, &self.sh.key, &self.sh.name(), PAIR_TTL).await {
@@ -554,10 +563,15 @@ impl Node {
         let sh = self.sh.clone();
         // Inviting is set before the task can run: a task that ends at once returns to Idle and
         // nothing afterwards may overwrite that.
+        let invite = PairingInvite {
+            code,
+            expires_at: now_secs() + PAIR_TTL.as_secs(),
+        };
         {
             let mut p = self.sh.pair();
             if p.gen_ == gen_ {
                 p.st = Pair::Inviting;
+                p.invite = Some(invite.clone());
             }
         }
         let task = tokio::spawn(async move {
@@ -565,10 +579,42 @@ impl Node {
             sh.finish_pair(gen_);
         });
         self.store_abort(gen_, &task);
-        Ok(PairingInvite {
-            code,
-            expires_at: now_secs() + PAIR_TTL.as_secs(),
-        })
+        Ok(invite)
+    }
+
+    /// The invite whose code is still waiting to be used.
+    fn running_invite(&self) -> Option<PairingInvite> {
+        let p = self.sh.pair();
+        match p.st {
+            Pair::Inviting => p.invite.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn pairing_state(&self) -> PairingState {
+        let p = self.sh.pair();
+        let stage = match p.st {
+            Pair::Idle => PairingStage::Idle,
+            Pair::Starting | Pair::Inviting => PairingStage::Inviting,
+            Pair::Joining => PairingStage::Joining,
+            Pair::Pending { .. } => PairingStage::Confirm,
+            Pair::Finishing => PairingStage::Finishing,
+        };
+        PairingState {
+            stage,
+            invite: p.invite.clone(),
+        }
+    }
+
+    /// Ends the running invite or join (its code stops working). Idle: nothing to do.
+    pub fn cancel_pairing(&self) {
+        let mut p = self.sh.pair();
+        if let Some(a) = p.abort.take() {
+            a.abort();
+        }
+        p.gen_ += 1;
+        p.st = Pair::Idle;
+        p.invite = None;
     }
 
     pub fn join(&self, code: &str, name: &str) -> Result<(), NodeError> {

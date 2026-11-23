@@ -1,6 +1,6 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, PairingState, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
@@ -81,6 +81,12 @@ export const api = {
     (await request('/pairing/invite', { method: 'POST' }, true)).json(),
   pairingJoin: async (code: string, name: string): Promise<void> => {
     await request('/pairing/join', jsonInit('POST', { code, name }), true);
+  },
+  /** Where this device's pairing stands (Settings shows a running invite again). */
+  pairingState: async (): Promise<PairingState> => (await request('/pairing', undefined, true)).json(),
+  /** Ends the running invite or join; its code stops working. */
+  pairingCancel: async (): Promise<void> => {
+    await request('/pairing/cancel', { method: 'POST' }, true);
   },
   /** This device's relay link; never routed to a remote node (the tunnel refuses it). */
   relayStatus: async (): Promise<RelayStatus> => (await request('/relay', undefined, true)).json(),

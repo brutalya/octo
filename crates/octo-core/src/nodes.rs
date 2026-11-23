@@ -33,6 +33,30 @@ pub struct PairingInvite {
     pub expires_at: u64,
 }
 
+/// Where this node's pairing stands; lets Settings show a running invite again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PairingStage {
+    Idle,
+    /// A code is out (or being created) and nobody has used it yet.
+    Inviting,
+    /// Connecting with a code from another device.
+    Joining,
+    /// Both sides see the numbers; waiting for Confirm / Numbers differ.
+    Confirm,
+    /// Decision taken; the exchange is being completed.
+    Finishing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PairingState {
+    pub stage: PairingStage,
+    /// The code this node handed out, while it is inviting or confirming that pairing.
+    pub invite: Option<PairingInvite>,
+}
+
 /// This node's link to its relay. `active`: a link is kept open (only when there are members).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

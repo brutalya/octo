@@ -16,6 +16,8 @@ type Checked = { ok: boolean; error: string | null } | 'checking' | null;
 
 const input =
   'h-10 w-full min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500';
+/** Quiet text action at the end of a pairing card. */
+const cancelBtn = 'ml-auto -my-1.5 rounded px-2 py-1.5 text-xs text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline';
 const btn =
   'flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-slate-300 px-3.5 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-40';
 const primary =
@@ -96,6 +98,15 @@ export function Devices() {
       setRelayKey(r.key);
     }).catch((e: unknown) => setError(errMsg(e)));
     void useNodesStore.getState().load();
+    // Settings may have been closed while pairing: show the running invite or join again.
+    api.pairingState().then((st) => {
+      if (st.invite && (st.stage === 'inviting' || st.stage === 'confirm')) {
+        setLeft(st.invite.expires_at * 1000 - Date.now());
+        setMode({ kind: 'invite', code: st.invite.code, expires: st.invite.expires_at });
+      } else if (st.stage !== 'idle') {
+        setMode({ kind: 'joining' });
+      }
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -198,6 +209,17 @@ export function Devices() {
     } catch (e) {
       setError(errMsg(e));
     }
+  };
+
+  const cancel = async () => {
+    try {
+      await api.pairingCancel();
+      setError(null);
+    } catch (e) {
+      setError(errMsg(e));
+    }
+    setPending(null);
+    setMode({ kind: 'idle' });
   };
 
   const answer = async (ok: boolean) => {
@@ -395,10 +417,20 @@ export function Devices() {
                 Expires in <span className="tabular-nums">{clock(left)}</span>
               </span>
             </div>
-            <span className="text-xs text-slate-400">Waiting for the other device</span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400">Waiting for the other device</span>
+              <button onClick={() => void cancel()} className={cancelBtn}>
+                Cancel
+              </button>
+            </div>
           </div>
         ) : mode.kind === 'joining' ? (
-          <div className={`${card} p-4 text-sm text-slate-500`}>Connecting to the other device</div>
+          <div className={`${card} flex items-center gap-3 p-4 text-sm text-slate-500`}>
+            Connecting to the other device
+            <button onClick={() => void cancel()} className={cancelBtn}>
+              Cancel
+            </button>
+          </div>
         ) : (
           <div className={`${card} flex flex-col gap-2 p-4`}>
             <span className="text-sm font-medium text-slate-800">Join with a code</span>
