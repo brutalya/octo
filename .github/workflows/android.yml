@@ -55,10 +55,10 @@ jobs:
           test -f "$dst" || { echo "generated $dst not found"; find gen/android -name 'MainActivity*'; exit 1; }
           echo "--- generated:"; cat "$dst"
           cp android/MainActivity.kt "$dst"
-      # Debug build (the debug manifest allows cleartext HTTP to the loopback server). Gradle signs
-      # debug builds with ~/.android/debug.keystore and creates a random one if it is missing, so
-      # every run would get a new key and Android would refuse to update over the previous APK.
-      # The repo secret holds one fixed debug keystore (alias androiddebugkey, passwords android).
+      # Debug build (the debug manifest allows cleartext HTTP to the loopback server). Gradle would
+      # sign it with a random debug key per run, and Android refuses to update over an APK signed
+      # with another key. The repo secret holds one fixed keystore (alias androiddebugkey,
+      # passwords android); the injected signing properties make Gradle sign with it.
       - name: Stable signing key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
@@ -69,9 +69,16 @@ jobs:
             echo "::warning::no ANDROID_DEBUG_KEYSTORE_BASE64: throwaway key, this APK will not update over others"
             exit 0
           fi
-          ks="${ANDROID_USER_HOME:-$HOME/.android}/debug.keystore"
-          mkdir -p "$(dirname "$ks")"
+          props=crates/octo-desktop/gen/android/gradle.properties
+          test -f "$props" || { echo "generated $props not found"; exit 1; }
+          ks="$RUNNER_TEMP/octo.keystore"
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
+          printf '%s\n' \
+            "android.injected.signing.store.file=$ks" \
+            "android.injected.signing.store.password=android" \
+            "android.injected.signing.key.alias=androiddebugkey" \
+            "android.injected.signing.key.password=android" \
+            >> "$props"
           sha=$(keytool -exportcert -keystore "$ks" -storepass android -alias androiddebugkey | sha256sum | cut -d' ' -f1)
           echo "certificate SHA-256: $sha"
           echo "WANT_CERT_SHA256=$sha" >> "$GITHUB_ENV"

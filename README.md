@@ -81,7 +81,7 @@ cargo tauri build    # installer in target/release/bundle
 
 ## Android (build)
 
-Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init` and then replaces its `MainActivity.kt` with `crates/octo-desktop/android/MainActivity.kt` (pads the WebView by the system bars and keyboard; Android 15+ draws apps edge to edge). `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact. Signing: the repo secret `ANDROID_DEBUG_KEYSTORE_BASE64` (base64 of a PKCS12 keystore, alias `androiddebugkey`, store and key password `android`) is installed as Gradle's debug keystore, and CI checks the APK is signed with it; releases fail without it. Keep a copy of the keystore offline: losing or changing it means one uninstall, which wipes the app's data on the phone.
+Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init` and then replaces its `MainActivity.kt` with `crates/octo-desktop/android/MainActivity.kt` (pads the WebView by the system bars and keyboard; Android 15+ draws apps edge to edge). `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact. Signing: the repo secret `ANDROID_DEBUG_KEYSTORE_BASE64` (base64 of a PKCS12 keystore, alias `androiddebugkey`, store and key password `android`) is passed to Gradle as the injected signing config (`gen/android/gradle.properties`), and CI checks the APK is signed with it; releases fail without it. Keep a copy of the keystore offline: losing or changing it means one uninstall, which wipes the app's data on the phone.
 
 ## Deploy
 
