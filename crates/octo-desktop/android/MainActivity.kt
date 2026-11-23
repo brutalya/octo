@@ -3,6 +3,7 @@ package com.octo.app
 import android.graphics.Color
 import android.os.Bundle
 import android.view.View
+import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
@@ -12,6 +13,8 @@ import androidx.core.view.WindowInsetsCompat
 // (which holds the WebView) is padded by the system bars, display cutout and keyboard instead.
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // As in the generated file: edge to edge on every Android version, padded below.
+    enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     val content = findViewById<View>(android.R.id.content)
     // Same as the web UI background, so the padded strips match the app.
