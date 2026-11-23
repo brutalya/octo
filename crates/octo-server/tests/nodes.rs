@@ -1310,3 +1310,32 @@ async fn relay_routes_are_not_reachable_through_the_tunnel() {
         .await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }
+
+/// The code carries the relay (address and key): a joiner with no relay configured keeps it,
+/// so after pairing it reaches the network without typing the relay in.
+#[tokio::test]
+async fn joiner_keeps_the_relay_from_the_code() {
+    println!("[Step 1/3] host with a relay, joiner with none");
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let b = start("", "beta", None, None).await;
+    let (_, s) = b.json("GET", "/api/settings", None).await;
+    assert_eq!(s["relay_url"], Value::Null);
+
+    println!("[Step 2/3] pair with the host's code");
+    pair_nodes(&a, &b, None).await;
+
+    println!("[Step 3/3] joiner saved the relay and both see each other online");
+    let mut saved = Value::Null;
+    for _ in 0..100 {
+        saved = b.json("GET", "/api/settings", None).await.1["relay_url"].clone();
+        if saved != Value::Null {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(saved, url.as_str());
+    let (id_a, id_b) = (a.id().await, b.id().await);
+    wait_online(&a, &id_b).await;
+    wait_online(&b, &id_a).await;
+}

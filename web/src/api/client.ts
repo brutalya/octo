@@ -82,10 +82,11 @@ export const api = {
   pairingJoin: async (code: string, name: string): Promise<void> => {
     await request('/pairing/join', jsonInit('POST', { code, name }), true);
   },
-  /** null when no pairing is pending (404). */
-  relayStatus: async (): Promise<RelayStatus> => (await request('/relay')).json(),
+  /** This device's relay link; never routed to a remote node (the tunnel refuses it). */
+  relayStatus: async (): Promise<RelayStatus> => (await request('/relay', undefined, true)).json(),
   relayCheck: async (relayUrl?: string): Promise<RelayCheck> =>
-    (await request('/relay/check', jsonInit('POST', relayUrl ? { relay_url: relayUrl } : {}))).json(),
+    (await request('/relay/check', jsonInit('POST', relayUrl ? { relay_url: relayUrl } : {}), true)).json(),
+  /** null when no pairing is pending (404). */
   pairingPending: async (): Promise<PairingPending | null> => {
     try {
       return await (await request('/pairing/pending', undefined, true)).json();
