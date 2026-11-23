@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { App } from './App';
 import { useThreadsStore } from './stores/threads';
@@ -52,13 +52,13 @@ describe('App phone layout', () => {
   it('desktop: sidebar and files panel inline, no menu button', () => {
     mockWidth(1024);
     render(<App />);
-    expect(screen.getByText('First')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'First' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull();
   });
 
   it('without matchMedia falls back to desktop', () => {
     render(<App />);
-    expect(screen.getByText('First')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'First' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull();
   });
 
@@ -72,14 +72,13 @@ describe('App phone layout', () => {
     expect(screen.queryByText('Second')).toBeNull();
   });
 
-  it('phone: the drawer close button does not cover the new thread button', async () => {
+  it('phone: the drawer covers the whole screen like the files sheet', async () => {
     mockWidth(375);
     render(<App />);
     await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
-    // "+" sits at the sidebar's top right; the close button takes the empty top left.
-    const close = screen.getByRole('button', { name: 'Close menu' });
-    expect(close.className).toMatch(/\bleft-1\b/);
-    expect(close.className).not.toMatch(/\bright-1\b/);
+    const drawer = screen.getByRole('dialog', { name: 'Menu' });
+    expect(drawer.className).toMatch(/\binset-0\b/);
+    expect(screen.getAllByRole('button', { name: 'Close menu' })).toHaveLength(1);
   });
 
   it('phone: selecting a thread closes the drawer', async () => {
@@ -152,6 +151,31 @@ describe('App orientation', () => {
     expect(screen.getByRole('banner')).toHaveTextContent('desk-pc');
     act(() => useNodesStore.setState({ selectedId: null } as never));
     expect(screen.getByRole('banner')).not.toHaveTextContent('desk-pc');
+  });
+});
+
+describe('App thread header', () => {
+  it('desktop: names the thread, its space and switches tool approval', async () => {
+    mockWidth(1024);
+    const setApproval = vi.fn(async () => {});
+    useThreadsStore.setState({ setApproval } as never);
+    render(<App />);
+    const header = screen.getByRole('banner');
+    expect(header).toHaveTextContent('First');
+    expect(header).toHaveTextContent('Public');
+    const group = within(header).getByRole('group', { name: 'Tool approval' });
+    expect(within(group).getByRole('button', { name: 'Ask before tools' })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(within(group).getByRole('button', { name: 'Auto' }));
+    expect(setApproval).toHaveBeenCalledWith('a', 'auto');
+  });
+
+  it('phone: the top bar switches tool approval', async () => {
+    mockWidth(375);
+    const setApproval = vi.fn(async () => {});
+    useThreadsStore.setState({ setApproval } as never);
+    render(<App />);
+    await userEvent.click(within(screen.getByRole('banner')).getByRole('button', { name: 'Tool approval: Ask' }));
+    expect(setApproval).toHaveBeenCalledWith('a', 'auto');
   });
 });
 

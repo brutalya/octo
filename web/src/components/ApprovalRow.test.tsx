@@ -18,16 +18,13 @@ beforeEach(() => {
 });
 
 describe('approval row', () => {
-  it('shows the summary with icon-only Allow and Deny buttons', () => {
+  it('shows a card naming the tool, the summary and labelled Allow and Deny buttons', () => {
     vi.stubGlobal('fetch', vi.fn());
     render(<Feed threadId="t1" />);
-    expect(screen.getByText('Bash: rm -rf build')).toBeInTheDocument();
-    const allow = screen.getByRole('button', { name: 'Allow' });
-    const deny = screen.getByRole('button', { name: 'Deny' });
-    expect(allow.textContent).toBe('');
-    expect(deny.textContent).toBe('');
-    expect(allow.querySelector('svg')).not.toBeNull();
-    expect(deny.querySelector('svg')).not.toBeNull();
+    const card = screen.getByRole('group', { name: 'Wants to use Bash' });
+    expect(card).toHaveTextContent('Bash: rm -rf build');
+    expect(screen.getByRole('button', { name: 'Allow' })).toHaveTextContent('Allow');
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveTextContent('Deny');
   });
 
   it('Allow posts the decision and the row disappears', async () => {

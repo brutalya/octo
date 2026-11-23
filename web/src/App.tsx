@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Folder, Menu, Plus, X } from 'lucide-react';
+import { Folder, Menu, Plus, ShieldCheck, Zap } from 'lucide-react';
 import { useIsPhone, useVisualViewportHeight } from './lib/viewport';
 import { Sidebar } from './components/Sidebar';
 import { Feed } from './components/Feed';
 import { FilesPanel } from './components/FilesPanel';
+import { ThreadHeader } from './components/ThreadHeader';
 import { ChatInput } from './components/ChatInput';
 import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
@@ -68,6 +69,7 @@ export function App() {
         space={space}
         streaming={streaming}
         disabled={offline}
+        placeholder={active ? `Message ${active.provider}` : undefined}
         onSend={(text, att) => useChatStore.getState().send(activeId, text, att)}
         onStop={() => void useChatStore.getState().stop(activeId)}
       />
@@ -78,40 +80,52 @@ export function App() {
     return (
       <div className="flex h-full bg-slate-50 text-slate-800">
         <Sidebar />
-        <main className="flex min-w-0 flex-1 flex-col">{chat}</main>
+        <div className="flex min-w-0 flex-1 flex-col">
+          {active && <ThreadHeader thread={active} />}
+          <main className="flex min-h-0 flex-1 flex-col">{chat}</main>
+        </div>
         <FilesPanel />
       </div>
     );
   }
 
-  const iconBtn = 'flex h-10 w-10 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800';
+  const iconBtn = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800';
   return (
     <div
       className="flex h-full flex-col bg-slate-50 text-slate-800"
       style={vvHeight ? { height: vvHeight } : undefined}
     >
-      <header className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-1">
+      <header className="flex h-14 shrink-0 items-center gap-1 border-b border-slate-200 bg-white px-1">
         <button aria-label="Menu" onClick={() => setDrawer(true)} className={iconBtn}>
-          <Menu size={18} />
+          <Menu size={20} />
         </button>
-        <div className="min-w-0 flex-1 px-1 text-center leading-tight">
-          <div className="truncate text-sm text-slate-800">{active ? active.title || 'Untitled' : ''}</div>
-          {remote && <div className="truncate text-xs text-slate-400">{remote}</div>}
+        <div className="flex min-w-0 flex-1 flex-col items-center leading-tight">
+          <div className="max-w-full truncate text-sm font-semibold text-slate-800">{active ? active.title || 'Untitled' : ''}</div>
+          {(remote || active) && (
+            <div className="flex max-w-full items-center gap-1.5 truncate text-xs text-slate-400">
+              {remote && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${offline ? 'bg-slate-300' : 'bg-emerald-500'}`} />}
+              {[remote && `on ${remote}`, active?.provider].filter(Boolean).join(' · ')}
+            </div>
+          )}
         </div>
+        {active && (
+          <button
+            aria-label={`Tool approval: ${active.approval === 'auto' ? 'Auto' : 'Ask'}`}
+            onClick={() => void useThreadsStore.getState().setApproval(active.id, active.approval === 'auto' ? 'confirm' : 'auto')}
+            className="flex h-11 shrink-0 items-center gap-1 rounded-lg px-2 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+          >
+            {active.approval === 'auto' ? <Zap size={14} /> : <ShieldCheck size={14} />}
+            {active.approval === 'auto' ? 'Auto' : 'Ask'}
+          </button>
+        )}
         <button aria-label="Files" onClick={() => setSheet(true)} className={iconBtn}>
-          <Folder size={18} />
+          <Folder size={20} />
         </button>
       </header>
       <main className="flex min-h-0 min-w-0 flex-1 flex-col pb-[env(safe-area-inset-bottom)]">{chat}</main>
       {drawer && (
-        <div className="fixed inset-0 z-30 flex">
-          <div className="relative flex h-full">
-            <Sidebar onNavigate={closeDrawer} />
-            <button aria-label="Close menu" onClick={closeDrawer} className={`absolute left-1 top-1 ${iconBtn}`}>
-              <X size={18} />
-            </button>
-          </div>
-          <div className="flex-1 bg-slate-900/30" onClick={closeDrawer} />
+        <div role="dialog" aria-label="Menu" className="fixed inset-0 z-30 flex bg-white pb-[env(safe-area-inset-bottom)]">
+          <Sidebar onNavigate={closeDrawer} onClose={closeDrawer} />
         </div>
       )}
       {sheet && <FilesPanel sheet onClose={() => setSheet(false)} />}
