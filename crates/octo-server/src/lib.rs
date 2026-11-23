@@ -109,7 +109,7 @@ pub fn load_or_create_token(path: &std::path::Path) -> std::io::Result<String> {
     f.write_all(token.as_bytes())?;
     f.sync_all()?;
     drop(f);
-    let linked = std::fs::hard_link(&tmp, path);
+    let linked = octo_core::fsutil::place_new(&tmp, path);
     let _ = std::fs::remove_file(&tmp);
     match linked {
         Ok(()) => Ok(token),

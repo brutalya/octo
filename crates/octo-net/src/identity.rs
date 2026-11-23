@@ -106,7 +106,7 @@ impl NodeKey {
             f.write_all(&key.secret[..])?;
             f.sync_all()
         });
-        let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+        let linked = written.and_then(|()| place_new(&tmp, path));
         let _ = std::fs::remove_file(&tmp);
         match linked {
             Ok(()) => Ok(key),
@@ -146,4 +146,69 @@ pub(crate) fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
         o.mode(0o600);
     }
     o.open(path)
+}
+
+/// Moves a fully written `tmp` to `path`, never overwriting an existing `path`
+/// (`AlreadyExists` then). A hard link does this atomically; Android (SELinux) denies hard
+/// links in app storage, so on `PermissionDenied` it renames instead if `path` is absent.
+/// Same as `octo_core::fsutil::place_new` (octo-net does not depend on octo-core).
+fn place_new(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    place_new_with(tmp, path, |a, b| std::fs::hard_link(a, b))
+}
+
+fn place_new_with(
+    tmp: &Path,
+    path: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    match link(tmp, path) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err(std::io::ErrorKind::AlreadyExists.into());
+            }
+            std::fs::rename(tmp, path)
+        }
+        r => r,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    fn denied(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(Error::from(ErrorKind::PermissionDenied))
+    }
+
+    #[test]
+    fn key_file_is_created_once_and_reloaded() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("keys/node");
+        let a = NodeKey::load_or_create(&p).unwrap();
+        let b = NodeKey::load_or_create(&p).unwrap();
+        assert_eq!(a.public(), b.public());
+        assert_eq!(std::fs::read_dir(d.path().join("keys")).unwrap().count(), 1);
+    }
+
+    /// Android (SELinux) refuses hard links in app storage with EACCES.
+    #[test]
+    fn place_new_falls_back_to_rename_when_links_are_denied() {
+        let d = tempfile::tempdir().unwrap();
+        let (tmp, path) = (d.path().join("k.tmp"), d.path().join("k"));
+        std::fs::write(&tmp, b"new").unwrap();
+        place_new_with(&tmp, &path, denied).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn place_new_fallback_never_overwrites() {
+        let d = tempfile::tempdir().unwrap();
+        let (tmp, path) = (d.path().join("k.tmp"), d.path().join("k"));
+        std::fs::write(&tmp, b"new").unwrap();
+        std::fs::write(&path, b"old").unwrap();
+        let e = place_new_with(&tmp, &path, denied).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+    }
 }

@@ -73,3 +73,24 @@ fn navigation_is_limited_to_the_embedded_server() {
         assert!(!ok(bad), "{bad}");
     }
 }
+
+/// A failed start names the step, so a phone's logcat says what was refused.
+#[tokio::test]
+async fn start_errors_name_the_failing_step() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("keys"), b"not a dir").unwrap();
+    let Err(e) = start_server(Config::new(Some(data.clone())), None).await else {
+        panic!("start must fail when keys/ is a file");
+    };
+    let msg = format!("{e:#}");
+    assert!(msg.starts_with("node key"), "{msg}");
+
+    std::fs::remove_file(data.join("keys")).unwrap();
+    std::fs::create_dir_all(data.join("octo.db")).unwrap();
+    let Err(e) = start_server(Config::new(Some(data)), None).await else {
+        panic!("start must fail when octo.db is a directory");
+    };
+    assert!(format!("{e:#}").starts_with("open data"), "{e:#}");
+}

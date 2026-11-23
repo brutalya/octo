@@ -3,7 +3,7 @@
 mod app;
 pub use app::run;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use octo_core::{Config, Hub};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -65,12 +65,20 @@ pub async fn start_server(
 ) -> Result<Server> {
     let token = new_token();
     // Bind first: Claude's approval prompts call back to the address actually bound.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Each step names itself: on a phone the error chain in logcat is all there is.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("bind 127.0.0.1")?;
     let addr = listener.local_addr()?;
     config.local_api = Some(addr);
     let data_dir = config.data_dir.clone();
-    let hub = Arc::new(Hub::new(config, &octo_server::node::node_id(&data_dir)?)?);
-    let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())?;
+    let node_id = octo_server::node::node_id(&data_dir)
+        .with_context(|| format!("node key in {}", data_dir.display()))?;
+    let hub = Hub::new(config, &node_id)
+        .with_context(|| format!("open data in {}", data_dir.display()))?;
+    let hub = Arc::new(hub);
+    let node = octo_server::node::Node::start(hub.clone(), &data_dir, Default::default())
+        .context("start node")?;
     let app = octo_server::app(
         hub.clone(),
         octo_server::AppConfig {

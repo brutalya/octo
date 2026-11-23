@@ -69,7 +69,7 @@ impl Key {
             f.write_all(&bytes)?;
             f.sync_all()
         })();
-        let linked = written.and_then(|()| std::fs::hard_link(&tmp, path));
+        let linked = written.and_then(|()| crate::fsutil::place_new(&tmp, path));
         let _ = std::fs::remove_file(&tmp);
         match linked {
             Ok(()) => Ok(Self(bytes)),

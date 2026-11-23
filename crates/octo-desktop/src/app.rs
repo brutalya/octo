@@ -91,7 +91,8 @@ pub fn run() {
     let builder =
         with_desktop_plugins(tauri::Builder::default().plugin(tauri_plugin_opener::init()));
     let app = builder
-        .setup(|app| setup(app).map_err(Into::into))
+        // `{:#}`: the whole chain (step and cause), not only the outermost context.
+        .setup(|app| setup(app).map_err(|e| format!("{e:#}").into()))
         .build(tauri::generate_context!());
     let app = match app {
         Ok(app) => app,
