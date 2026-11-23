@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sidebar } from './Sidebar';
 import { useThreadsStore } from '../stores/threads';
+import { useChatStore } from '../stores/chat';
 import type { ProviderStatus, Thread } from '../api/types';
 
 const providers: ProviderStatus[] = [
@@ -115,19 +116,47 @@ describe('Sidebar', () => {
     expect(create).toHaveBeenCalledWith('claude', 'public', 'auto');
   });
 
-  it('shows a muted approval icon per thread and switches it on click', async () => {
-    const setApproval = vi.fn(async () => {});
+  it('groups threads into Today and Earlier', () => {
+    const now = Date.now();
     useThreadsStore.setState({
-      threads: [t('a', 'First'), { ...t('b', 'Second'), approval: 'auto' }],
-      setApproval,
+      threads: [{ ...t('a', 'Fresh'), updated_at: now }, { ...t('b', 'Old'), updated_at: now - 3 * 86_400_000 }],
     });
     render(<Sidebar />);
-    const confirm = screen.getByRole('button', { name: 'Thread approval: confirm' });
-    const auto = screen.getByRole('button', { name: 'Thread approval: auto' });
-    await userEvent.click(confirm);
-    expect(setApproval).toHaveBeenCalledWith('a', 'auto');
-    await userEvent.click(auto);
-    expect(setApproval).toHaveBeenCalledWith('b', 'confirm');
+    const today = screen.getByRole('list', { name: 'Today' });
+    const earlier = screen.getByRole('list', { name: 'Earlier' });
+    expect(within(today).getByText('Fresh')).toBeInTheDocument();
+    expect(within(earlier).getByText('Old')).toBeInTheDocument();
+  });
+
+  it('search narrows the thread list by title', async () => {
+    render(<Sidebar />);
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search threads' }), 'sec');
+    expect(screen.queryByText('First')).toBeNull();
+    expect(screen.getByText('Second')).toBeInTheDocument();
+  });
+
+  it('marks private threads with a lock and running threads as running', () => {
+    useThreadsStore.setState({ threads: [{ ...t('a', 'Notes'), space: 'private' }, t('b', 'Busy')] });
+    useChatStore.setState({ streaming: { b: { text: '', tool: null } } });
+    render(<Sidebar />);
+    expect(screen.getByRole('img', { name: 'Private' })).toBeInTheDocument();
+    expect(screen.getByText('claude · running')).toBeInTheDocument();
+    useChatStore.setState({ streaming: {} });
+  });
+
+  it('new thread and settings are labelled buttons', () => {
+    render(<Sidebar />);
+    expect(screen.getByRole('button', { name: 'New thread' })).toHaveTextContent('New thread');
+    expect(screen.getByRole('button', { name: 'Settings' })).toHaveTextContent('Settings');
+  });
+
+  it('a close button is shown only when the sidebar is a drawer', async () => {
+    const onClose = vi.fn();
+    const { rerender } = render(<Sidebar />);
+    expect(screen.queryByRole('button', { name: 'Close menu' })).toBeNull();
+    rerender(<Sidebar onClose={onClose} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Close menu' }));
+    expect(onClose).toHaveBeenCalled();
   });
 });
 
@@ -156,7 +185,7 @@ describe('Sidebar http providers', () => {
     await userEvent.click(screen.getByRole('button', { name: 'ollama private' }));
     expect(create).not.toHaveBeenCalled();
     expect(await screen.findByRole('option', { name: /Llama 3 8B/ })).toBeInTheDocument();
-    await userEvent.type(screen.getByRole('searchbox'), 'qwen');
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search models' }), 'qwen');
     expect(screen.queryByRole('option', { name: /Llama/ })).toBeNull();
     await userEvent.click(screen.getByRole('option', { name: /Qwen 2 7B/ }));
     expect(create).toHaveBeenCalledWith('ollama', 'private', 'confirm', 'qwen2:7b');
@@ -244,7 +273,7 @@ describe('Sidebar session picker', () => {
     const menu = screen.getByRole('menu');
     // Anchored to the sidebar's left edge (not to the right edge of the "+" button) and capped
     // to the viewport, so a wide session list stays on screen.
-    expect(menu.className).toMatch(/\bleft-2\b/);
+    expect(menu.className).toMatch(/\bleft-0\b/);
     expect(menu.className).not.toMatch(/\bright-0\b/);
     expect(menu.className).toMatch(/max-w-\[calc\(100vw/);
   });

@@ -10,6 +10,7 @@ interface Props {
   space?: Space;
   streaming: boolean;
   disabled?: boolean;
+  placeholder?: string;
   /** Resolve false when the message was rejected before being appended. */
   onSend: (text: string, attachments: AttachmentRef[]) => unknown;
   onStop: () => void;
@@ -58,7 +59,7 @@ function Picker({
   );
 }
 
-export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props) {
+export function ChatInput({ space, streaming, disabled, placeholder, onSend, onStop }: Props) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
   const [picking, setPicking] = useState(false);
@@ -183,7 +184,7 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
           ))}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div className="flex items-end gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5 focus-within:border-indigo-300">
         {space && (
           <div ref={ref} className="relative">
             <input
@@ -230,7 +231,8 @@ export function ChatInput({ space, streaming, disabled, onSend, onStop }: Props)
           onKeyDown={onKeyDown}
           onPaste={onPaste}
           rows={1}
-          className="max-h-48 min-h-10 flex-1 resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-500"
+          placeholder={placeholder}
+          className="max-h-48 min-h-10 flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400"
         />
         {streaming ? (
           <button

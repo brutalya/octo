@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react';
-import { FolderPlus, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
+import { FolderPlus, Lock, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { useThreadsStore } from '../stores/threads';
 import { FileTree } from './FileTree';
@@ -56,29 +56,16 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
           : 'flex h-full w-72 shrink-0 flex-col border-l border-slate-200 bg-white'
       }
     >
-      <div className="flex items-center justify-between border-b border-slate-200 px-2 py-1.5">
-        <div role="tablist" className="flex gap-1">
-          {TABS.map((t) => (
-            <button
-              key={t.space}
-              role="tab"
-              aria-selected={space === t.space}
-              onClick={() => setChoice({ forThread: threadSpace, space: t.space })}
-              className={`rounded-md px-2 py-0.5 text-xs ${
-                space === t.space ? 'bg-slate-100 text-slate-800' : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-1">
+      <div className="flex h-14 shrink-0 items-center gap-1 border-b border-slate-200 px-3">
+        <span className="flex-1 text-sm font-semibold text-slate-800">Files</span>
+        <div className="flex gap-0.5">
           <button
             aria-label="New folder"
+            title="New folder"
             onClick={() => setNewRoot(true)}
-            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-md p-2 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
-            <FolderPlus size={14} />
+            <FolderPlus size={16} />
           </button>
           <input
             ref={fileInput}
@@ -94,18 +81,37 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
           />
           <button
             aria-label="Upload"
+            title="Upload"
             onClick={() => fileInput.current?.click()}
-            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-md p-2 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
-            <Upload size={sheet ? 16 : 14} />
+            <Upload size={16} />
           </button>
           <button
             aria-label={sheet ? 'Close files' : 'Collapse files'}
             onClick={() => (sheet ? onClose?.() : setCollapsed(true))}
-            className="rounded-md p-1 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+            className="rounded-md p-2 max-md:p-3 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
           >
-            {sheet ? <X size={16} /> : <PanelRightClose size={14} />}
+            {sheet ? <X size={18} /> : <PanelRightClose size={16} />}
           </button>
+        </div>
+      </div>
+      <div className="px-3 py-2.5">
+        <div role="tablist" className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          {TABS.map((t) => (
+            <button
+              key={t.space}
+              role="tab"
+              aria-selected={space === t.space}
+              onClick={() => setChoice({ forThread: threadSpace, space: t.space })}
+              className={`flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md text-xs max-md:h-10 ${
+                space === t.space ? 'bg-slate-200 text-slate-800' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {t.space === 'private' && <Lock size={12} />}
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
       <div
@@ -118,11 +124,16 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
         }}
         onDragLeave={() => setOver(false)}
         onDrop={onDrop}
-        className={`min-h-24 flex-1 overflow-y-auto p-1 ${over ? 'bg-indigo-50' : ''}`}
+        className={`min-h-24 flex-1 overflow-y-auto px-2 ${over ? 'bg-indigo-50' : ''}`}
       >
         <FileTree space={space} newRoot={newRoot} onNewRootDone={() => setNewRoot(false)} />
       </div>
-      {error && <div className="px-2 py-1 text-xs text-red-500">{error}</div>}
+      {error && <div className="px-3 py-1 text-xs text-red-500">{error}</div>}
+      {!sheet && (
+        <div className="m-3 rounded-lg border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400">
+          Drop files here
+        </div>
+      )}
       {preview && <PreviewDialog />}
     </aside>
   );
