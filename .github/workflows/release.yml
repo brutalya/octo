@@ -120,6 +120,7 @@ jobs:
     uses: ./.github/workflows/android.yml
     with:
       release_tag: ${{ needs.version.outputs.tag }}
+    secrets: inherit # the stable APK signing key
 
   publish:
     needs: [version, desktop, android]
