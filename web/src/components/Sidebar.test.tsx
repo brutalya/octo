@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, within, act } from '@testing-library/react';
+import { render, screen, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Sidebar } from './Sidebar';
 import { useThreadsStore } from '../stores/threads';
@@ -32,40 +32,6 @@ describe('Sidebar', () => {
     useThreadsStore.setState({ threads: [t('a', '')] });
     render(<Sidebar />);
     expect(screen.getByRole('button', { name: 'Untitled' })).toHaveTextContent('Untitled');
-  });
-
-  it('the new thread menu can be opened from outside the sidebar', () => {
-    render(<Sidebar />);
-    expect(screen.queryByRole('menu')).toBeNull();
-    act(() => useThreadsStore.getState().openMenu(true));
-    expect(screen.getByRole('menu')).toBeInTheDocument();
-  });
-
-  it('dropdown lists only installed providers', async () => {
-    useThreadsStore.setState({ providers: [providers[0]] });
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    const menu = screen.getByRole('menu');
-    expect(within(menu).getByText('claude')).toBeInTheDocument();
-    expect(within(menu).queryByText('antigravity')).toBeNull();
-  });
-
-  it('private is disabled for non-local providers only', async () => {
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    expect(screen.getByRole('button', { name: 'claude private' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'claude public' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'antigravity private' })).toBeEnabled();
-  });
-
-  it('choosing a space creates a thread and closes the menu', async () => {
-    const create = vi.fn(async () => {});
-    useThreadsStore.setState({ create });
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    await userEvent.click(screen.getByRole('button', { name: 'antigravity private' }));
-    expect(create).toHaveBeenCalledWith('antigravity', 'private', 'confirm');
-    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('selects and deletes threads', async () => {
@@ -102,18 +68,6 @@ describe('Sidebar', () => {
     render(<Sidebar />);
     expect(screen.getByText('boom')).toBeInTheDocument();
     useThreadsStore.setState({ error: null });
-  });
-
-  it('approval toggle in the dropdown defaults to confirm and is passed on create', async () => {
-    const create = vi.fn(async () => {});
-    useThreadsStore.setState({ create });
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    const toggle = screen.getByRole('button', { name: 'Approval: confirm' });
-    await userEvent.click(toggle);
-    expect(screen.getByRole('button', { name: 'Approval: auto' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'claude public' }));
-    expect(create).toHaveBeenCalledWith('claude', 'public', 'auto');
   });
 
   it('groups threads into Today and Earlier', () => {
@@ -170,28 +124,6 @@ describe('Sidebar http providers', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('private option exists only for local providers', async () => {
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    expect(screen.getByRole('button', { name: 'ollama private' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'openrouter private' })).toBeDisabled();
-  });
-
-  it('shows a searchable model submenu and creates with the chosen model', async () => {
-    const create = vi.fn(async () => {});
-    useThreadsStore.setState({ create });
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    await userEvent.click(screen.getByRole('button', { name: 'ollama private' }));
-    expect(create).not.toHaveBeenCalled();
-    expect(await screen.findByRole('option', { name: /Llama 3 8B/ })).toBeInTheDocument();
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Search models' }), 'qwen');
-    expect(screen.queryByRole('option', { name: /Llama/ })).toBeNull();
-    await userEvent.click(screen.getByRole('option', { name: /Qwen 2 7B/ }));
-    expect(create).toHaveBeenCalledWith('ollama', 'private', 'confirm', 'qwen2:7b');
-    expect(screen.queryByRole('menu')).toBeNull();
-  });
-
   it('thread label shows provider and short model name', () => {
     useThreadsStore.setState({
       threads: [
@@ -211,71 +143,10 @@ describe('Sidebar http providers', () => {
   });
 });
 
-describe('Sidebar session picker', () => {
-  const sessions = [
-    { external_id: 's1', title: 'Fix the parser', cwd: '/srv/apps/demo', updated_at: Date.now() - 3 * 3_600_000, messages: 4, imported_thread_id: null },
-    { external_id: 's2', title: 'Write docs', cwd: 'C:\\work\\site', updated_at: Date.now() - 2 * 86_400_000, messages: 2, imported_thread_id: null },
-  ];
-  let fetchMock: ReturnType<typeof vi.fn>;
-  beforeEach(() => {
-    fetchMock = vi.fn(async (url: string) => {
-      const q = new URL(url, 'http://x').searchParams.get('q') ?? '';
-      const rows = sessions.filter((x) => x.title.toLowerCase().includes(q.toLowerCase()));
-      return new Response(JSON.stringify(rows), { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('only CLI providers offer sessions', async () => {
+describe('Sidebar new thread', () => {
+  it('the New thread button opens the new thread dialog', async () => {
     render(<Sidebar />);
     await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    expect(screen.getByRole('button', { name: 'claude sessions' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'antigravity sessions' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'ollama sessions' })).toBeNull();
-  });
-
-  it('lists sessions with title, short cwd and relative time', async () => {
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
-    expect(await screen.findByRole('option', { name: /Fix the parser/ })).toBeInTheDocument();
-    expect(screen.getByText('apps/demo')).toBeInTheDocument();
-    expect(screen.getByText('work/site')).toBeInTheDocument();
-    expect(screen.getByText('3h')).toBeInTheDocument();
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/import/claude/sessions?q=');
-  });
-
-  it('search asks the server and narrows the list', async () => {
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
-    await screen.findByRole('option', { name: /Write docs/ });
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Search sessions' }), 'docs');
-    await waitFor(() => expect(screen.queryByRole('option', { name: /Fix the parser/ })).toBeNull());
-    expect(screen.getByRole('option', { name: /Write docs/ })).toBeInTheDocument();
-  });
-
-  it('clicking a session imports it and closes the menu', async () => {
-    const importSession = vi.fn(async () => {});
-    useThreadsStore.setState({ importSession });
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    await userEvent.click(screen.getByRole('button', { name: 'claude sessions' }));
-    await userEvent.click(await screen.findByRole('option', { name: /Fix the parser/ }));
-    expect(importSession).toHaveBeenCalledWith('claude', 's1');
-    expect(screen.queryByRole('menu')).toBeNull();
-  });
-
-  it('new thread menu grows from the sidebar edge into the page, never past the left edge', async () => {
-    render(<Sidebar />);
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
-    const menu = screen.getByRole('menu');
-    // Anchored to the sidebar's left edge (not to the right edge of the "+" button) and capped
-    // to the viewport, so a wide session list stays on screen.
-    expect(menu.className).toMatch(/\bleft-0\b/);
-    expect(menu.className).not.toMatch(/\bright-0\b/);
-    expect(menu.className).toMatch(/max-w-\[calc\(100vw/);
+    expect(useThreadsStore.getState().menuOpen).toBe(true);
   });
 });
-

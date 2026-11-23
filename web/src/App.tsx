@@ -5,6 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { Feed } from './components/Feed';
 import { FilesPanel } from './components/FilesPanel';
 import { ThreadHeader } from './components/ThreadHeader';
+import { NewThreadDialog } from './components/NewThreadDialog';
 import { ChatInput } from './components/ChatInput';
 import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
@@ -23,10 +24,7 @@ export function App() {
   const vvHeight = useVisualViewportHeight(phone);
   const [drawer, setDrawer] = useState(false);
   const [sheet, setSheet] = useState(false);
-  const closeDrawer = () => {
-    setDrawer(false);
-    useThreadsStore.getState().openMenu(false);
-  };
+  const closeDrawer = () => setDrawer(false);
 
   useEffect(() => {
     void useNodesStore.getState().load().finally(() => {
@@ -48,10 +46,7 @@ export function App() {
     <div className="flex flex-1 items-center justify-center">
       {noThreads && (
         <button
-          onClick={() => {
-            if (phone) setDrawer(true);
-            useThreadsStore.getState().openMenu(true);
-          }}
+          onClick={() => useThreadsStore.getState().openMenu(true)}
           className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:border-slate-300 hover:text-slate-800"
         >
           <Plus size={16} />
@@ -85,6 +80,7 @@ export function App() {
           <main className="flex min-h-0 flex-1 flex-col">{chat}</main>
         </div>
         <FilesPanel />
+        <NewThreadDialog />
       </div>
     );
   }
@@ -129,6 +125,7 @@ export function App() {
         </div>
       )}
       {sheet && <FilesPanel sheet onClose={() => setSheet(false)} />}
+      <NewThreadDialog />
     </div>
   );
 }
