@@ -13,7 +13,7 @@ AI interaction hub: Claude Code / agy CLI, Ollama, OpenRouter. Private / Public 
 | Android (arm64) | `octo-<version>-arm64-debug.apk` |
 | Server / relay | Docker images `ghcr.io/<owner>/<repo>-node`, `-relay` ([deploy](docs/deploy.md)) |
 
-Android: copy the APK to the phone, allow installing from unknown sources for your file manager/browser, open it. It is a debug-signed build.
+Android: copy the APK to the phone, allow installing from unknown sources for your file manager/browser, open it. It is a debug build signed with one fixed key, so a new APK installs over the old one and keeps its data (APKs before 0.2.8 had a random key each: uninstall those once).
 
 ## Prerequisites (from source)
 
@@ -81,7 +81,7 @@ cargo tauri build    # installer in target/release/bundle
 
 ## Android (build)
 
-Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init` and then replaces its `MainActivity.kt` with `crates/octo-desktop/android/MainActivity.kt` (pads the WebView by the system bars and keyboard; Android 15+ draws apps edge to edge). `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact.
+Built only in CI; no Android SDK is needed locally. The `gen/android` project is not committed, CI generates it with `cargo tauri android init` and then replaces its `MainActivity.kt` with `crates/octo-desktop/android/MainActivity.kt` (pads the WebView by the system bars and keyboard; Android 15+ draws apps edge to edge). `android.yml` can also be run by hand (Actions → Android → Run workflow); the APK is then a run artifact. Signing: the repo secret `ANDROID_DEBUG_KEYSTORE_BASE64` (base64 of a PKCS12 keystore, alias `androiddebugkey`, store and key password `android`) is installed as Gradle's debug keystore, and CI checks the APK is signed with it; releases fail without it. Keep a copy of the keystore offline: losing or changing it means one uninstall, which wipes the app's data on the phone.
 
 ## Deploy
 

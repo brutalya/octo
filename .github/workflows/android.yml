@@ -55,13 +55,37 @@ jobs:
           test -f "$dst" || { echo "generated $dst not found"; find gen/android -name 'MainActivity*'; exit 1; }
           echo "--- generated:"; cat "$dst"
           cp android/MainActivity.kt "$dst"
-      # Debug build: debug-signed APK, installable without a keystore, and the
-      # debug manifest allows cleartext HTTP to the loopback server.
-      # Release signing (later): repo secrets ANDROID_KEYSTORE_BASE64,
-      # ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+      # Debug build (the debug manifest allows cleartext HTTP to the loopback server). Gradle signs
+      # debug builds with ~/.android/debug.keystore and creates a random one if it is missing, so
+      # every run would get a new key and Android would refuse to update over the previous APK.
+      # The repo secret holds one fixed debug keystore (alias androiddebugkey, passwords android).
+      - name: Stable signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            if [ -n "$RELEASE_TAG" ]; then echo "::error::secret ANDROID_DEBUG_KEYSTORE_BASE64 is not set"; exit 1; fi
+            echo "::warning::no ANDROID_DEBUG_KEYSTORE_BASE64: throwaway key, this APK will not update over others"
+            exit 0
+          fi
+          ks="${ANDROID_USER_HOME:-$HOME/.android}/debug.keystore"
+          mkdir -p "$(dirname "$ks")"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$ks"
+          sha=$(keytool -exportcert -keystore "$ks" -storepass android -alias androiddebugkey | sha256sum | cut -d' ' -f1)
+          echo "certificate SHA-256: $sha"
+          echo "WANT_CERT_SHA256=$sha" >> "$GITHUB_ENV"
       - name: Build APK
         working-directory: crates/octo-desktop
         run: cargo tauri android build --debug --apk --target aarch64
+      # Fail rather than ship an APK that cannot update over the installed one.
+      - name: Check signing key
+        if: env.WANT_CERT_SHA256 != ''
+        run: |
+          apk=$(find crates/octo-desktop/gen/android/app/build/outputs/apk -name '*.apk' | head -n1)
+          got=$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          echo "APK certificate SHA-256: $got"
+          test "$got" = "$WANT_CERT_SHA256"
       - uses: actions/upload-artifact@v4
         with:
           name: octo-android-apk
