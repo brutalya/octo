@@ -789,6 +789,17 @@ async fn join_flow(sh: &Arc<Shared>, gen_: u64, code: PairingCode, name: String)
             }
         };
         if adopted {
+            // The network lives on the relay of the code (its URL carries the relay key):
+            // keep it, or the new members stay unreachable until the relay is typed in.
+            if sh.net().relay_url.as_deref() != Some(code.relay_url.as_str()) {
+                let patch = octo_core::settings::SettingsPatch {
+                    relay_url: Some(code.relay_url.clone()),
+                    ..Default::default()
+                };
+                if let Err(e) = sh.hub.update_settings(patch) {
+                    eprintln!("octo: pairing: saving the relay failed: {e}");
+                }
+            }
             let _ = sh.cmd.send(Cmd::Reconfigure).await;
         }
     }
