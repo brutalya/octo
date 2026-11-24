@@ -9,17 +9,20 @@ export function useDeviceChats() {
   const nodes = useNodesStore((s) => s.nodes);
   const selectedId = useNodesStore((s) => s.selectedId);
   const lists = useDevicesStore((s) => s.lists);
+  const access = useDevicesStore((s) => s.access);
 
   const self = nodes.find((n) => n.is_self);
   const selfId = self?.node_id ?? 'self';
   const openId = selectedId ?? selfId;
   const multi = nodes.length > 1;
+  /** Only devices that let this one run agents are listed (this device always may). */
+  const allowed = (n: NodeInfo) => n.is_self || access[n.node_id]?.agents === true;
   // Members in the network first (server order), then this device, offline devices last.
   const order = [
     ...nodes.filter((n) => !n.is_self && n.online),
     ...nodes.filter((n) => n.is_self),
     ...nodes.filter((n) => !n.is_self && !n.online),
-  ];
+  ].filter(allowed);
   const reachable = (n: NodeInfo) => n.is_self || n.online;
 
   /** The open device's list is live; the others are the last fetched. */
@@ -31,5 +34,5 @@ export function useDeviceChats() {
     if (n && n.node_id !== openId) useNodesStore.getState().select(n.is_self ? null : n.node_id);
   };
 
-  return { nodes, self, selfId, openId, multi, order, reachable, listOf, goTo };
+  return { nodes, self, selfId, openId, multi, order, allowed, reachable, listOf, goTo };
 }

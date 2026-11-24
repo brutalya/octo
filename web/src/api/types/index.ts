@@ -24,3 +24,4 @@ export type { TrustLevel } from './TrustLevel';
 export type { RelayStatus } from './RelayStatus';
 export type { RelayCheck } from './RelayCheck';
 export type { NetworkView } from './NetworkView';
+export type { AccessView } from './AccessView';

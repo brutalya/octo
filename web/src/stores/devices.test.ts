@@ -39,11 +39,32 @@ describe('devices store', () => {
     await useDevicesStore.getState().load();
     console.log('[Step 2/2] own list from /api, the pc through the tunnel, the laptop keeps its last list');
     const urls = f.mock.calls.map((c) => c[0]);
-    expect(urls.sort()).toEqual(['/api/nodes/pc/threads', '/api/threads']);
+    expect(urls.sort()).toEqual(['/api/nodes/pc/access', '/api/nodes/pc/threads', '/api/threads']);
     const lists = useDevicesStore.getState().lists;
     expect(lists.me.map((t) => t.id)).toEqual(['mine']);
     expect(lists.pc.map((t) => t.id)).toEqual(['on-pc']);
     expect(lists.lap.map((t) => t.id)).toEqual(['cached']);
+  });
+
+  it('asks each online member what this device may do there', async () => {
+    f.mockImplementation(async (url: string) => {
+      if (url === '/api/nodes/pc/access') return new Response(JSON.stringify({ agents: true, private_files: false }));
+      if (url === '/api/nodes/vps/access') return new Response(JSON.stringify({ agents: false, private_files: false }));
+      return new Response('[]');
+    });
+    useNodesStore.setState({
+      nodes: [
+        { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+        { node_id: 'pc', name: 'pc', is_self: false, online: true, trust: 'full', agents: true },
+        { node_id: 'vps', name: 'vps', is_self: false, online: true, trust: 'public', agents: false },
+      ],
+    });
+    useDevicesStore.setState({ access: {} });
+    await useDevicesStore.getState().load();
+    expect(useDevicesStore.getState().access).toEqual({
+      pc: { agents: true, private_files: false },
+      vps: { agents: false, private_files: false },
+    });
   });
 
   it('a device that fails keeps its last list', async () => {

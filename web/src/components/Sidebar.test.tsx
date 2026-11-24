@@ -42,6 +42,7 @@ function network3() {
   });
   useDevicesStore.setState({
     lists: { lin: [t('l1', 'Server backups', 500)], me: [], lap: [t('x1', 'Hidden', 1)] },
+    access: { pc: { agents: true, private_files: true }, lin: { agents: true, private_files: true }, lap: { agents: true, private_files: true } },
   });
 }
 
@@ -57,7 +58,7 @@ beforeEach(() => {
   useNodesStore.setState({ select: real.nodeSelect });
   localStorage.clear();
   usePinsStore.setState({ pins: [] });
-  useDevicesStore.setState({ lists: {}, load: async () => {} });
+  useDevicesStore.setState({ lists: {}, access: {}, load: async () => {} });
   useThreadsStore.setState({ providers, menuOpen: false, error: null });
   f = vi.fn(async (url: string) =>
     new Response(JSON.stringify(url === '/api/network' ? network : []), { status: 200 }),
@@ -172,7 +173,19 @@ describe('Sidebar in a network', () => {
     render(<Sidebar />);
     expect(await screen.findByText('Home · 3 devices')).toBeInTheDocument();
     const headers = screen.getAllByRole('button', { name: /^(phone|pc|linux|laptop)/ }).map((b) => b.getAttribute('aria-label'));
-    expect(headers).toEqual(['pc, online', 'linux, online', 'phone, this device', 'laptop, offline']);
+    // This device has no chats here, so it is not listed.
+    expect(headers).toEqual(['pc, online', 'linux, online', 'laptop, offline']);
+  });
+
+  it('devices that do not let this one run agents are not listed; this device shows with chats', () => {
+    useDevicesStore.setState((s) => ({
+      lists: { ...s.lists, me: [t('m1', 'Phone notes', 100)] },
+      access: { ...s.access, lin: { agents: false, private_files: true } },
+    }));
+    render(<Sidebar />);
+    expect(screen.queryByRole('button', { name: 'linux, online' })).toBeNull();
+    expect(screen.queryByText('Server backups')).toBeNull();
+    expect(screen.getByRole('button', { name: 'phone, this device' })).toBeInTheDocument();
   });
 
   it('shows the 3 most recent chats per device; All chats on pc opens the list on pc', async () => {

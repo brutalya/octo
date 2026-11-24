@@ -139,7 +139,7 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
   const activeId = useThreadsStore((s) => s.activeId);
   const error = useThreadsStore((s) => s.error);
   const streaming = useChatStore((s) => s.streaming);
-  const { nodes, self, selfId, openId, multi, order, listOf, goTo } = useDeviceChats();
+  const { nodes, self, selfId, openId, multi, order, allowed, listOf, goTo } = useDeviceChats();
   const pins = usePinsStore((s) => s.pins);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** All chats screen: undefined = closed, null = every device, else that device's chip. */
@@ -221,7 +221,7 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
         const [nodeId, id] = key.split('/');
         const n = nodes.find((x) => x.node_id === nodeId);
         const t = listOf(nodeId).find((x) => x.id === id);
-        if (!t || (multi && (!n || (!n.is_self && !n.online)))) return [];
+        if (!t || (multi && (!n || !allowed(n) || (!n.is_self && !n.online)))) return [];
     return [{ n, t }];
   });
 
@@ -295,6 +295,8 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
             order.map((n) => {
               const offline = !n.is_self && !n.online;
               const chats = listOf(n.node_id);
+              // This device without chats (a phone runs no agents) is just noise here.
+              if (n.is_self && chats.length === 0) return null;
               const shut = collapsed.includes(n.node_id);
               const state = n.is_self ? 'this device' : n.online ? 'online' : 'offline';
               return (

@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import { errMsg, relativeTime, shortCwd } from '../lib/format';
 import { useThreadsStore } from '../stores/threads';
 import { useNodesStore } from '../stores/nodes';
+import { useDevicesStore } from '../stores/devices';
 import type { ModelInfo, ProviderKind, ProviderStatus, SessionSummary, Space } from '../api/types';
 
 const MODEL_PROVIDERS: ProviderKind[] = ['ollama', 'openrouter'];
@@ -174,8 +175,13 @@ function Choice({
 
 function Body({ onClose }: { onClose: () => void }) {
   const all = useThreadsStore((s) => s.providers);
-  const nodes = useNodesStore((s) => s.nodes);
+  const allNodes = useNodesStore((s) => s.nodes);
   const selectedId = useNodesStore((s) => s.selectedId);
+  const access = useDevicesStore((s) => s.access);
+  // Devices that let this one run agents (this device always may; the open one stays listed).
+  const nodes = allNodes.filter(
+    (n) => n.is_self || n.node_id === selectedId || access[n.node_id]?.agents === true,
+  );
   const self = nodes.find((n) => n.is_self);
   const openId = selectedId ?? self?.node_id ?? null;
   // The device the chat runs on: the open one unless another is picked here.
