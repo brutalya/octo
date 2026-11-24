@@ -156,6 +156,9 @@ enum PairMsg {
         /// Present only when the host trusts the joiner fully.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         private_key: Option<WirePrivate>,
+        /// The host's name for the network, if it set one (older hosts omit it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network_name: Option<String>,
     },
 }
 
@@ -259,6 +262,7 @@ pub struct HostPending {
     peer_name: String,
     sas: String,
     deadline: Instant,
+    network_name: Option<String>,
 }
 
 impl PairHost {
@@ -345,6 +349,7 @@ impl PairHost {
                         peer_name,
                         sas,
                         deadline: self.deadline,
+                        network_name: None,
                     });
                 }
                 _ => {}
@@ -362,6 +367,11 @@ impl HostPending {
     }
     pub fn peer_node_id(&self) -> NodeId {
         self.peer
+    }
+
+    /// The network name to hand to the joiner with the welcome.
+    pub fn set_network_name(&mut self, name: Option<String>) {
+        self.network_name = name;
     }
 
     /// Host user's decision. Waits for the joiner's own confirmation first, so the network key
@@ -405,6 +415,7 @@ impl HostPending {
                 .collect(),
             network_key: HEXLOWER.encode(membership.network_key().as_bytes()),
             private_key,
+            network_name: self.network_name.clone(),
         };
         // Add the member only once the welcome is on its way; a failed send leaves no trace.
         let f = seal(&mut self.t, &welcome)?;
@@ -483,8 +494,13 @@ impl JoinPending {
     }
 
     /// Joiner user's decision; on accept waits for the host's welcome and adopts the network.
-    /// Refuses (and aborts) if this node already belongs to a network with members.
-    pub async fn finish(mut self, accept: bool, membership: &mut Membership) -> Result<()> {
+    /// Refuses (and aborts) if this node already belongs to a network with members. Returns the
+    /// host's name for the network, if it sent a valid one.
+    pub async fn finish(
+        mut self,
+        accept: bool,
+        membership: &mut Membership,
+    ) -> Result<Option<String>> {
         if !accept || !membership.members().is_empty() {
             let f = seal(&mut self.t, &PairMsg::Abort)?;
             let _ = self.relay.send(self.host, f).await;
@@ -503,6 +519,7 @@ impl JoinPending {
                 mut members,
                 network_key,
                 private_key,
+                network_name,
             } => {
                 host.validate()?;
                 let mut host = host;
@@ -535,7 +552,7 @@ impl JoinPending {
                 members.push(host);
                 membership.adopt(NetworkKey::from_bytes(key), members, private)?;
                 self.relay.shutdown().await;
-                Ok(())
+                Ok(network_name.filter(|n| !n.trim().is_empty() && valid_display_name(n)))
             }
             _ => Err(NetError::Pairing("host rejected".into())),
         }

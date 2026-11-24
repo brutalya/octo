@@ -847,9 +847,10 @@ fn set_pending(sh: &Shared, gen_: u64, sas: &str, peer_name: &str) -> oneshot::R
 }
 
 async fn host_flow(sh: &Arc<Shared>, gen_: u64, host: &mut PairHost) {
-    let Ok(pending) = host.wait_peer().await else {
+    let Ok(mut pending) = host.wait_peer().await else {
         return;
     };
+    pending.set_network_name(sh.hub.settings().network_name);
     let rx = set_pending(sh, gen_, pending.sas(), pending.peer_name());
     let (accept, trust, agents) = match tokio::time::timeout(PAIR_TTL, rx).await {
         Ok(Ok(d)) => d,
@@ -903,7 +904,7 @@ async fn join_flow(sh: &Arc<Shared>, gen_: u64, code: PairingCode, name: String)
         _ => (false, false),
     };
     let mut scratch = sh.membership().detached();
-    if jp.finish(accept, &mut scratch).await.is_ok() {
+    if let Ok(network_name) = jp.finish(accept, &mut scratch).await {
         let adopted = {
             let mut g = sh.members.write().unwrap_or_else(|e| e.into_inner());
             match g.adopt_from(&scratch) {
@@ -920,15 +921,16 @@ async fn join_flow(sh: &Arc<Shared>, gen_: u64, code: PairingCode, name: String)
         };
         if adopted {
             // The network lives on the relay of the code (its URL carries the relay key):
-            // keep it, or the new members stay unreachable until the relay is typed in.
-            if sh.net().relay_url.as_deref() != Some(code.relay_url.as_str()) {
-                let patch = octo_core::settings::SettingsPatch {
-                    relay_url: Some(code.relay_url.clone()),
-                    ..Default::default()
-                };
-                if let Err(e) = sh.hub.update_settings(patch) {
-                    eprintln!("octo: pairing: saving the relay failed: {e}");
-                }
+            // keep it, or the new members stay unreachable until the relay is typed in. The
+            // host's name for the network comes with it (none: the UI shows the relay host).
+            let relay_changed = sh.net().relay_url.as_deref() != Some(code.relay_url.as_str());
+            let patch = octo_core::settings::SettingsPatch {
+                relay_url: relay_changed.then(|| code.relay_url.clone()),
+                network_name: Some(network_name.unwrap_or_default()),
+                ..Default::default()
+            };
+            if let Err(e) = sh.hub.update_settings(patch) {
+                eprintln!("octo: pairing: saving the relay failed: {e}");
             }
             let _ = sh.cmd.send(Cmd::Reconfigure).await;
         }
