@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { useNodesStore } from './nodes';
 import type { AccessView, Thread } from '../api/types';
 
@@ -47,8 +47,13 @@ export const useDevicesStore = create<DevicesState>((set, get) => ({
         stale.map(async (n) => {
           try {
             return [n.node_id, await api.accessOn(n.node_id)] as const;
-          } catch {
-            return null;
+          } catch (e) {
+            // A device older than 0.2.11 refuses the question itself (403): listed as before,
+            // and it still enforces its own rules on every request.
+            if (e instanceof ApiError && e.status === 403) {
+              return [n.node_id, { agents: true, private_files: false }] as const;
+            }
+            return null; // unreachable now: asked again on the next load
           }
         }),
       );
