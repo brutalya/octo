@@ -166,6 +166,17 @@ export const api = {
   deleteFile: async (space: Space, path: string): Promise<void> => {
     await request(`/files/${space}?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
   },
+  // The same file calls on a given device (null = this one), for the shared file tree.
+  filesOn: async (nodeId: string | null, space: Space): Promise<FileEntry[]> =>
+    (await requestAt(baseOf(nodeId), `/files/${space}`)).json(),
+  fileBlobOn: async (nodeId: string | null, space: Space, path: string): Promise<Blob> =>
+    (await requestAt(baseOf(nodeId), `/files/${space}/content?path=${encodeURIComponent(path)}`)).blob(),
+  renameFileOn: async (nodeId: string | null, space: Space, path: string, newPath: string): Promise<void> => {
+    await requestAt(baseOf(nodeId), `/files/${space}?path=${encodeURIComponent(path)}`, jsonInit('PATCH', { new_path: newPath }));
+  },
+  deleteFileOn: async (nodeId: string | null, space: Space, path: string): Promise<void> => {
+    await requestAt(baseOf(nodeId), `/files/${space}?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+  },
   setApproval: async (id: string, approval: Approval): Promise<Thread> =>
     (await request(`/threads/${id}`, jsonInit('PATCH', { approval }))).json(),
   deleteThread: async (id: string): Promise<void> => {

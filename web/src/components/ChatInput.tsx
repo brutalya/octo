@@ -1,13 +1,15 @@
-import { useCallback, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
-import { ArrowUp, Paperclip, Square, Upload, X } from 'lucide-react';
+import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
+import { ArrowUp, Folder, Paperclip, Square, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
-import { useClickOutside } from '../lib/useClickOutside';
-import { pastedName, uniqueName } from '../lib/files';
+import { useAttachStore } from '../stores/attach';
+import { attachDir, pastedName, uniqueName } from '../lib/files';
 import type { AttachmentRef, Space } from '../api/types';
 
 interface Props {
   space?: Space;
+  /** Title of the chat: files sent from here are kept in a folder named after it. */
+  title?: string | null;
   streaming: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -16,64 +18,26 @@ interface Props {
   onStop: () => void;
 }
 
-const EMPTY: never[] = [];
-
-function Picker({
-  space,
-  picked,
-  onPick,
-  onUpload,
-}: {
-  space: Space;
-  picked: AttachmentRef[];
-  onPick: (path: string) => void;
-  onUpload: () => void;
-}) {
-  const entries = useFilesStore((s) => s.entries[space] ?? EMPTY);
-  const files = entries.filter((e) => e.kind === 'file' && !picked.some((a) => a.path === e.path));
-  return (
-    <div
-      role="menu"
-      className="absolute bottom-full left-0 z-10 mb-1 max-h-60 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white p-1 shadow-lg"
-    >
-      <button
-        role="menuitem"
-        onClick={onUpload}
-        className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
-      >
-        <Upload size={14} className="text-slate-500" />
-        Upload file
-      </button>
-      {files.length > 0 && <div className="my-1 border-t border-slate-200" />}
-      {files.map((f) => (
-        <button
-          key={f.path}
-          role="menuitem"
-          onClick={() => onPick(f.path)}
-          className="block w-full truncate rounded px-2 py-1 text-left text-sm text-slate-700 hover:bg-slate-100"
-        >
-          {f.path}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export function ChatInput({ space, streaming, disabled, placeholder, onSend, onStop }: Props) {
+export function ChatInput({ space, title, streaming, disabled, placeholder, onSend, onStop }: Props) {
   const [value, setValue] = useState('');
   const [attachments, setAttachments] = useState<AttachmentRef[]>([]);
-  const [picking, setPicking] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [showPicked, setShowPicked] = useState(false);
+  const fromFiles = useAttachStore((s) => s.fromFiles);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Picked in Files for a chat of this space (another space's picks wait for their own chat).
+  const picked = fromFiles.filter((p) => p.space === space);
 
   const [uploading, setUploading] = useState<string[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  /** Uploads to the space root under names that do not overwrite anything, then attaches. */
+  /** Uploads to the chat's attachments folder under names that do not overwrite anything, then attaches. */
   const uploadAndAttach = async (files: File[]) => {
     if (!space || !files.length) return;
     const store = useFilesStore.getState();
-    const taken = new Set((store.entries[space] ?? []).map((e) => e.path));
+    const dir = attachDir(title);
+    const taken = new Set(
+      (store.entries[space] ?? []).filter((e) => e.path.startsWith(dir + '/')).map((e) => e.path.slice(dir.length + 1)),
+    );
     const named = files.map((f) => {
       const name = uniqueName(f.name, taken);
       taken.add(name);
@@ -83,9 +47,9 @@ export function ChatInput({ space, streaming, disabled, placeholder, onSend, onS
     setUploadError(null);
     setUploading((cur) => [...cur, ...names]);
     try {
-      const stored = await store.upload(space, '', named);
+      const stored = await store.upload(space, dir, named);
       for (const e of stored) if (e.kind === 'file') add({ space, path: e.path });
-      const failed = names.filter((n) => !stored.some((e) => e.path === n));
+      const failed = names.filter((n) => !stored.some((e) => e.path === `${dir}/${n}`));
       if (failed.length) setUploadError(`${failed.join(', ')}: ${useFilesStore.getState().error ?? 'upload failed'}`);
     } finally {
       setUploading((cur) => cur.filter((n) => !names.includes(n)));
@@ -99,22 +63,23 @@ export function ChatInput({ space, streaming, disabled, placeholder, onSend, onS
     void uploadAndAttach(files.map((f) => new File([f], pastedName(f.type), { type: f.type })));
   };
 
-  const closePicker = useCallback(() => setPicking(false), []);
-  useClickOutside(ref, picking, closePicker);
-
   const add = (a: AttachmentRef) =>
     setAttachments((cur) => (cur.some((x) => x.space === a.space && x.path === a.path) ? cur : [...cur, a]));
 
   const submit = () => {
     const text = value.trim();
     if (!text || streaming || disabled) return;
-    const sent = attachments;
+    const own = attachments;
+    const fromPanel = picked.filter((p) => !own.some((a) => a.path === p.path));
     setValue('');
     setAttachments([]);
-    void Promise.resolve(onSend(text, sent)).then((ok) => {
+    useAttachStore.getState().clear();
+    setShowPicked(false);
+    void Promise.resolve(onSend(text, [...own, ...fromPanel])).then((ok) => {
       if (ok !== false) return;
       setValue((cur) => cur || text);
-      setAttachments((cur) => (cur.length ? cur : sent));
+      setAttachments((cur) => (cur.length ? cur : own));
+      if (fromPanel.length) useAttachStore.getState().add(fromPanel);
     });
   };
 
@@ -165,28 +130,61 @@ export function ChatInput({ space, streaming, disabled, placeholder, onSend, onS
           {uploadError}
         </span>
       )}
-      {attachments.length > 0 && (
+      {(attachments.length > 0 || picked.length > 0) && (
         <div className="flex flex-wrap gap-1">
           {attachments.map((a) => (
             <span
               key={`${a.space}:${a.path}`}
-              className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
+              className="flex max-w-56 items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600"
             >
-              <span title={a.path}>{a.path.split('/').pop() || a.path}</span>
+              <span title={a.path} className="truncate">
+                {a.path.split('/').pop() || a.path}
+              </span>
               <button
                 aria-label={`Remove ${a.path}`}
                 onClick={() => setAttachments((cur) => cur.filter((x) => x !== a))}
-                className="text-slate-400 hover:text-slate-700 max-md:p-3"
+                className="shrink-0 text-slate-400 hover:text-slate-700 max-md:p-3"
               >
                 <X size={12} />
               </button>
             </span>
           ))}
+          {picked.length > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-slate-700">
+              <button
+                aria-expanded={showPicked}
+                onClick={() => setShowPicked((v) => !v)}
+                className="flex items-center gap-1 max-md:py-2"
+              >
+                <Folder size={12} className="text-indigo-500" />
+                {picked.length === 1 ? '1 file from Files' : `${picked.length} files from Files`}
+              </button>
+              <button
+                aria-label="Remove files from Files"
+                onClick={() => {
+                  useAttachStore.getState().clear();
+                  setShowPicked(false);
+                }}
+                className="text-slate-400 hover:text-slate-700 max-md:p-3"
+              >
+                <X size={12} />
+              </button>
+            </span>
+          )}
         </div>
+      )}
+      {showPicked && picked.length > 0 && (
+        <ul aria-label="Files from Files" className="flex flex-col gap-0.5 px-1 text-xs text-slate-500">
+          {picked.map((p) => (
+            <li key={p.path} className="truncate" title={p.path}>
+              {p.path}
+            </li>
+          ))}
+        </ul>
       )}
       <div className="flex items-end gap-1.5 rounded-2xl border border-slate-200 bg-white p-1.5 focus-within:border-indigo-300">
         {space && (
-          <div ref={ref} className="relative">
+          <>
             <input
               ref={fileInput}
               type="file"
@@ -201,29 +199,12 @@ export function ChatInput({ space, streaming, disabled, placeholder, onSend, onS
             />
             <button
               aria-label="Attach"
-              onClick={() => {
-                if (!picking) void useFilesStore.getState().load(space);
-                setPicking((v) => !v);
-              }}
+              onClick={() => fileInput.current?.click()}
               className="rounded-xl p-2.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
             >
               <Paperclip size={16} />
             </button>
-            {picking && (
-              <Picker
-                space={space}
-                picked={attachments}
-                onPick={(path) => {
-                  add({ space, path });
-                  setPicking(false);
-                }}
-                onUpload={() => {
-                  setPicking(false);
-                  fileInput.current?.click();
-                }}
-              />
-            )}
-          </div>
+          </>
         )}
         <textarea
           value={value}

@@ -62,6 +62,7 @@ export function App() {
       <ChatInput
         key={`input-${activeId}`}
         space={space}
+        title={active?.title}
         streaming={streaming}
         disabled={offline}
         placeholder={active ? `Message ${active.provider}` : undefined}

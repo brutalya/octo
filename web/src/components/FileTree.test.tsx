@@ -4,8 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { FileTree } from './FileTree';
 import { useFilesStore } from '../stores/files';
 
-const rename = vi.fn(async () => {});
-const remove = vi.fn(async () => {});
+const renameEverywhere = vi.fn(async () => {});
+const removeEverywhere = vi.fn(async () => {});
+const getHere = vi.fn(async () => 1);
 const mkdir = vi.fn(async () => {});
 const open = vi.fn(async () => {});
 
@@ -20,7 +21,8 @@ beforeEach(() => {
         { path: 'top.txt', kind: 'file', size: 1, modified: 1 },
       ],
     },
-    rename, remove, mkdir, open,
+    others: { private: [], public: [] },
+    renameEverywhere, removeEverywhere, getHere, mkdir, open,
   });
 });
 
@@ -45,7 +47,7 @@ describe('FileTree', () => {
     render(<FileTree space="public" />);
     fireEvent.contextMenu(screen.getByText('top.txt'));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
-    expect(remove).toHaveBeenCalledWith('public', 'top.txt');
+    expect(removeEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'top.txt', here: true, on: [] }));
   });
 
   it('context menu renames inline', async () => {
@@ -55,7 +57,7 @@ describe('FileTree', () => {
     const input = screen.getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.type(input, 'next.txt{Enter}');
-    expect(rename).toHaveBeenCalledWith('public', 'top.txt', 'next.txt');
+    expect(renameEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'top.txt' }), 'next.txt');
   });
 
   it('renaming a nested file keeps its directory', async () => {
@@ -66,7 +68,7 @@ describe('FileTree', () => {
     const input = screen.getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.type(input, 'b.md{Enter}');
-    expect(rename).toHaveBeenCalledWith('public', 'docs/a.md', 'docs/b.md');
+    expect(renameEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'docs/a.md' }), 'docs/b.md');
   });
 
   it('new folder inside a directory', async () => {
@@ -110,5 +112,84 @@ describe('FileTree', () => {
     const btn = screen.getAllByRole('button', { name: 'Actions' })[0];
     expect(btn.className).toMatch(/group-hover:flex/);
   });
-});
 
+  describe('across devices', () => {
+    const fromLinux = () =>
+      useFilesStore.setState({
+        others: {
+          private: [],
+          public: [{ id: 'lin', name: 'linux', entries: [
+            { path: 'docs/a.md', kind: 'file', size: 3, modified: 1 },
+            { path: 'report.pdf', kind: 'file', size: 2048, modified: 1 },
+          ] }],
+        },
+      });
+
+    it('a file only on another device is marked with that device and offers Get here', async () => {
+      console.log('[Step 1/3] pc is open; linux also has report.pdf');
+      fromLinux();
+      render(<FileTree space="public" device="pc" />);
+      console.log('[Step 2/3] the row names linux; clicking it opens its menu instead of a preview');
+      const row = screen.getByRole('button', { name: /report\.pdf/ });
+      expect(row).toHaveTextContent('linux');
+      expect(screen.getAllByRole('img', { name: 'Only on other devices' })).toHaveLength(1);
+      await userEvent.click(screen.getByText('report.pdf'));
+      expect(open).not.toHaveBeenCalled();
+      expect(screen.getByRole('menu')).toHaveTextContent('not on pc');
+      console.log('[Step 3/3] Get on pc copies it here');
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Get on pc' }));
+      expect(getHere).toHaveBeenCalledWith('public', [expect.objectContaining({ path: 'report.pdf', on: [{ id: 'lin', name: 'linux' }] })]);
+    });
+
+    it('a file on several devices is deleted on all of them', async () => {
+      fromLinux();
+      render(<FileTree space="public" device="pc" />);
+      await userEvent.click(screen.getByText('docs'));
+      fireEvent.contextMenu(screen.getByText('a.md'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Delete on all devices' }));
+      expect(removeEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'docs/a.md', here: true, on: [{ id: 'lin', name: 'linux' }] }));
+    });
+
+    it('the space menu gets everything missing here', async () => {
+      fromLinux();
+      render(<FileTree space="public" device="pc" />);
+      await userEvent.click(screen.getByRole('button', { name: 'Public actions' }));
+      expect(screen.getByRole('menu')).toHaveTextContent('3 files · 1 not on pc');
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Get all on pc' }));
+      expect(getHere).toHaveBeenCalledWith('public', [expect.objectContaining({ path: 'report.pdf' })]);
+    });
+  });
+
+  describe('picking', () => {
+    it('a folder checkbox picks the files inside; the root picks all', async () => {
+      const onSelect = vi.fn();
+      render(<FileTree space="public" selected={new Set(['docs/a.md'])} onSelect={onSelect} />);
+      expect(screen.getByRole('checkbox', { name: 'Select docs' })).toBeChecked();
+      const all = screen.getByRole('checkbox', { name: 'Select all in Public' }) as HTMLInputElement;
+      expect(all.indeterminate).toBe(true);
+      await userEvent.click(all);
+      expect(onSelect).toHaveBeenCalledWith(['docs/a.md', 'top.txt'], true);
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Select docs' }));
+      expect(onSelect).toHaveBeenLastCalledWith(['docs/a.md'], false);
+    });
+
+    it('Attach to chat is offered when a chat can take the file', async () => {
+      const onAttach = vi.fn();
+      render(<FileTree space="public" onAttach={onAttach} />);
+      fireEvent.contextMenu(screen.getByText('top.txt'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Attach to chat' }));
+      expect(onAttach).toHaveBeenCalledWith(expect.objectContaining({ path: 'top.txt' }));
+    });
+
+    it('Upload here uploads into that folder', async () => {
+      const upload = vi.fn(async () => []);
+      useFilesStore.setState({ upload });
+      render(<FileTree space="public" />);
+      fireEvent.contextMenu(screen.getByText('docs'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Upload here' }));
+      const f = new File(['x'], 'x.txt');
+      await userEvent.upload(screen.getByLabelText('Upload to folder'), f);
+      expect(upload).toHaveBeenCalledWith('public', 'docs', [f]);
+    });
+  });
+});

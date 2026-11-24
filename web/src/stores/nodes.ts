@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { api, nodeGeneration, setNodeBase } from '../api/client';
 import { useThreadsStore } from './threads';
 import { useFilesStore } from './files';
+import { useAttachStore } from './attach';
 import { useChatStore } from './chat';
 import type { NodeInfo } from '../api/types';
 
@@ -74,7 +75,9 @@ export const useNodesStore = create<NodesState>((set, get) => ({
     useChatStore.getState().reset();
     useThreadsStore.setState({ threads: [], activeId: null, error: null });
     useFilesStore.getState().closePreview();
-    useFilesStore.setState({ entries: { private: [], public: [] }, error: null });
+    useFilesStore.setState({ entries: { private: [], public: [] }, others: { private: [], public: [] }, error: null });
+    // Picked files are paths on the device that was open.
+    useAttachStore.getState().clear();
     void useThreadsStore.getState().load();
     void useThreadsStore.getState().loadProviders();
   },

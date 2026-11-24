@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pastedName, uniqueName } from './files';
+import { attachDir, pastedName, uniqueName } from './files';
 
 describe('uniqueName', () => {
   it('keeps a free name', () => {
@@ -24,5 +24,20 @@ describe('pastedName', () => {
     expect(pastedName('image/png', at)).toBe('pasted-20261122-090507.png');
     expect(pastedName('image/jpeg', at)).toBe('pasted-20261122-090507.jpg');
     expect(pastedName('application/octet-stream', at)).toBe('pasted-20261122-090507');
+  });
+});
+
+describe('attachDir', () => {
+  const day = new Date(2026, 10, 24, 9, 5);
+  it('is the date and the chat title under Attachments', () => {
+    expect(attachDir('Как дела? ты кто?', day)).toBe('Attachments/2026-11-24 Как дела ты кто');
+  });
+  it('drops characters a folder name cannot have and keeps it short', () => {
+    expect(attachDir('a/b\\c: <d>  ', day)).toBe('Attachments/2026-11-24 a b c d');
+    expect(attachDir('x'.repeat(200), day)).toBe(`Attachments/2026-11-24 ${'x'.repeat(60)}`);
+    expect(attachDir('...', day)).toBe('Attachments/2026-11-24');
+  });
+  it('without a title it is just the date', () => {
+    expect(attachDir(null, day)).toBe('Attachments/2026-11-24');
   });
 });
