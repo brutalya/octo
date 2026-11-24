@@ -50,15 +50,22 @@ const DEFAULT_NAME: &str = "octo";
 pub struct NodeOpts {
     /// How long a request waits for a session with the target node.
     pub connect_timeout: Duration,
+    /// Sending a request: a piece of it (head, 1 MB of body, end) that does not go out within
+    /// this long means the session stalled (a lost frame); the request is sent again once.
+    pub stall_timeout: Duration,
 }
 
 impl Default for NodeOpts {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
+            stall_timeout: Duration::from_secs(20),
         }
     }
 }
+
+/// Request bodies go out in pieces this size, each within `stall_timeout`.
+const SEND_PIECE: usize = 1 << 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NodeError {
@@ -405,21 +412,18 @@ impl Node {
         if !self.sh.is_member(&peer) {
             return Err(NodeError::UnknownNode);
         }
-        let (stream, link) = self.sh.open(peer).await?;
-        let mut f = Framed::new(stream);
-        let sent = async {
-            f.send_head(&head).await?;
-            f.write(&body).await?;
-            f.finish().await
-        }
-        .await;
-        if sent.is_err() {
-            let _ = self.sh.cmd.send(Cmd::Reset(peer, Some(link))).await;
-            return Err(NodeError::Unreachable);
-        }
+        let (mut f, link) = self.send_request(peer, &head, &body).await?;
         let resp: RespHead = match tokio::time::timeout(HEAD_TIMEOUT, f.read_head()).await {
             Ok(Ok(h)) => h,
-            _ => {
+            r => {
+                let why = match r {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "no answer in time".into(),
+                };
+                eprintln!(
+                    "octo: tunnel to {peer}: {} {}: {why}",
+                    head.method, head.uri
+                );
                 let _ = self.sh.cmd.send(Cmd::Reset(peer, Some(link))).await;
                 return Err(NodeError::Unreachable);
             }
@@ -466,6 +470,46 @@ impl Node {
 
     /// Changes a member's trust (local policy). Full -> public rotates the private key and sends
     /// the new one to the remaining full members; public -> full sends the current key.
+    /// Opens a stream to `peer` and sends the request. A send that stalls (a frame lost on the
+    /// way) or breaks is retried once on a fresh session: the target only acts on a request
+    /// once it has all of it, so a request that did not get through was never carried out.
+    async fn send_request(
+        &self,
+        peer: NodeId,
+        head: &ReqHead,
+        body: &[u8],
+    ) -> Result<(Framed, Link), NodeError> {
+        let stall = self.sh.opts.stall_timeout;
+        let within = |r: Result<Result<(), NetError>, tokio::time::error::Elapsed>| match r {
+            Ok(r) => r,
+            Err(_) => Err(NetError::Timeout),
+        };
+        for attempt in 1..=2 {
+            let (stream, link) = self.sh.open(peer).await?;
+            let f = Framed::new(stream);
+            let sent = async {
+                within(tokio::time::timeout(stall, f.send_head(head)).await)?;
+                for piece in body.chunks(SEND_PIECE) {
+                    within(tokio::time::timeout(stall, f.write(piece)).await)?;
+                }
+                within(tokio::time::timeout(stall, f.finish()).await)
+            }
+            .await;
+            match sent {
+                Ok(()) => return Ok((f, link)),
+                Err(e) => {
+                    eprintln!(
+                        "octo: tunnel to {peer}: sending {} {} failed (attempt {attempt}): {e}",
+                        head.method, head.uri
+                    );
+                    f.reset().await;
+                    let _ = self.sh.cmd.send(Cmd::Reset(peer, Some(link))).await;
+                }
+            }
+        }
+        Err(NodeError::Unreachable)
+    }
+
     pub async fn set_trust(&self, id: &str, trust: Trust) -> Result<(), NodeError> {
         let peer = NodeId::parse(id).map_err(|_| NodeError::UnknownNode)?;
         let (epoch, key, to) = {
@@ -1416,6 +1460,13 @@ impl Actor {
                 self.open_peer(from).await;
             }
             Ok(Handled::Established) => self.open_peer(from).await,
+            // Frames lost on the way (a relay drops when a queue is full) leave holes in the
+            // streams: their data would arrive cut or they would wait forever. Start over, so
+            // requests fail cleanly and are sent again on a fresh session.
+            Ok(Handled::Data(_)) if self.sessions.take_gap(&from) => {
+                eprintln!("octo: frames from a peer were lost on the way, resetting its session");
+                self.drop_peer(&from);
+            }
             Ok(Handled::Data(d)) => match d.split_first() {
                 Some((&PLAIN_MUX, rest)) => {
                     let lost = self

@@ -345,3 +345,32 @@ fn stale_init_does_not_wedge_tie_break_and_forget_clears_state() {
         Handled::Reply(_)
     ));
 }
+
+/// The session survives a lost frame, but says so: whatever was carried on top (the stream
+/// multiplexer) has a hole and must start over.
+#[test]
+fn a_lost_frame_is_reported_once() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let f0 = a.encrypt(idb, b"0").unwrap();
+    let _lost = a.encrypt(idb, b"1").unwrap();
+    let f2 = a.encrypt(idb, b"2").unwrap();
+    let f3 = a.encrypt(idb, b"3").unwrap();
+    b.handle(&mb, ida, &f0).unwrap();
+    assert!(!b.take_gap(&ida), "in order: no gap");
+    assert!(matches!(b.handle(&mb, ida, &f2).unwrap(), Handled::Data(d) if d == b"2"));
+    assert!(b.take_gap(&ida), "frame 1 never came");
+    assert!(!b.take_gap(&ida), "reported once");
+    b.handle(&mb, ida, &f3).unwrap();
+    assert!(!b.take_gap(&ida));
+}
+
+#[test]
+fn a_lost_first_frame_is_a_gap_too() {
+    let ((mut a, ma, ida), (mut b, mb, idb)) = pair();
+    establish(&mut a, &ma, &mut b, &mb, ida, idb);
+    let _lost = a.encrypt(idb, b"0").unwrap();
+    let f1 = a.encrypt(idb, b"1").unwrap();
+    b.handle(&mb, ida, &f1).unwrap();
+    assert!(b.take_gap(&ida));
+}
