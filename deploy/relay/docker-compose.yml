@@ -1,7 +1,9 @@
 # Octo relay behind Nginx Proxy Manager. In NPM forward to http://octo-relay:7443 (Websockets ON).
 services:
   octo-relay:
-    image: ghcr.io/OWNER/REPO-relay:main   # replace OWNER/REPO with the GitHub repository path (lowercase)
+    # Replace OWNER/REPO with the GitHub repository path (lowercase). :latest is the newest
+    # release (what the updater below follows); :main follows every merge, :0.2.10 pins one.
+    image: ghcr.io/OWNER/REPO-relay:latest
     container_name: octo-relay
     restart: unless-stopped
     # Private relay: only nodes whose relay URL has ?key=<secret> may connect. The secret is
@@ -17,6 +19,41 @@ services:
     #   - "7443:7443"
     networks:
       - npm
+
+  # Keeps octo-relay on the newest release: every CHECK_EVERY it pulls the image and recreates
+  # the relay only if the image changed (the secret stays in the volume). AUTO_UPDATE: "false"
+  # = update by hand (docker compose pull && docker compose up -d). Uses the official Docker CLI
+  # image and the Docker socket, nothing else. Old relay images stay; remove them with
+  # docker image ls / docker image rm when you like.
+  updater:
+    image: docker:27-cli
+    container_name: octo-relay-updater
+    restart: unless-stopped
+    environment:
+      AUTO_UPDATE: "true"
+      CHECK_EVERY: "6h"
+    working_dir: /compose
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # This folder (docker-compose.yml, .env), so the relay is recreated exactly as configured.
+      - .:/compose:ro
+      # Only while the image is private on GHCR: your `docker login ghcr.io` credentials.
+      # Not needed once the package is public (GitHub: Packages, octo-relay, settings).
+      # - ${HOME}/.docker/config.json:/root/.docker/config.json:ro
+    command:
+      - sh
+      - -c
+      - |
+        # The compose project this container belongs to (the folder name on the host).
+        project=$$(docker inspect "$$HOSTNAME" --format '{{ index .Config.Labels "com.docker.compose.project" }}')
+        while :; do
+          if [ "$$AUTO_UPDATE" = "true" ]; then
+            echo "$$(date -u +%FT%TZ) checking for a new relay image"
+            docker compose -p "$$project" pull octo-relay &&
+              docker compose -p "$$project" up -d octo-relay
+          fi
+          sleep "$$CHECK_EVERY"
+        done
 
 volumes:
   relay-data:
