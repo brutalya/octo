@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { NewThreadDialog } from './NewThreadDialog';
 import { useThreadsStore } from '../stores/threads';
+import { useNodesStore } from '../stores/nodes';
 import type { ProviderStatus } from '../api/types';
 
 const providers: ProviderStatus[] = [
@@ -35,10 +36,12 @@ beforeEach(() => {
   });
   vi.stubGlobal('fetch', fetchMock);
   useThreadsStore.setState({ providers, menuOpen: true, create, importSession });
+  useNodesStore.setState({ nodes: [], selectedId: null, select: realNodeSelect });
 });
+const realNodeSelect = useNodesStore.getState().select;
 afterEach(() => vi.unstubAllGlobals());
 
-const dialog = () => screen.getByRole('dialog', { name: 'New thread' });
+const dialog = () => screen.getByRole('dialog', { name: 'New chat' });
 const assistant = (name: RegExp) => within(screen.getByRole('radiogroup', { name: 'Assistant' })).getByRole('radio', { name });
 const space = (name: RegExp) => within(screen.getByRole('radiogroup', { name: 'Space' })).getByRole('radio', { name });
 
@@ -125,5 +128,48 @@ describe('NewThreadDialog', () => {
     useThreadsStore.setState({ menuOpen: true });
     await userEvent.click(await screen.findByRole('button', { name: 'Close' }));
     expect(useThreadsStore.getState().menuOpen).toBe(false);
+  });
+});
+
+describe('NewThreadDialog in a network', () => {
+  const nodes = [
+    { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+    { node_id: 'pc', name: 'pc', is_self: false, online: true, trust: 'full' as const, agents: true },
+    { node_id: 'lin', name: 'linux', is_self: false, online: true, trust: 'full' as const, agents: true },
+    { node_id: 'lap', name: 'laptop', is_self: false, online: false, trust: 'full' as const, agents: true },
+  ];
+  const linux: ProviderStatus[] = [{ kind: 'ollama', installed: true, version: null, is_local: true }];
+
+  it('starts on the open device; another device shows its own assistants and the chat starts there', async () => {
+    console.log('[Step 1/3] pc is open, the picker shows it, offline laptop cannot be picked');
+    const select = vi.fn();
+    useNodesStore.setState({ nodes, selectedId: 'pc', select });
+    fetchMock.mockImplementation(async (url: string) =>
+      new Response(JSON.stringify(url === '/api/nodes/lin/providers' ? linux : models)),
+    );
+    render(<NewThreadDialog />);
+    const device = screen.getByRole('combobox', { name: 'Device' });
+    expect(device).toHaveValue('pc');
+    expect(within(device).getByRole('option', { name: 'laptop · offline' })).toBeDisabled();
+    expect(assistant(/Claude Code/)).toBeInTheDocument();
+
+    console.log('[Step 2/3] pick linux: only its assistant is offered');
+    await userEvent.selectOptions(device, 'lin');
+    await waitFor(() => expect(screen.queryByRole('radio', { name: /Claude Code/ })).toBeNull());
+    expect(assistant(/Ollama/)).toBeChecked();
+    expect(select).not.toHaveBeenCalled();
+
+    console.log('[Step 3/3] start: switch to linux, then create there');
+    await userEvent.click(await screen.findByRole('option', { name: 'Llama 3 8B' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Start on linux' }));
+    expect(select).toHaveBeenCalledWith('lin');
+    expect(create).toHaveBeenCalledWith('ollama', 'public', 'confirm', 'llama3:8b');
+  });
+
+  it('one device: no picker', () => {
+    useNodesStore.setState({ nodes: [nodes[0]], selectedId: null });
+    render(<NewThreadDialog />);
+    expect(screen.queryByRole('combobox', { name: 'Device' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Start' })).toBeInTheDocument();
   });
 });

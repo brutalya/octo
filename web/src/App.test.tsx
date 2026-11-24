@@ -120,7 +120,7 @@ describe('App orientation', () => {
     useThreadsStore.setState({ threads: [], activeId: null } as never);
     render(<App />);
     await userEvent.click(screen.getByRole('button', { name: 'Start a thread' }));
-    expect(screen.getByRole('dialog', { name: 'New thread' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'New chat' })).toBeInTheDocument();
   });
 
   it('phone: starting a thread opens the new thread dialog directly', async () => {
@@ -128,7 +128,7 @@ describe('App orientation', () => {
     useThreadsStore.setState({ threads: [], activeId: null } as never);
     render(<App />);
     await userEvent.click(screen.getByRole('button', { name: 'Start a thread' }));
-    expect(screen.getByRole('dialog', { name: 'New thread' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'New chat' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Menu' })).toBeNull();
   });
 
@@ -136,9 +136,9 @@ describe('App orientation', () => {
     mockWidth(375);
     render(<App />);
     await userEvent.click(screen.getByRole('button', { name: 'Menu' }));
-    await userEvent.click(screen.getByRole('button', { name: 'New thread' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New chat' }));
     expect(screen.queryByRole('dialog', { name: 'Menu' })).toBeNull();
-    expect(screen.getByRole('dialog', { name: 'New thread' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'New chat' })).toBeInTheDocument();
   });
 
   it('phone: the top bar names the open thread', () => {
