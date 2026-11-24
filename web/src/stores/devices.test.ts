@@ -87,3 +87,42 @@ describe('pins store', () => {
     expect(usePinsStore.getState().pins).toEqual([]);
   });
 });
+
+describe('access is asked rarely', () => {
+  const pc = { node_id: 'pc', name: 'pc', is_self: false, online: true, trust: 'full' as const, agents: true };
+  const asked = () => f.mock.calls.filter((c) => c[0] === '/api/nodes/pc/access').length;
+
+  beforeEach(() => {
+    f.mockImplementation(async (url: string) =>
+      new Response(url.endsWith('/access') ? JSON.stringify({ agents: true, private_files: false }) : '[]'),
+    );
+    useDevicesStore.setState({ lists: {}, access: {}, accessAt: {} });
+  });
+
+  it('once per 5 minutes while a device stays online; again when it comes back', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      console.log('[Step 1/3] first load asks, the 20 s refreshes do not');
+      useNodesStore.setState({ nodes: [pc] });
+      await useDevicesStore.getState().load();
+      await useDevicesStore.getState().load();
+      vi.setSystemTime(1_000_000 + 60_000);
+      await useDevicesStore.getState().load();
+      expect(asked()).toBe(1);
+
+      console.log('[Step 2/3] after 5 minutes it asks again');
+      vi.setSystemTime(1_000_000 + 5 * 60_000 + 1);
+      await useDevicesStore.getState().load();
+      expect(asked()).toBe(2);
+
+      console.log('[Step 3/3] offline, then back online: asked right away');
+      useNodesStore.setState({ nodes: [{ ...pc, online: false }] });
+      await useDevicesStore.getState().load();
+      useNodesStore.setState({ nodes: [pc] });
+      await useDevicesStore.getState().load();
+      expect(asked()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
