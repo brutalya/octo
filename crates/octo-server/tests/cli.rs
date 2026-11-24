@@ -74,3 +74,80 @@ fn sigterm_stops_the_server_cleanly() {
         "exit via signal handler expected, got {status:?}"
     );
 }
+
+/// First line containing `needle` on stdout; the child is killed afterwards.
+fn stdout_line(args: &[&str], needle: &str) -> String {
+    let mut child = bin().args(args).stdout(Stdio::piped()).spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap());
+    let mut found = String::new();
+    for _ in 0..10 {
+        let mut line = String::new();
+        if lines.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        if line.contains(needle) {
+            found = line;
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    found
+}
+
+/// A private relay prints the code that Settings, Create a network takes: its public URL
+/// (or the local one) with the key.
+#[test]
+fn private_relay_prints_its_relay_code() {
+    println!("[Step 1/3] relay with a secret and a public URL");
+    let d = tempfile::tempdir().unwrap();
+    let secret = d.path().join("relay-secret");
+    std::fs::write(&secret, "s3cr3t\n").unwrap();
+    let s = secret.to_str().unwrap();
+    let line = stdout_line(
+        &[
+            "--relay-only",
+            "--relay-addr",
+            "127.0.0.1:0",
+            "--relay-secret-file",
+            s,
+            "--relay-public-url",
+            "wss://relay.example.com/relay",
+        ],
+        "relay code",
+    );
+    assert_eq!(
+        line.trim(),
+        "Octo relay code: wss://relay.example.com/relay?key=s3cr3t"
+    );
+
+    println!("[Step 2/3] without a public URL the local address is used");
+    let line = stdout_line(
+        &[
+            "--relay-only",
+            "--relay-addr",
+            "127.0.0.1:0",
+            "--relay-secret-file",
+            s,
+        ],
+        "relay code",
+    );
+    assert!(
+        line.starts_with("Octo relay code: ws://127.0.0.1:"),
+        "{line}"
+    );
+    assert!(line.trim().ends_with("/relay?key=s3cr3t"), "{line}");
+
+    println!("[Step 3/3] a public URL that is not ws:// or wss:// is a startup error");
+    let e = fails(
+        &[
+            "--relay-only",
+            "--relay-addr",
+            "127.0.0.1:0",
+            "--relay-public-url",
+            "https://relay.example.com",
+        ],
+        d.path(),
+    );
+    assert!(e.contains("relay-public-url"), "{e}");
+}

@@ -45,6 +45,10 @@ struct Args {
     /// read from this file; a random one (0600) is created on first start.
     #[arg(long, requires = "relay_addr")]
     relay_secret_file: Option<PathBuf>,
+    /// Address devices use to reach this relay (e.g. `wss://relay.example.com/relay` behind a
+    /// proxy); only printed in the relay code. Default: the local listener.
+    #[arg(long, requires = "relay_addr")]
+    relay_public_url: Option<String>,
 }
 
 /// Resolves on Ctrl-C or SIGTERM.
@@ -108,6 +112,11 @@ async fn main() -> Result<()> {
     if args.relay_only && args.relay_addr.is_none() {
         anyhow::bail!("--relay-only needs --relay-addr");
     }
+    if let Some(u) = &args.relay_public_url
+        && (!(u.starts_with("ws://") || u.starts_with("wss://")) || u.contains('?'))
+    {
+        anyhow::bail!("--relay-public-url must be a ws:// or wss:// URL without a query");
+    }
     let relay_sock: Option<std::net::SocketAddr> =
         args.relay_addr.as_deref().map(str::parse).transpose()?;
     let api_addr: std::net::SocketAddr = args.addr.parse()?;
@@ -127,10 +136,14 @@ async fn main() -> Result<()> {
     let relay_task = match relay_sock {
         Some(sock) => {
             let l = tokio::net::TcpListener::bind(sock).await?;
-            println!("Octo relay: ws://{}/relay", l.local_addr()?);
+            let local = format!("ws://{}/relay", l.local_addr()?);
+            println!("Octo relay: {local}");
             let secret = relay_secret.clone();
-            if secret.is_some() {
+            if let Some(key) = &secret {
                 println!("Octo relay: private (clients need ?key=<secret> in the relay URL)");
+                // What the first device pastes into Settings, Network, Create a network.
+                let public = args.relay_public_url.as_deref().unwrap_or(&local);
+                println!("Octo relay code: {public}?key={key}");
             }
             let relay = octo_net::relay::Relay::with_secret(Default::default(), secret)?;
             let app = octo_server::relay_app(relay);

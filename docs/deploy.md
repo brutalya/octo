@@ -19,7 +19,7 @@ The relay serves only `/relay` (WebSocket) and `/healthz` on port 7443 and sees 
 
 1. Log in to GHCR (packages are private unless made public in the package settings; use a personal access token with `read:packages`):
    `echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin`
-2. Copy `deploy/relay/docker-compose.yml` to the server, replace `OWNER/REPO` in `image:` with the lowercase repository path.
+2. Copy `deploy/relay/docker-compose.yml` to the server, replace `OWNER/REPO` in `image:` with the lowercase repository path and `relay.example.com` in `command:` with the relay's domain.
 3. Find the NPM network (`docker inspect <npm-container> --format '{{json .NetworkSettings.Networks}}'`); default is `npm_default`. If different: `export NPM_NETWORK=<name>` or put it in `.env` next to the compose file.
 4. `docker compose up -d`
 5. In NPM add a Proxy Host: domain `relay.example.com`, scheme `http`, forward host `octo-relay`, port `7443`, Websockets Support ON. SSL tab: request a Let's Encrypt certificate, Force SSL.
@@ -28,9 +28,9 @@ The relay serves only `/relay` (WebSocket) and `/healthz` on port 7443 and sees 
 
 Verify: `curl https://relay.example.com/healthz` returns `ok`.
 
-The compose file runs a **private** relay: it admits only nodes that know its secret, created on first start in the `relay-data` volume. Read it with `docker compose exec octo-relay cat /data/relay-secret`.
+The compose file runs a **private** relay: it admits only nodes that know its secret, created on first start in the `relay-data` volume (`docker compose exec octo-relay cat /data/relay-secret`). On every start the log prints the **relay code**, the public URL from `--relay-public-url` with the key: `docker compose logs octo-relay | grep "relay code"` shows `Octo relay code: wss://relay.example.com/relay?key=<secret>`.
 
-Client setup: in Octo settings → Relay on the first device, enter `relay.example.com` as the relay address and the secret as the relay key (stored as `wss://relay.example.com/relay?key=<secret>`), then press Check. Devices that join with a pairing code get the relay URL, key included, from the code. The key is sent in the `Authorization` header, not in the request path, so proxy access logs do not contain it. Changing the secret (delete the file, restart) requires the new URL on every device.
+Client setup: on the first device open Settings, Network, Create a network and paste the relay code (`relay.example.com?key=<secret>` works too); Octo checks the relay and starts the network. Every other device joins with a code: Add device on a device already in the network, Join a network on the new one. The code carries the relay URL, key included. Settings, Network, menu, Relay shows and edits the relay address and key. The key is sent in the `Authorization` header, not in the request path, so proxy access logs do not contain it. Changing the secret (delete the file, restart) requires the new URL on every device.
 
 For an open relay (any Octo node may use it) remove `command` and the volume from the compose file.
 
@@ -50,7 +50,7 @@ Update: `docker compose pull && docker compose up -d`.
 
 ## Flags
 
-`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing; **preferred**: `--token <secret>` is visible in the process list), `--token <secret>` (must not be empty), `--relay-addr`, `--relay-only`, `--relay-secret-file <path>` (private relay: clients need `?key=<secret>` in the relay URL; created with a random secret, mode 0600, if missing), `--data-dir`, `--web-dir <dir>` (default `./web/dist` if it exists; an explicit path that is not a directory is a startup error), `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
+`--addr` (API, default `127.0.0.1:7878`; non-loopback needs `--token` or `--token-file`), `--token-file <path>` (created with a random token, mode 0600, if missing; **preferred**: `--token <secret>` is visible in the process list), `--token <secret>` (must not be empty), `--relay-addr`, `--relay-only`, `--relay-secret-file <path>` (private relay: clients need `?key=<secret>` in the relay URL; created with a random secret, mode 0600, if missing; the log prints the relay code), `--relay-public-url <ws(s)://...>` (the address devices reach the relay at, used in the printed relay code; default the local listener), `--data-dir`, `--web-dir <dir>` (default `./web/dist` if it exists; an explicit path that is not a directory is a startup error), `--healthcheck <addr>` (probe `/healthz`, exit code 0/1).
 
 An empty `--token` or an empty token file is a startup error. Configuration is validated before any port is bound. SIGTERM and Ctrl-C stop accepting connections, end running agent processes and exit.
 

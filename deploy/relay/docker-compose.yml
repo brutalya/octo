@@ -5,9 +5,11 @@ services:
     container_name: octo-relay
     restart: unless-stopped
     # Private relay: only nodes whose relay URL has ?key=<secret> may connect. The secret is
-    # created on first start: docker compose exec octo-relay cat /data/relay-secret
-    # Remove this line (and the volume) for an open relay.
-    command: ["--relay-secret-file", "/data/relay-secret"]
+    # created on first start. The log then prints the relay code for Settings, Network,
+    # Create a network: docker compose logs octo-relay | grep "relay code"
+    # Replace relay.example.com with the relay's domain. Remove the secret flag (and the
+    # volume) for an open relay.
+    command: ["--relay-secret-file", "/data/relay-secret", "--relay-public-url", "wss://relay.example.com/relay"]
     volumes:
       - relay-data:/data
     # Alternative without a shared network: publish the port and forward NPM to <docker-host>:7443

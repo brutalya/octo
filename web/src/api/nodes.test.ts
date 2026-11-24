@@ -52,10 +52,14 @@ describe('api base', () => {
     await api.relayCheck('wss://relay.example.com/relay');
     await api.pairingState();
     await api.pairingCancel();
+    await api.network();
+    await api.networkCreate('wss://relay.example.com/relay', 'Home');
+    await api.networkLeave();
     expect(urls()).toEqual([
       '/api/settings', '/api/settings', '/api/nodes', '/api/pairing/pending',
       '/api/pairing/invite', '/api/pairing/join', '/api/pairing/confirm', '/api/pairing/reject',
       '/api/relay', '/api/relay/check', '/api/pairing', '/api/pairing/cancel',
+      '/api/network', '/api/network/create', '/api/network/leave',
     ]);
   });
 

@@ -1,6 +1,6 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NodeInfo, PairingInvite, PairingPending, PairingState, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
+  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NetworkView, NodeInfo, PairingInvite, PairingPending, PairingState, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
@@ -87,6 +87,15 @@ export const api = {
   /** Ends the running invite or join; its code stops working. */
   pairingCancel: async (): Promise<void> => {
     await request('/pairing/cancel', { method: 'POST' }, true);
+  },
+  /** This device's network (local only, like settings). */
+  network: async (): Promise<NetworkView> => (await request('/network', undefined, true)).json(),
+  /** Starts a network on the relay of a relay code, this device first. */
+  networkCreate: async (relayUrl: string, name: string): Promise<NetworkView> =>
+    (await request('/network/create', jsonInit('POST', { relay_url: relayUrl, name }), true)).json(),
+  /** Forgets the other devices, the relay and the network name. */
+  networkLeave: async (): Promise<void> => {
+    await request('/network/leave', { method: 'POST' }, true);
   },
   /** This device's relay link; never routed to a remote node (the tunnel refuses it). */
   relayStatus: async (): Promise<RelayStatus> => (await request('/relay', undefined, true)).json(),

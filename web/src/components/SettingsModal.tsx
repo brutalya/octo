@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { api } from '../api/client';
-import { Devices } from './Devices';
+import { Network } from './Network';
 import { errMsg } from '../lib/format';
 import type { ProviderKind, SettingsView, SettingsPatch } from '../api/types';
 
@@ -58,8 +58,7 @@ function Section({
 
 const SECTIONS = [
   { id: 'settings-models', label: 'Models' },
-  { id: 'settings-devices', label: 'Devices' },
-  { id: 'settings-relay', label: 'Relay' },
+  { id: 'settings-network', label: 'Network' },
 ];
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
@@ -162,7 +161,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             )}
             {error && <span className="text-xs text-red-500">{error}</span>}
           </section>
-          <Devices />
+          <Network />
         </div>
       </div>
     </div>
