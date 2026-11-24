@@ -10,7 +10,7 @@ let generation = 0;
 
 /** Re-target data calls to a remote node; null = this node. */
 export function setNodeBase(nodeId: string | null): void {
-  const next = nodeId ? `${LOCAL}/nodes/${encodeURIComponent(nodeId)}` : LOCAL;
+  const next = baseOf(nodeId);
   if (next === base) return;
   base = next;
   generation++;
@@ -39,14 +39,22 @@ function errorMessage(text: string, status: number): string {
   return (msg || `HTTP ${status}`).slice(0, 300);
 }
 
+/** Base for a device's data calls: this device (null) or a member, through the tunnel. */
+const baseOf = (nodeId: string | null): string =>
+  nodeId ? `${LOCAL}/nodes/${encodeURIComponent(nodeId)}` : LOCAL;
+
 async function request(path: string, init?: RequestInit, local = false): Promise<Response> {
+  return requestAt(local ? LOCAL : base, path, init);
+}
+
+async function requestAt(prefix: string, path: string, init?: RequestInit): Promise<Response> {
   const token = (window as { __OCTO_TOKEN__?: string }).__OCTO_TOKEN__;
   if (token) {
     const headers = new Headers(init?.headers);
     headers.set('authorization', `Bearer ${token}`);
     init = { ...init, headers };
   }
-  const res = await fetch((local ? LOCAL : base) + path, init);
+  const res = await fetch(prefix + path, init);
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new ApiError(res.status, errorMessage(text, res.status));
@@ -63,6 +71,17 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
 export const api = {
   providers: async (): Promise<ProviderStatus[]> => (await request('/providers')).json(),
   threads: async (): Promise<Thread[]> => (await request('/threads')).json(),
+  /** Assistants installed on a given device (null = this one), whatever device is open. */
+  providersOn: async (nodeId: string | null): Promise<ProviderStatus[]> =>
+    (await requestAt(baseOf(nodeId), '/providers')).json(),
+  importSessionsOn: async (nodeId: string | null, kind: ProviderKind, q: string): Promise<SessionSummary[]> =>
+    (await requestAt(baseOf(nodeId), `/import/${kind}/sessions?q=${encodeURIComponent(q)}`)).json(),
+  /** Threads of a given device (null = this one), whatever device is open. */
+  threadsOn: async (nodeId: string | null): Promise<Thread[]> =>
+    (await requestAt(baseOf(nodeId), '/threads')).json(),
+  deleteThreadOn: async (nodeId: string | null, id: string): Promise<void> => {
+    await requestAt(baseOf(nodeId), `/threads/${id}`, { method: 'DELETE' });
+  },
   createThread: async (provider: ProviderKind, space: Space, approval: Approval, model?: string): Promise<Thread> =>
     (await request('/threads', jsonInit('POST', { provider, space, approval, model }))).json(),
   importSessions: async (kind: ProviderKind, q: string): Promise<SessionSummary[]> =>

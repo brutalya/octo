@@ -1,38 +1,75 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, Lock, Plus, Search, Settings, Trash2, X } from 'lucide-react';
-import { NodeSwitcher } from './NodeSwitcher';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Lock, MoreHorizontal, Pin, Plus, Search, Settings, X } from 'lucide-react';
 import { SettingsModal } from './SettingsModal';
+import { api } from '../api/client';
 import { useThreadsStore } from '../stores/threads';
 import { useChatStore } from '../stores/chat';
-import type { Thread } from '../api/types';
+import { useNodesStore } from '../stores/nodes';
+import { useDevicesStore } from '../stores/devices';
+import { pinKey, usePinsStore } from '../stores/pins';
+import { relativeTime } from '../lib/format';
+import { useClickOutside } from '../lib/useClickOutside';
+import type { NetworkView, NodeInfo, Thread } from '../api/types';
+
+const RECENT = 3;
+const COLLAPSED = 'octo.collapsed';
 
 function shortModel(id: string): string {
   return (id.split('/').pop() ?? id).replace(/:latest$/, '');
 }
 
-function startOfToday(now: number): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+function subtitle(t: Thread, running: boolean, now: number): string {
+  if (running) return `${t.provider} · running`;
+  const model = t.model ? ` · ${shortModel(t.model)}` : '';
+  return `${t.provider}${model} · ${relativeTime(t.updated_at, now)}`;
 }
 
-function subtitle(t: Thread, running: boolean): string {
-  if (running) return `${t.provider} · running`;
-  return t.model ? `${t.provider} · ${shortModel(t.model)}` : t.provider;
+function storedCollapsed(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(COLLAPSED) ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function ThreadRow({
-  t, active, running, confirming, onSelect, onDelete,
+  t, detail, active, running, pinned, onSelect, onPin, onDelete,
 }: {
   t: Thread;
+  detail: string;
   active: boolean;
   running: boolean;
-  confirming: boolean;
+  pinned: boolean;
   onSelect: () => void;
+  onPin: () => void;
   onDelete: () => void;
 }) {
+  const [menu, setMenu] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const ref = useRef<HTMLLIElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const close = useCallback(() => {
+    setMenu(false);
+    setConfirming(false);
+  }, []);
+  useClickOutside(ref, menu, close);
+
+  // Deleting needs a second tap within 3 s.
+  const del = () => {
+    clearTimeout(timer.current);
+    if (confirming) {
+      close();
+      onDelete();
+      return;
+    }
+    setConfirming(true);
+    timer.current = setTimeout(() => setConfirming(false), 3000);
+  };
+
   return (
-    <li className="group relative">
+    <li ref={ref} className="group relative">
       <button
         aria-label={t.title || 'Untitled'}
         aria-current={active}
@@ -46,22 +83,51 @@ function ThreadRow({
             <span className="h-2 w-2 rounded-full bg-indigo-500" />
           ) : t.space === 'private' ? (
             <Lock size={12} strokeWidth={2.4} role="img" aria-label="Private" className="text-violet-300" />
+          ) : pinned ? (
+            <Pin size={12} strokeWidth={2.4} aria-hidden="true" className="text-indigo-500" />
           ) : null}
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 pr-6 max-md:pr-10">
           <span className={`truncate text-sm ${t.title ? 'text-slate-800' : 'italic text-slate-400'}`}>
             {t.title || 'Untitled'}
           </span>
-          <span className="truncate text-xs text-slate-400">{subtitle(t, running)}</span>
+          <span className="truncate text-xs text-slate-400">{detail}</span>
         </span>
       </button>
       <button
-        aria-label="Delete thread"
-        onClick={onDelete}
-        className="absolute right-1 top-1.5 rounded-md p-1 text-slate-400 opacity-0 max-md:top-1/2 max-md:flex max-md:h-10 max-md:w-10 max-md:-translate-y-1/2 max-md:items-center max-md:justify-center max-md:p-0 max-md:opacity-100 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
+        aria-label="Chat actions"
+        aria-haspopup="menu"
+        aria-expanded={menu}
+        onClick={() => setMenu((v) => !v)}
+        className="absolute right-1 top-1.5 rounded-md p-1 text-slate-400 opacity-0 hover:text-slate-800 focus:opacity-100 group-hover:opacity-100 max-md:top-1/2 max-md:flex max-md:h-10 max-md:w-10 max-md:-translate-y-1/2 max-md:items-center max-md:justify-center max-md:p-0 max-md:opacity-100"
       >
-        {confirming ? <Check size={14} /> : <Trash2 size={14} />}
+        <MoreHorizontal size={15} />
       </button>
+      {menu && (
+        <div
+          role="menu"
+          aria-label="Chat actions"
+          className="absolute right-1 top-full z-20 -mt-1 flex w-44 flex-col rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+        >
+          <button
+            role="menuitem"
+            onClick={() => {
+              close();
+              onPin();
+            }}
+            className="flex h-10 items-center rounded-lg px-3 text-left text-sm text-slate-800 hover:bg-slate-100"
+          >
+            {pinned ? 'Unpin' : 'Pin'}
+          </button>
+          <button
+            role="menuitem"
+            onClick={del}
+            className="flex h-10 items-center rounded-lg px-3 text-left text-sm text-red-400 hover:bg-red-50"
+          >
+            {confirming ? 'Confirm delete' : 'Delete'}
+          </button>
+        </div>
+      )}
     </li>
   );
 }
@@ -71,56 +137,114 @@ const groupTitle = 'px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-
 export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onClose?: () => void } = {}) {
   const threads = useThreadsStore((s) => s.threads);
   const activeId = useThreadsStore((s) => s.activeId);
-  const select = useThreadsStore((s) => s.select);
-  const remove = useThreadsStore((s) => s.remove);
   const error = useThreadsStore((s) => s.error);
   const streaming = useChatStore((s) => s.streaming);
+  const nodes = useNodesStore((s) => s.nodes);
+  const selectedId = useNodesStore((s) => s.selectedId);
+  const lists = useDevicesStore((s) => s.lists);
+  const pins = usePinsStore((s) => s.pins);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [confirmId, setConfirmId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  // "Today" moves at midnight, so the clock is state that ticks, not a read during render.
+  const [net, setNet] = useState<NetworkView | null>(null);
+  const [collapsed, setCollapsed] = useState<string[]>(storedCollapsed);
+  const [expanded, setExpanded] = useState<string[]>([]);
+  // Ages move on their own, so the clock is state that ticks, not a read during render.
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(tick);
   }, []);
-  const confirmTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(confirmTimer.current), []);
 
-  // Deleting needs a second tap on the same button within 3 s.
-  const askDelete = (id: string) => {
-    clearTimeout(confirmTimer.current);
-    if (confirmId === id) {
-      setConfirmId(null);
-      void remove(id);
+  useEffect(() => {
+    api.network().then((n) => setNet(n.joined ? n : null)).catch(() => {});
+  }, []);
+
+  // Other devices' chats: on open, when devices come and go, and every 20 s.
+  const reach = nodes.map((n) => `${n.node_id}:${n.online}`).join(',');
+  useEffect(() => {
+    void useDevicesStore.getState().load();
+    const tick = setInterval(() => void useDevicesStore.getState().load(), 20_000);
+    return () => clearInterval(tick);
+  }, [reach]);
+
+  const self = nodes.find((n) => n.is_self);
+  const selfId = self?.node_id ?? 'self';
+  const openId = selectedId ?? selfId;
+  const multi = nodes.length > 1;
+
+  /** The open device's list is live; the others are the last fetched. */
+  const listOf = (id: string): Thread[] => (id === openId && (threads.length || !lists[id]) ? threads : (lists[id] ?? []));
+
+  const open = (n: NodeInfo | undefined, id: string) => {
+    if (n && n.node_id !== openId) useNodesStore.getState().select(n.is_self ? null : n.node_id);
+    useThreadsStore.getState().select(id);
+    onNavigate?.();
+  };
+
+  const remove = async (n: NodeInfo | undefined, id: string) => {
+    const nodeId = n?.node_id ?? selfId;
+    if (pins.includes(pinKey(nodeId, id))) usePinsStore.getState().toggle(pinKey(nodeId, id));
+    if (nodeId === openId) {
+      await useThreadsStore.getState().remove(id);
       return;
     }
-    setConfirmId(id);
-    confirmTimer.current = setTimeout(() => setConfirmId(null), 3000);
+    try {
+      await api.deleteThreadOn(n?.is_self ? null : nodeId, id);
+      useDevicesStore.setState((s) => ({ lists: { ...s.lists, [nodeId]: (s.lists[nodeId] ?? []).filter((x) => x.id !== id) } }));
+    } catch (e) {
+      useThreadsStore.setState({ error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
+  const collapse = (id: string) => {
+    const next = toggle(collapsed, id);
+    setCollapsed(next);
+    try {
+      localStorage.setItem(COLLAPSED, JSON.stringify(next));
+    } catch {
+      // storage unavailable
+    }
   };
 
   const q = query.trim().toLowerCase();
-  const shown = q ? threads.filter((t) => (t.title || 'untitled').toLowerCase().includes(q)) : threads;
-  const today = startOfToday(now);
-  const groups = [
-    { name: 'Today', items: shown.filter((t) => t.updated_at >= today) },
-    { name: 'Earlier', items: shown.filter((t) => t.updated_at < today) },
-  ].filter((g) => g.items.length > 0);
+  const match = (t: Thread) => !q || (t.title || 'untitled').toLowerCase().includes(q);
 
-  const row = (t: Thread) => (
-    <ThreadRow
-      key={t.id}
-      t={t}
-      active={t.id === activeId}
-      running={streaming[t.id] !== undefined}
-      confirming={confirmId === t.id}
-      onSelect={() => {
-        select(t.id);
-        onNavigate?.();
-      }}
-      onDelete={() => askDelete(t.id)}
-    />
-  );
+  const row = (n: NodeInfo | undefined, t: Thread, detail?: string) => {
+    const nodeId = n?.node_id ?? selfId;
+    const here = nodeId === openId;
+    const running = here && streaming[t.id] !== undefined;
+    return (
+      <ThreadRow
+        key={`${nodeId}/${t.id}`}
+        t={t}
+        detail={detail ?? subtitle(t, running, now)}
+        active={here && t.id === activeId}
+        running={running}
+        pinned={pins.includes(pinKey(nodeId, t.id))}
+        onSelect={() => open(n, t.id)}
+        onPin={() => usePinsStore.getState().toggle(pinKey(nodeId, t.id))}
+        onDelete={() => void remove(n, t.id)}
+      />
+    );
+  };
+
+  // Members in the network first (server order), then this device, offline devices last.
+  const order = [
+    ...nodes.filter((n) => !n.is_self && n.online),
+    ...nodes.filter((n) => n.is_self),
+    ...nodes.filter((n) => !n.is_self && !n.online),
+  ];
+
+  const pinned = q
+    ? []
+    : pins.flatMap((key) => {
+        const [nodeId, id] = key.split('/');
+        const n = nodes.find((x) => x.node_id === nodeId);
+        const t = listOf(nodeId).find((x) => x.id === id);
+        if (!t || (multi && (!n || (!n.is_self && !n.online)))) return [];
+        return [{ n, t }];
+      });
 
   return (
     <aside
@@ -129,7 +253,24 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
       }`}
     >
       <div className="flex items-center gap-2">
-        <NodeSwitcher />
+        <div className="flex min-w-0 flex-1 flex-col pl-1">
+          <span className="text-base font-semibold text-slate-800">Octo</span>
+          {net && (
+            <span className="truncate text-xs text-slate-500">
+              {net.name} · {net.devices} {net.devices === 1 ? 'device' : 'devices'}
+            </span>
+          )}
+        </div>
+        <button
+          aria-label="New chat"
+          onClick={() => {
+            useThreadsStore.getState().openMenu(true);
+            onNavigate?.();
+          }}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-indigo-500 text-slate-50 hover:bg-indigo-400 max-md:h-11 max-md:w-11"
+        >
+          <Plus size={18} strokeWidth={2.4} />
+        </button>
         {onClose && (
           <button
             aria-label="Close menu"
@@ -140,36 +281,78 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
           </button>
         )}
       </div>
-      <button
-        onClick={() => {
-          useThreadsStore.getState().openMenu(true);
-          onNavigate?.();
-        }}
-        className="flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-indigo-500 text-sm font-semibold text-slate-50 hover:bg-indigo-400 max-md:h-12"
-      >
-        <Plus size={16} strokeWidth={2.4} />
-        New thread
-      </button>
       <label className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-slate-400 focus-within:border-indigo-500 max-md:h-11">
         <Search size={14} />
         <input
           type="search"
-          aria-label="Search threads"
-          placeholder="Search threads"
+          aria-label="Search chats"
+          placeholder={multi ? 'Search all chats' : 'Search chats'}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
         />
       </label>
       <nav className="-mx-1 flex-1 overflow-y-auto px-1">
-        {groups.map((g) => (
-          <section key={g.name}>
-            <h3 className={groupTitle}>{g.name}</h3>
-            <ul aria-label={g.name} className="flex flex-col gap-0.5">
-              {g.items.map(row)}
+        {pinned.length > 0 && (
+          <section>
+            <h3 className={groupTitle}>Pinned</h3>
+            <ul aria-label="Pinned" className="flex flex-col gap-0.5">
+              {pinned.map(({ n, t }) => row(n, t, multi && n ? `${n.name} · ${t.provider}` : undefined))}
             </ul>
           </section>
-        ))}
+        )}
+        {!multi ? (
+          <ul aria-label="Chats" className="flex flex-col gap-0.5 pt-1">
+            {listOf(selfId).filter(match).map((t) => row(self, t))}
+          </ul>
+        ) : (
+          order.map((n) => {
+            const offline = !n.is_self && !n.online;
+            const all = listOf(n.node_id).filter(match);
+            if (q && all.length === 0) return null;
+            const shut = !q && collapsed.includes(n.node_id);
+            const wide = q || expanded.includes(n.node_id);
+            const shown = wide ? all : all.slice(0, RECENT);
+            const state = n.is_self ? 'this device' : n.online ? 'online' : 'offline';
+            return (
+              <section key={n.node_id} className="pt-2">
+                <button
+                  aria-label={`${n.name}, ${state}`}
+                  aria-expanded={!offline && !shut}
+                  disabled={offline}
+                  onClick={() => collapse(n.node_id)}
+                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-slate-100/60 disabled:hover:bg-transparent max-md:h-11"
+                >
+                  {offline || shut ? (
+                    <ChevronRight size={14} className="shrink-0 text-slate-400" />
+                  ) : (
+                    <ChevronDown size={14} className="shrink-0 text-slate-400" />
+                  )}
+                  <span className={`truncate text-sm font-semibold ${offline ? 'text-slate-400' : 'text-slate-800'}`}>
+                    {n.name}
+                  </span>
+                  {!n.is_self && n.online && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />}
+                  {(n.is_self || offline) && <span className="truncate text-xs text-slate-400">{state}</span>}
+                </button>
+                {!offline && !shut && (
+                  <ul aria-label={`Chats on ${n.name}`} className="flex flex-col gap-0.5 pl-3">
+                    {shown.map((t) => row(n, t))}
+                    {!q && all.length > RECENT && (
+                      <li>
+                        <button
+                          onClick={() => setExpanded(toggle(expanded, n.node_id))}
+                          className="flex h-8 items-center px-2 text-xs text-indigo-500 hover:underline max-md:h-10"
+                        >
+                          {wide ? 'Show fewer' : `All chats on ${n.name} · ${all.length}`}
+                        </button>
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </section>
+            );
+          })
+        )}
       </nav>
       {error && <div className="px-1 text-xs text-red-500">{error}</div>}
       <button

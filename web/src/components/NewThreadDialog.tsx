@@ -82,7 +82,13 @@ function ModelList({ kind, value, onPick }: { kind: ProviderKind; value: string 
   );
 }
 
-function SessionList({ kind, onPick }: { kind: ProviderKind; onPick: (externalId: string) => void }) {
+function SessionList({
+  nodeId, kind, onPick,
+}: {
+  nodeId: string | null;
+  kind: ProviderKind;
+  onPick: (externalId: string) => void;
+}) {
   const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -90,7 +96,7 @@ function SessionList({ kind, onPick }: { kind: ProviderKind; onPick: (externalId
   useEffect(() => {
     let live = true;
     const timer = setTimeout(() => {
-      api.importSessions(kind, query.trim())
+      api.importSessionsOn(nodeId, kind, query.trim())
         .then((s) => live && setSessions(s))
         .catch((e: unknown) => live && setError(errMsg(e)));
     }, query ? 150 : 0);
@@ -98,7 +104,7 @@ function SessionList({ kind, onPick }: { kind: ProviderKind; onPick: (externalId
       live = false;
       clearTimeout(timer);
     };
-  }, [kind, query]);
+  }, [nodeId, kind, query]);
 
   return (
     <SearchList label="Search sessions" query={query} onQuery={setQuery} error={error}>
@@ -168,9 +174,34 @@ function Choice({
 
 function Body({ onClose }: { onClose: () => void }) {
   const all = useThreadsStore((s) => s.providers);
-  const providers = all.filter((p) => p.installed);
-  const node = useNodesStore((s) => s.nodes.find((n) => (s.selectedId ? n.node_id === s.selectedId : n.is_self))?.name ?? 'this device');
-  const [kind, setKind] = useState<ProviderKind | null>(providers[0]?.kind ?? null);
+  const nodes = useNodesStore((s) => s.nodes);
+  const selectedId = useNodesStore((s) => s.selectedId);
+  const self = nodes.find((n) => n.is_self);
+  const openId = selectedId ?? self?.node_id ?? null;
+  // The device the chat runs on: the open one unless another is picked here.
+  const [picked, setDevice] = useState<string | null>(null);
+  const device = picked ?? openId;
+  const target = nodes.find((n) => n.node_id === device);
+  const node = target?.name ?? 'this device';
+  const elsewhere = device !== openId;
+  // Assistants of a picked device; the open device's come from the store.
+  const [fetched, setFetched] = useState<{ device: string | null; list: ProviderStatus[] } | null>(null);
+  const remoteId = target?.is_self ? null : device;
+  useEffect(() => {
+    if (!elsewhere) return;
+    let live = true;
+    api.providersOn(remoteId)
+      .then((list) => live && setFetched({ device, list }))
+      .catch(() => live && setFetched({ device, list: [] }));
+    return () => {
+      live = false;
+    };
+  }, [device, elsewhere, remoteId]);
+  const remote = elsewhere ? (fetched?.device === device ? fetched.list : []) : all;
+  const providers = remote.filter((p) => p.installed);
+  const [chosen, setKind] = useState<ProviderKind | null>(providers[0]?.kind ?? null);
+  // A device may lack the chosen assistant: its first one is used instead.
+  const kind = providers.some((p) => p.kind === chosen) ? chosen : (providers[0]?.kind ?? null);
   const [space, setSpace] = useState<Space>('public');
   const [ask, setAsk] = useState(true);
   const [model, setModel] = useState<string | null>(null);
@@ -188,9 +219,15 @@ function Body({ onClose }: { onClose: () => void }) {
     setSessions(false);
   };
 
+  /** Opens the picked device first, so the chat is created (and shown) there. */
+  const goThere = () => {
+    if (elsewhere) useNodesStore.getState().select(target?.is_self ? null : device);
+  };
+
   const start = () => {
     if (!kind || (needsModel && !model)) return;
     onClose();
+    goThere();
     void useThreadsStore.getState().create(kind, chosenSpace, ask ? 'confirm' : 'auto', model ?? undefined);
   };
 
@@ -203,7 +240,7 @@ function Body({ onClose }: { onClose: () => void }) {
     >
       <div className="flex items-center justify-between">
         <h2 id="new-thread-title" className="text-lg font-semibold text-slate-800">
-          New thread
+          New chat
         </h2>
         <button
           aria-label="Close"
@@ -213,6 +250,34 @@ function Body({ onClose }: { onClose: () => void }) {
           <X size={18} />
         </button>
       </div>
+
+      {nodes.length > 1 && (
+        <section className="flex flex-col gap-2">
+          <h3 className={sectionTitle}>
+            <label htmlFor="new-chat-device">Device</label>
+          </h3>
+          <select
+            id="new-chat-device"
+            aria-label="Device"
+            value={device ?? ''}
+            onChange={(e) => {
+              setDevice(e.target.value);
+              setModel(null);
+              setSessions(false);
+            }}
+            className="h-11 rounded-lg border border-slate-300 bg-slate-50 px-3 text-sm text-slate-800 outline-none focus:border-indigo-500"
+          >
+            {nodes.map((n) => {
+              const state = n.is_self ? 'this device' : n.online ? 'online' : 'offline';
+              return (
+                <option key={n.node_id} value={n.node_id} disabled={!n.is_self && !n.online}>
+                  {`${n.name} · ${state}`}
+                </option>
+              );
+            })}
+          </select>
+        </section>
+      )}
 
       <section className="flex flex-col gap-2">
         <h3 className={sectionTitle}>Assistant</h3>
@@ -273,10 +338,12 @@ function Body({ onClose }: { onClose: () => void }) {
 
       {isAgent && sessions && kind && (
         <SessionList
-          key={kind}
+          key={`${device}-${kind}`}
+          nodeId={target?.is_self ? null : device}
           kind={kind}
           onPick={(id) => {
             onClose();
+            goThere();
             void useThreadsStore.getState().importSession(kind, id);
           }}
         />
@@ -296,7 +363,7 @@ function Body({ onClose }: { onClose: () => void }) {
           disabled={!kind || (needsModel && !model)}
           className="ml-auto h-10 rounded-lg bg-indigo-500 px-5 text-sm font-semibold text-slate-50 hover:bg-indigo-400 disabled:opacity-40 max-md:ml-0 max-md:h-12"
         >
-          Start
+          {nodes.length > 1 ? `Start on ${node}` : 'Start'}
         </button>
       </div>
     </div>
