@@ -31,7 +31,8 @@ interface FilesState {
   closePreview: () => void;
   /** The same space on the other reachable devices (the open device is `entries`). */
   others: Record<Space, Holder[]>;
-  loadOthers: (space: Space, devices: { id: string | null; name: string }[]) => Promise<void>;
+  /** `online: false` = not asked now (its last list is kept). */
+  loadOthers: (space: Space, devices: { id: string | null; name: string; online?: boolean }[]) => Promise<void>;
   /** Copies files that are only on other devices to the same folders here; returns how many. */
   getHere: (space: Space, items: SharedEntry[]) => Promise<number>;
   removeEverywhere: (space: Space, e: SharedEntry) => Promise<void>;
@@ -142,15 +143,24 @@ export const useFilesStore = create<FilesState>((set, get) => {
       const gen = nodeGeneration();
       const got = await Promise.all(
         devices.map(async (d) => {
+          if (d.online === false) return null;
           try {
-            return { ...d, entries: await api.filesOn(d.id, space) };
+            return { id: d.id, name: d.name, entries: await api.filesOn(d.id, space) };
           } catch {
-            return null; // offline or refused: its files are simply not shown
+            return null; // no answer this time
           }
         }),
       );
       if (gen !== nodeGeneration()) return;
-      set((s) => ({ others: { ...s.others, [space]: got.filter((h): h is Holder => h !== null) } }));
+      // A device that did not answer (or is offline for a moment) keeps its last list, so the
+      // tree does not flicker; one that is no longer listed drops out.
+      set((s) => {
+        const before = new Map(s.others[space].map((h) => [h.id, h]));
+        const next = devices
+          .map((d, i) => got[i] ?? before.get(d.id) ?? null)
+          .filter((h): h is Holder => h !== null);
+        return { others: { ...s.others, [space]: next } };
+      });
     },
     getHere: async (space, items) => {
       let done = 0;

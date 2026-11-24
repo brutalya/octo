@@ -38,10 +38,12 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   const openNode = nodes.find((n) => (selectedId ? n.node_id === selectedId : n.is_self));
   const device = openNode?.name ?? 'this device';
   // The other devices whose public files join the tree (private files already sync on their own).
-  const others = nodes
-    .filter((n) => n.online && n !== openNode)
-    .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name }));
-  const othersKey = others.map((o) => o.id).join(',');
+  // Every member counts, online or not: one that drops out for a moment keeps its files on
+  // screen (it is just not asked), so the tree does not flicker with the online status.
+  const othersKey = nodes
+    .filter((n) => n !== openNode)
+    .map((n) => n.node_id)
+    .join(',');
   const shown = sheet || !collapsed;
   // Auto-sync is this device's own setting: offered while this device is the open one.
   const [publicSync, setPublicSync] = useState<boolean | null>(null);
@@ -75,7 +77,13 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   }, [space, shown]);
   useEffect(() => {
     if (!shown) return;
-    const refresh = () => void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    const refresh = () => {
+      const { nodes: all, selectedId: open } = useNodesStore.getState();
+      const others = all
+        .filter((n) => (open ? n.node_id !== open : !n.is_self))
+        .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name, online: n.is_self || n.online }));
+      void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    };
     refresh();
     // Files change on other devices (and arrive by sync): the open panel follows every 20 s.
     const t = setInterval(() => {
@@ -83,8 +91,6 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
       refresh();
     }, 20_000);
     return () => clearInterval(t);
-    // `others` is rebuilt every render; its ids are what matter.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, shown, othersKey]);
 
   const select = (paths: string[], on: boolean) =>

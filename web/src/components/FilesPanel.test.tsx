@@ -104,10 +104,13 @@ describe('FilesPanel', () => {
       });
     });
 
-    it('asks the other online devices for their public files', () => {
+    it('passes every other device with whether it is online (an offline one keeps its last list)', () => {
       useFilesStore.setState({ loadOthers });
       render(<FilesPanel />);
-      expect(loadOthers).toHaveBeenCalledWith('public', [{ id: null, name: 'phone' }]);
+      expect(loadOthers).toHaveBeenCalledWith('public', [
+        { id: null, name: 'phone', online: true },
+        { id: 'off', name: 'laptop', online: false },
+      ]);
     });
 
     it('picked files go to the chat; ones only elsewhere are brought here first', async () => {

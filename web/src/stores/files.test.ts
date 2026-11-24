@@ -127,8 +127,9 @@ describe('files store', () => {
     const pc = { id: 'pc', name: 'pc' };
     const lin = { id: 'lin', name: 'linux' };
 
-    it('loadOthers lists each device; one that fails is left out', async () => {
+    it('loadOthers lists each device; one never reached is left out', async () => {
       console.log('[Step 1/2] pc answers, linux is unreachable');
+      useFilesStore.setState({ others: { private: [], public: [] } });
       const f = vi.fn(async (url: string) =>
         url.startsWith('/api/nodes/pc/') ? json(entries) : new Response('{"error":"node unreachable"}', { status: 502 }),
       );
@@ -137,6 +138,31 @@ describe('files store', () => {
       console.log('[Step 2/2] only pc is listed');
       expect(f.mock.calls.map((c) => c[0])).toEqual(['/api/nodes/pc/files/public', '/api/nodes/lin/files/public']);
       expect(useFilesStore.getState().others.public).toEqual([{ id: 'pc', name: 'pc', entries }]);
+    });
+
+    it('a device that misses one answer, or is briefly offline, keeps its files on screen', async () => {
+      console.log('[Step 1/3] both answered before');
+      const linFiles = [{ path: 'r.pdf', kind: 'file' as const, size: 1, modified: 1 }];
+      useFilesStore.setState({
+        others: { private: [], public: [{ ...pc, entries }, { ...lin, entries: linFiles }] },
+      });
+      console.log('[Step 2/3] now pc times out and linux is reported offline');
+      const f = vi.fn(async () => new Response('{"error":"node unreachable"}', { status: 502 }));
+      vi.stubGlobal('fetch', f);
+      await useFilesStore.getState().loadOthers('public', [pc, { ...lin, online: false }]);
+      console.log('[Step 3/3] both keep their last lists; the offline one is not even asked');
+      expect(f.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['/api/nodes/pc/files/public']);
+      expect(useFilesStore.getState().others.public).toEqual([
+        { ...pc, entries },
+        { ...lin, entries: linFiles },
+      ]);
+    });
+
+    it('a device that left the network drops out', async () => {
+      useFilesStore.setState({ others: { private: [], public: [{ ...pc, entries }, { ...lin, entries }] } });
+      vi.stubGlobal('fetch', vi.fn(async () => json(entries)));
+      await useFilesStore.getState().loadOthers('public', [pc]);
+      expect(useFilesStore.getState().others.public.map((h) => h.id)).toEqual(['pc']);
     });
 
     it('getHere copies each file from a device that has it into the same folder here', async () => {

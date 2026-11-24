@@ -125,4 +125,25 @@ describe('access is asked rarely', () => {
       vi.useRealTimers();
     }
   });
+
+  it('a device too old to answer is listed as before (its own checks still apply)', async () => {
+    console.log('[Step 1/2] the pc runs a version without /api/access: the tunnel answers 403');
+    useNodesStore.setState({
+      nodes: [
+        { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+        { node_id: 'old', name: 'pc', is_self: false, online: true, trust: 'full', agents: true },
+        { node_id: 'gone', name: 'laptop', is_self: false, online: true, trust: 'full', agents: true },
+      ],
+    });
+    useDevicesStore.setState({ access: {}, accessAt: {} });
+    f.mockImplementation(async (url: string) => {
+      if (url === '/api/nodes/old/access') return new Response('{"error":"not available through the tunnel"}', { status: 403 });
+      return new Response('{"error":"node unreachable"}', { status: 502 });
+    });
+    await useDevicesStore.getState().load();
+    console.log('[Step 2/2] old: agents assumed allowed; unreachable: still unknown (asked again later)');
+    expect(useDevicesStore.getState().access.old).toEqual({ agents: true, private_files: false });
+    expect(useDevicesStore.getState().access.gone).toBeUndefined();
+  });
 });
+
