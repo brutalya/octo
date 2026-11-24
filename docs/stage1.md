@@ -35,8 +35,8 @@ Path validation: relative, no `..`, no absolute, normalized — pure fn with tes
 ## Web
 - Right side panel, collapsible: file tree with two tabs `Private` / `Public` (VS Code-like: tree, drag-drop upload, context actions rename/delete/new folder, click = preview text). Active tab follows the active thread's space by default.
 - Attach: drag a file from the tree into the input, or paperclip picker from current space. Chips above input.
-- "+" dropdown: providers -> for HTTP providers a model submenu (searchable list). Private option shown only for local providers.
-- Settings: gear at bottom of sidebar -> modal with one section per provider (Ollama URL + check button showing models count; OpenRouter key + check). Nothing else.
+- New thread button in the sidebar -> dialog: assistant cards (installed providers), for HTTP providers a searchable model list, space choice (Private disabled unless the provider is local), for CLI providers an "Ask before running commands" checkbox (off = approval `auto`).
+- Settings: labelled Settings button at bottom of sidebar -> full-screen page with sections Models (Ollama URL + Check, OpenRouter key + Check, showing models count), Devices and Relay.
 - Thread list label: provider + model short name, muted.
 
 ## Deviations
