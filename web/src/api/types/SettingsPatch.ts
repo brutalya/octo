@@ -15,4 +15,4 @@ node_name?: string,
 /**
  * This device's label for its network (max 64 chars); `""` resets to the relay host.
  */
-network_name?: string, };
+network_name?: string, public_sync?: boolean, };

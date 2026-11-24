@@ -145,4 +145,24 @@ describe('FilesPanel', () => {
       expect(screen.queryByRole('button', { name: 'Attach to chat' })).toBeNull();
     });
   });
+
+  it('this device offers its Public auto-sync switch', async () => {
+    console.log('[Step 1/2] this device is open; its setting says off');
+    useNodesStore.setState({ nodes: [], selectedId: null });
+    const f = vi.fn(async (_url: string, init?: RequestInit) =>
+      new Response(JSON.stringify({ public_sync: init?.method === 'PATCH' })),
+    );
+    vi.stubGlobal('fetch', f);
+    render(<FilesPanel />);
+    expect(await screen.findByText('Auto-sync off')).toBeInTheDocument();
+    console.log('[Step 2/2] switching it on saves the setting');
+    await userEvent.click(screen.getByRole('button', { name: 'Public actions' }));
+    await userEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Auto-sync Public' }));
+    expect(await screen.findByText('Auto-sync on')).toBeInTheDocument();
+    const patch = f.mock.calls.find((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'PATCH') as unknown as [string, RequestInit];
+    expect(patch[0]).toBe('/api/settings');
+    expect(JSON.parse(patch[1].body as string)).toEqual({ public_sync: true });
+    vi.unstubAllGlobals();
+  });
 });
+

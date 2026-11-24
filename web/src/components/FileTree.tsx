@@ -74,6 +74,7 @@ export function FileTree({
   selected,
   onSelect,
   onAttach,
+  autoSync,
   newRoot = false,
   onNewRootDone,
 }: {
@@ -85,19 +86,30 @@ export function FileTree({
   onSelect?: (paths: string[], on: boolean) => void;
   /** Offered in a file's menu when a chat can take it. */
   onAttach?: (e: SharedEntry) => void;
+  /** This device's Public auto-sync, when the open device is this one. */
+  autoSync?: { on: boolean; toggle: () => void };
   newRoot?: boolean;
   onNewRootDone?: () => void;
 }) {
   const entries = useFilesStore((s) => s.entries[space]);
   const others = useFilesStore((s) => s.others?.[space] ?? EMPTY);
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
-  const [menu, setMenu] = useState<Menu | null>(null);
+  const [menu, setMenuRaw] = useState<Menu | null>(null);
+  /** The entry whose new folder the open menu asks for. */
+  const [moving, setMoving] = useState<SharedEntry | null>(null);
+  const setMenu = (m: Menu | null) => {
+    setMenuRaw(m);
+    setMoving(null);
+  };
   const [editing, setEditing] = useState<Editing | null>(null);
   const [uploadDir, setUploadDir] = useState('');
   const inputId = useId();
 
   const menuRef = useRef<HTMLDivElement>(null);
-  const closeMenu = useCallback(() => setMenu(null), []);
+  const closeMenu = useCallback(() => {
+    setMenuRaw(null);
+    setMoving(null);
+  }, []);
   useClickOutside(menuRef, menu !== null, closeMenu);
 
   const merged = mergeDevices({ id: null, name: device, entries }, others);
@@ -135,7 +147,7 @@ export function FileTree({
 
   const openMenu = (el: HTMLElement, entry: SharedEntry) => {
     const r = el.getBoundingClientRect();
-    setMenu({ x: Math.min(r.left, window.innerWidth - 232), y: r.bottom, entry });
+    setMenu({ x: r.left, y: r.bottom, entry });
   };
 
   const elsewhere = (e: SharedEntry) =>
@@ -169,6 +181,7 @@ export function FileTree({
     const inside = isDir ? filesUnder(entry.path) : [entry.path];
     return (
       <li key={entry.path}>
+        {/* The name is the button; the checkbox and actions sit beside it, never inside. */}
         <div
           draggable={!isDir && entry.here}
           onDragStart={(e) => e.dataTransfer.setData(DRAG_TYPE, JSON.stringify({ space, path: entry.path }))}
@@ -176,19 +189,8 @@ export function FileTree({
             e.preventDefault();
             setMenu({ x: e.clientX, y: e.clientY, entry });
           }}
-          role="button"
-          tabIndex={0}
-          aria-expanded={isDir ? open : undefined}
-          onKeyDown={(e) => {
-            if (e.target === e.currentTarget && e.key === 'Enter') e.currentTarget.click();
-          }}
-          onClick={(e) => {
-            if (isDir) toggle(entry.path);
-            else if (entry.here) void useFilesStore.getState().open(space, entry.path);
-            else openMenu(e.currentTarget, entry); // not here: what can be done with it
-          }}
           style={{ paddingLeft: depth * 14 + 4 }}
-          className={`group flex cursor-pointer items-center gap-1.5 rounded py-0.5 pr-1 text-sm hover:bg-slate-100 max-md:min-h-11 ${
+          className={`group flex items-center gap-1.5 rounded py-0.5 pr-1 text-sm hover:bg-slate-100 max-md:min-h-11 ${
             entry.here ? 'text-slate-600' : 'text-slate-400'
           } ${!isDir && selected?.has(entry.path) ? 'bg-indigo-50' : ''}`}
         >
@@ -196,14 +198,28 @@ export function FileTree({
             <Pick label={`Select ${n.name}`} state={pickState(inside)} onChange={(on) => onSelect(inside, on)} />
           )}
           {onSelect && inside.length === 0 && <span className="w-4 shrink-0 max-md:w-5" />}
-          {isDir ? (open ? <ChevronDown size={14} className="shrink-0" /> : <ChevronRight size={14} className="shrink-0" />) : <span className="w-3.5 shrink-0" />}
-          {isDir ? <Folder size={14} className="shrink-0" /> : <FileIcon size={14} className="shrink-0" />}
           {renaming ? (
-            <NameInput initial={n.name} onDone={(v) => void finish(v)} />
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              {isDir ? <ChevronRight size={14} className="shrink-0" /> : <span className="w-3.5 shrink-0" />}
+              {isDir ? <Folder size={14} className="shrink-0" /> : <FileIcon size={14} className="shrink-0" />}
+              <NameInput initial={n.name} onDone={(v) => void finish(v)} />
+            </span>
           ) : (
-            <span className="min-w-0 flex-1 truncate">{n.name}</span>
+            <button
+              aria-expanded={isDir ? open : undefined}
+              onClick={(e) => {
+                if (isDir) toggle(entry.path);
+                else if (entry.here) void useFilesStore.getState().open(space, entry.path);
+                else openMenu(e.currentTarget, entry); // not here: what can be done with it
+              }}
+              className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-left"
+            >
+              {isDir ? (open ? <ChevronDown size={14} className="shrink-0" /> : <ChevronRight size={14} className="shrink-0" />) : <span className="w-3.5 shrink-0" />}
+              {isDir ? <Folder size={14} className="shrink-0" /> : <FileIcon size={14} className="shrink-0" />}
+              <span className="min-w-0 flex-1 truncate">{n.name}</span>
+              {elsewhere(entry)}
+            </button>
           )}
-          {elsewhere(entry)}
           {actions(entry, n.name)}
         </div>
         {isDir && open && (
@@ -225,11 +241,48 @@ export function FileTree({
     f();
     setMenu(null);
   };
+  const moveBody = (e: SharedEntry) => {
+    const name = e.path.slice(e.path.lastIndexOf('/') + 1);
+    const from = parentOf(e.path);
+    const places = [
+      '',
+      ...merged
+        .filter((d) => d.kind === 'dir')
+        .map((d) => d.path)
+        .sort((a, b) => a.localeCompare(b)),
+    ].filter((d) => d !== from && d !== e.path && !d.startsWith(e.path + '/'));
+    return (
+      <>
+        <div className="truncate border-b border-slate-200 px-3 pb-1.5 pt-1 text-xs text-slate-400">Move {name} to</div>
+        <div className="max-h-64 overflow-y-auto">
+          {places.map((d) => (
+            <button
+              key={d || '/'}
+              role="menuitem"
+              className={item}
+              onClick={act(() => void useFilesStore.getState().renameEverywhere(space, e, join(d, name)))}
+            >
+              <Folder size={14} className="shrink-0 text-slate-400" />
+              <span className="truncate">{d || label}</span>
+            </button>
+          ))}
+          {places.length === 0 && <p className="px-3 py-2 text-sm text-slate-400">No other folders</p>}
+        </div>
+      </>
+    );
+  };
+
   const menuBody = (m: Menu) => {
     const e = m.entry;
     const isRoot = e.path === '';
     const name = isRoot ? label : e.path.slice(e.path.lastIndexOf('/') + 1);
     const st = useFilesStore.getState();
+    if (moving) return moveBody(moving);
+    const moveItem = (
+      <button role="menuitem" className={item} onClick={() => setMoving(e)}>
+        Move to folder
+      </button>
+    );
     if (e.kind === 'dir') {
       const missing = missingUnder(merged, e.path);
       return (
@@ -257,11 +310,25 @@ export function FileTree({
               Get all on {device}
             </button>
           )}
+          {isRoot && autoSync && (
+            <button
+              role="menuitemcheckbox"
+              aria-checked={autoSync.on}
+              className={item}
+              onClick={act(autoSync.toggle)}
+            >
+              <span className="flex-1">Auto-sync {label}</span>
+              <span className={`relative h-5 w-9 shrink-0 rounded-full ${autoSync.on ? 'bg-indigo-500' : 'bg-slate-200'}`}>
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full transition-[left] ${autoSync.on ? 'left-[18px] bg-slate-50' : 'left-0.5 bg-slate-400'}`} />
+              </span>
+            </button>
+          )}
           {!isRoot && (
             <>
               <button role="menuitem" className={item} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
                 Rename
               </button>
+              {moveItem}
               <button role="menuitem" className={`${item} text-red-500`} onClick={act(() => void st.removeEverywhere(space, e))}>
                 {e.on.length ? 'Delete on all devices' : 'Delete'}
               </button>
@@ -290,6 +357,12 @@ export function FileTree({
         <button role="menuitem" className={item} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
           Rename
         </button>
+        {moveItem}
+        {space === 'public' && (
+          <button role="menuitem" className={item} onClick={act(() => void st.moveToPrivate(e))}>
+            Move to Private
+          </button>
+        )}
         <button role="menuitem" className={`${item} text-red-500`} onClick={act(() => void st.removeEverywhere(space, e))}>
           {e.on.length ? 'Delete on all devices' : 'Delete'}
         </button>
@@ -314,24 +387,23 @@ export function FileTree({
         }}
       />
       <div
-        role="button"
-        tabIndex={0}
-        aria-expanded={rootOpen}
-        onClick={() => toggle('')}
-        onKeyDown={(e) => {
-          if (e.target === e.currentTarget && e.key === 'Enter') toggle('');
-        }}
         onContextMenu={(e) => {
           e.preventDefault();
           setMenu({ x: e.clientX, y: e.clientY, entry: root });
         }}
-        className="flex cursor-pointer items-center gap-1.5 rounded border-b border-slate-200 py-1 pl-1 pr-1 text-sm max-md:min-h-11"
+        className="flex items-center gap-1.5 rounded border-b border-slate-200 py-1 pl-1 pr-1 text-sm max-md:min-h-11"
       >
         {onSelect && all.length > 0 && <Pick label={`Select all in ${label}`} state={pickState(all)} onChange={(on) => onSelect(all, on)} />}
-        {rootOpen ? <ChevronDown size={14} className="shrink-0 text-slate-400" /> : <ChevronRight size={14} className="shrink-0 text-slate-400" />}
-        {space === 'private' ? <Lock size={14} className="shrink-0 text-violet-400" /> : <HardDrive size={14} className="shrink-0 text-slate-500" />}
-        <span className="font-semibold text-slate-800">{label}</span>
-        <span className="min-w-0 flex-1 truncate text-xs text-slate-400">on {device}</span>
+        <button aria-expanded={rootOpen} onClick={() => toggle('')} className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-left">
+          {rootOpen ? <ChevronDown size={14} className="shrink-0 text-slate-400" /> : <ChevronRight size={14} className="shrink-0 text-slate-400" />}
+          {space === 'private' ? <Lock size={14} className="shrink-0 text-violet-400" /> : <HardDrive size={14} className="shrink-0 text-slate-500" />}
+          <span className="font-semibold text-slate-800">{label}</span>
+          <span className="flex min-w-0 flex-1 gap-1 truncate text-xs text-slate-400">
+            <span className="truncate">on {device}</span>
+            {autoSync && <span className="shrink-0">·</span>}
+            {autoSync && <span className="shrink-0">{autoSync.on ? 'Auto-sync on' : 'Auto-sync off'}</span>}
+          </span>
+        </button>
         {actions(root, label)}
       </div>
       {rootOpen && (
@@ -359,7 +431,7 @@ export function FileTree({
         <div
           ref={menuRef}
           role="menu"
-          style={{ position: 'fixed', left: Math.max(8, menu.x), top: Math.max(8, Math.min(menu.y, window.innerHeight - 300)) }}
+          style={{ position: 'fixed', left: Math.max(8, Math.min(menu.x, window.innerWidth - 232)), top: Math.max(8, Math.min(menu.y, window.innerHeight - 300)) }}
           className="z-20 w-56 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
         >
           {menuBody(menu)}

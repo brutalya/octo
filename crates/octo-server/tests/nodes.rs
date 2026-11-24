@@ -777,6 +777,10 @@ async fn removing_a_member_rotates_and_is_local_only() {
 const MULTIPART_B: &str = "XBOUNDARYX";
 
 async fn put_private(n: &N, path: &str, data: &[u8]) {
+    put(n, "private", path, data).await
+}
+
+async fn put(n: &N, space: &str, path: &str, data: &[u8]) {
     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
     let mut body = format!(
         "--{MULTIPART_B}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
@@ -786,7 +790,7 @@ async fn put_private(n: &N, path: &str, data: &[u8]) {
     body.extend_from_slice(format!("\r\n--{MULTIPART_B}--\r\n").as_bytes());
     let mut b = Request::builder()
         .method("POST")
-        .uri(format!("/api/files/private?path={dir}"))
+        .uri(format!("/api/files/{space}?path={dir}"))
         .header(
             "content-type",
             format!("multipart/form-data; boundary={MULTIPART_B}"),
@@ -1716,4 +1720,48 @@ async fn a_stalled_upload_fails_fast_instead_of_hanging() {
             .all(|f| f["path"] != "big.bin"),
         "no cut file is saved: {files}"
     );
+}
+
+async fn read_public(n: &N, path: &str) -> Option<Vec<u8>> {
+    let (s, b) = raw(n, "GET", &format!("/api/files/public/content?path={path}")).await;
+    (s == StatusCode::OK).then_some(b)
+}
+
+#[tokio::test]
+async fn public_autosync_brings_missing_files_and_keeps_local_ones() {
+    eprintln!("[Step 1/3] alpha has two public files; beta has its own copy of one path");
+    let (a, b, _) = paired_trust(None, None, Some(false)).await;
+    put(&a, "public", "docs/new.txt", b"from alpha").await;
+    put(&a, "public", "same.txt", b"alpha version").await;
+    put(&b, "public", "same.txt", b"beta version").await;
+    let (s, v) = b.json("GET", "/api/settings", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["public_sync"], false, "off by default");
+
+    eprintln!("[Step 2/3] beta turns auto-sync on");
+    let (s, v) = b
+        .json("PATCH", "/api/settings", Some(json!({"public_sync": true})))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["public_sync"], true);
+
+    eprintln!("[Step 3/3] the missing file arrives; beta's own file is not overwritten");
+    for _ in 0..150 {
+        if read_public(&b, "docs/new.txt").await.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        read_public(&b, "docs/new.txt").await.as_deref(),
+        Some(&b"from alpha"[..])
+    );
+    assert_eq!(
+        read_public(&b, "same.txt").await.as_deref(),
+        Some(&b"beta version"[..])
+    );
+    // Alpha did not ask for it: nothing of beta's comes to alpha.
+    put(&b, "public", "only-beta.txt", b"b").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(read_public(&a, "only-beta.txt").await, None);
 }

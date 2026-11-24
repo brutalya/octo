@@ -176,5 +176,38 @@ describe('files store', () => {
       const patches = f.mock.calls.filter((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'PATCH').map((c) => c[0]);
       expect(patches).toEqual(['/api/nodes/lin/files/public?path=r.pdf', '/api/nodes/pc/files/public?path=r.pdf']);
     });
+
+    it('moveToPrivate copies into Private (never over a file there), then removes every Public copy', async () => {
+      console.log('[Step 1/2] a.md is on pc and linux; Private already has an a.md in docs');
+      const f = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/api/files/private') return json([{ path: 'docs/a.md', kind: 'file', size: 1, modified: 1 }]);
+        if (url === '/api/files/public/content?path=docs%2Fa.md') return new Response('aaa');
+        if (init?.method === 'POST') return json([{ path: 'docs/a (1).md', kind: 'file', size: 3, modified: 1 }]);
+        if (init?.method === 'DELETE') return new Response(null, { status: 200 });
+        return json([]);
+      });
+      vi.stubGlobal('fetch', f);
+      await useFilesStore.getState().moveToPrivate({
+        path: 'docs/a.md', kind: 'file', size: 3, modified: 1, here: true, on: [lin],
+      });
+      console.log('[Step 2/2] stored as docs/a (1).md in Private; Public copies gone');
+      const post = f.mock.calls.find((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'POST') as unknown as [string, RequestInit];
+      expect(post[0]).toBe('/api/files/private?path=docs');
+      expect(((post[1].body as FormData).get('file') as File).name).toBe('a (1).md');
+      const deletes = f.mock.calls.filter((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'DELETE').map((c) => c[0]);
+      expect(deletes).toEqual(['/api/files/public?path=docs%2Fa.md', '/api/nodes/lin/files/public?path=docs%2Fa.md']);
+    });
+
+    it('moveToPrivate keeps the Public copies when the copy failed', async () => {
+      const f = vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') return new Response('{"error":"too large"}', { status: 413 });
+        if (url.includes('/content')) return new Response('aaa');
+        return json([]);
+      });
+      vi.stubGlobal('fetch', f);
+      await useFilesStore.getState().moveToPrivate({ path: 'a.md', kind: 'file', size: 3, modified: 1, here: true, on: [] });
+      expect(f.mock.calls.some((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
+      expect(useFilesStore.getState().error).toBe('too large');
+    });
   });
 });

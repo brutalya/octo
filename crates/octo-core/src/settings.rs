@@ -16,6 +16,8 @@ pub struct Settings {
     pub node_name: Option<String>,
     /// This device's label for its network (default in the UI: the relay host).
     pub network_name: Option<String>,
+    /// Copy Public files that other devices have and this one does not (never overwrites).
+    pub public_sync: bool,
 }
 
 impl Default for Settings {
@@ -27,6 +29,7 @@ impl Default for Settings {
             relay_url: None,
             node_name: None,
             network_name: None,
+            public_sync: false,
         }
     }
 }
@@ -44,6 +47,7 @@ impl std::fmt::Debug for Settings {
             .field("relay_url", &self.relay_url)
             .field("node_name", &self.node_name)
             .field("network_name", &self.network_name)
+            .field("public_sync", &self.public_sync)
             .finish()
     }
 }
@@ -59,6 +63,7 @@ pub struct SettingsView {
     pub relay_url: Option<String>,
     pub node_name: Option<String>,
     pub network_name: Option<String>,
+    pub public_sync: bool,
 }
 
 /// The part of the settings the network node cares about.
@@ -66,6 +71,7 @@ pub struct SettingsView {
 pub struct NetSettings {
     pub relay_url: Option<String>,
     pub node_name: Option<String>,
+    pub public_sync: bool,
 }
 
 /// Absent field = unchanged. `openrouter_api_key: ""` clears the key.
@@ -87,6 +93,8 @@ pub struct SettingsPatch {
     /// This device's label for its network (max 64 chars); `""` resets to the relay host.
     #[ts(optional)]
     pub network_name: Option<String>,
+    #[ts(optional)]
+    pub public_sync: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -134,6 +142,7 @@ impl Settings {
             relay_url: self.relay_url.clone(),
             node_name: self.node_name.clone(),
             network_name: self.network_name.clone(),
+            public_sync: self.public_sync,
         }
     }
 
@@ -141,6 +150,7 @@ impl Settings {
         NetSettings {
             relay_url: self.relay_url.clone(),
             node_name: self.node_name.clone(),
+            public_sync: self.public_sync,
         }
     }
 
@@ -182,6 +192,9 @@ impl Settings {
         if let Some(n) = p.network_name {
             let n: String = n.trim().chars().take(64).collect();
             self.network_name = (!n.is_empty()).then_some(n);
+        }
+        if let Some(on) = p.public_sync {
+            self.public_sync = on;
         }
         if let Some(u) = url {
             self.ollama_url = u;

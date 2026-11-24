@@ -106,4 +106,5 @@ Quick start (relay):
 - Two keys: `network_key` (membership and routing, held by every node) and `private_key` (private space sync, 32 bytes, with an epoch).
 - Device trust levels: `full` (gets `private_key`, may read private threads and `/files/private`) and `public` (public data only). A new device is `public` by default; the host chooses when confirming the SAS.
 - Policy is enforced on the target node before the request is handled; the thread list is filtered for `public`, private threads, files and attachments return 403.
+- Files: Private files sync automatically between `full` devices. Public files stay on the device that has them; the Files panel lists every online device's Public files in one tree. With Public auto-sync on (`PATCH /api/settings {public_sync: true}`, off by default, per device) a device copies Public files it lacks from the online devices every minute. It never overwrites or deletes; Delete and Rename in the panel act on every device that has the file.
 - Downgrading or removing a device rotates `private_key` (new epoch) and sends it only to the remaining `full` devices. Data copied earlier is not revoked.
