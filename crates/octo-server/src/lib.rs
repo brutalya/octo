@@ -817,6 +817,7 @@ fn node_routes(node: Arc<Node>) -> Router {
         .route("/network", get(network_view))
         .route("/network/create", post(network_create))
         .route("/network/leave", post(network_leave))
+        .route("/network/wake", post(network_wake))
         .with_state(node)
 }
 
@@ -980,6 +981,11 @@ async fn network_create(
 async fn network_leave(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
     n.leave().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn network_wake(State(n): State<Arc<Node>>) -> StatusCode {
+    n.wake().await;
+    StatusCode::NO_CONTENT
 }
 
 async fn pairing_cancel(State(n): State<Arc<Node>>) -> StatusCode {

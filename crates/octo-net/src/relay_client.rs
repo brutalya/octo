@@ -11,10 +11,11 @@ use crate::relay::{
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use snow::Builder;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -22,6 +23,11 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// A socket write that takes longer than this ends the session (reconnect).
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The relay answers a WebSocket ping with a pong. With every keepalive the link is probed so:
+/// no answer within this long = the link died silently (NAT dropped it, the device slept).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// After `wake` (the app is back in front) a dead link is noticed sooner.
+const WAKE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug)]
 pub struct RelayClientConfig {
@@ -55,6 +61,7 @@ pub struct RelayHandle {
     online: watch::Receiver<bool>,
     last_error: LastError,
     task: Option<JoinHandle<()>>,
+    wake: Arc<Notify>,
 }
 
 type LastError = Arc<Mutex<Option<String>>>;
@@ -149,14 +156,30 @@ impl RelayHandle {
         let (ev_tx, events) = mpsc::channel(1024);
         let (on_tx, online) = watch::channel(false);
         let last_error = LastError::default();
-        let task = tokio::spawn(run(cfg, cmd_rx, ev_tx, on_tx, last_error.clone()));
+        let wake = Arc::new(Notify::new());
+        let task = tokio::spawn(run(
+            cfg,
+            cmd_rx,
+            ev_tx,
+            on_tx,
+            last_error.clone(),
+            wake.clone(),
+        ));
         Self {
             cmd: Some(cmd),
             events,
             online,
             last_error,
             task: Some(task),
+            wake,
         }
+    }
+
+    /// The device is in use again (app back in front, network changed): a link that died
+    /// meanwhile is noticed within a few seconds, and a reconnect waiting out its backoff
+    /// starts now.
+    pub fn wake(&self) {
+        self.wake.notify_one();
     }
 
     pub fn status(&self) -> LinkStatus {
@@ -211,11 +234,21 @@ async fn run(
     events: mpsc::Sender<Event>,
     online: watch::Sender<bool>,
     last_error: LastError,
+    wake: Arc<Notify>,
 ) {
     let mut attempt = 0u32;
     loop {
         let mut ready = false;
-        let r = session(&cfg, &mut cmd, &events, &online, &mut ready, &last_error).await;
+        let r = session(
+            &cfg,
+            &mut cmd,
+            &events,
+            &online,
+            &mut ready,
+            &last_error,
+            &wake,
+        )
+        .await;
         if let Err(e) = r {
             *last_error.lock().unwrap_or_else(|p| p.into_inner()) = Some(describe(&e));
         }
@@ -227,12 +260,15 @@ async fn run(
             return;
         }
         attempt = if ready { 0 } else { attempt.saturating_add(1) };
-        tokio::time::sleep(backoff_delay(
+        let backoff = tokio::time::sleep(backoff_delay(
             cfg.backoff_base,
             cfg.backoff_max,
             attempt.saturating_sub(1),
-        ))
-        .await;
+        ));
+        tokio::select! {
+            _ = backoff => {}
+            _ = wake.notified() => attempt = 0,
+        }
         // Frames queued while the link was down are stale for stateful Noise sessions: drop them.
         while cmd.try_recv().is_ok() {}
     }
@@ -332,6 +368,7 @@ async fn session(
     online: &watch::Sender<bool>,
     ready: &mut bool,
     last_error: &LastError,
+    wake: &Notify,
 ) -> Result<()> {
     let to = Duration::from_secs(10);
     let connect = tokio_tungstenite::connect_async_tls_with_config(
@@ -373,9 +410,12 @@ async fn session(
     let _ = online.send(true);
     let _ = events.try_send(Event::Connected);
     let (sink, stream) = ws.split();
+    // When anything last arrived (ms since `base`): the writer's probes check it.
+    let base = Instant::now();
+    let seen = AtomicU64::new(0);
     // Reader and writer run concurrently: a blocked socket write never stops reads.
-    let writer = write_half(sink, link.clone(), cmd);
-    let reader = read_half(stream, link, events);
+    let writer = write_half(sink, link.clone(), cmd, wake, base, &seen);
+    let reader = read_half(stream, link, events, base, &seen);
     tokio::select! {
         r = writer => r,
         r = reader => r,
@@ -395,16 +435,26 @@ async fn write_timed(
 }
 
 /// Sends queued frames and a keepalive every `KEEPALIVE_EVERY`; closes the link when the
-/// command queue is closed (`shutdown`, after flushing what was queued).
+/// command queue is closed (`shutdown`, after flushing what was queued). Each keepalive, and
+/// each `wake`, also sends a WebSocket ping: if nothing at all arrives before the probe's
+/// deadline the link is dead and the session ends (reconnect).
 async fn write_half(
     mut sink: SplitSink<Ws, Message>,
     link: SharedLink,
     cmd: &mut mpsc::Receiver<(NodeId, Vec<u8>)>,
+    wake: &Notify,
+    base: Instant,
+    seen: &AtomicU64,
 ) -> Result<()> {
     let mut tick = tokio::time::interval(KEEPALIVE_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick.tick().await;
+    // (sent at, ms since base; deadline)
+    let mut probe: Option<(u64, tokio::time::Instant)> = None;
+    // +1: a ping sent in the very first millisecond still needs an answer.
+    let since = |t: Instant| t.duration_since(base).as_millis() as u64 + 1;
     loop {
+        let deadline = probe.map(|p| p.1);
         tokio::select! {
             c = cmd.recv() => {
                 let Some((to, payload)) = c else {
@@ -418,18 +468,55 @@ async fn write_half(
                 write_timed(&mut sink, &link, &pt).await?;
                 tick.reset();
             }
-            _ = tick.tick() => write_timed(&mut sink, &link, &[T_KEEPALIVE]).await?,
+            _ = tick.tick() => {
+                write_timed(&mut sink, &link, &[T_KEEPALIVE]).await?;
+                if probe.is_none() {
+                    ping(&mut sink).await?;
+                    probe = Some((since(Instant::now()), tokio::time::Instant::now() + PROBE_TIMEOUT));
+                }
+            }
+            _ = wake.notified() => {
+                ping(&mut sink).await?;
+                let d = tokio::time::Instant::now() + WAKE_PROBE_TIMEOUT;
+                probe = Some((since(Instant::now()), deadline.map_or(d, |x| x.min(d))));
+            }
+            _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                let sent = probe.map_or(0, |p| p.0);
+                if seen.load(Ordering::Relaxed) < sent {
+                    return Err(NetError::Timeout); // nothing came back: the link is dead
+                }
+                probe = None;
+            }
         }
     }
+}
+
+async fn ping(sink: &mut SplitSink<Ws, Message>) -> Result<()> {
+    tokio::time::timeout(WRITE_TIMEOUT, sink.send(Message::Ping(Vec::new().into())))
+        .await
+        .map_err(|_| NetError::Timeout)?
+        .map_err(werr)
 }
 
 async fn read_half(
     mut stream: SplitStream<Ws>,
     link: SharedLink,
     events: &mpsc::Sender<Event>,
+    base: Instant,
+    seen: &AtomicU64,
 ) -> Result<()> {
     loop {
-        let ct = recv_bin(&mut stream).await?;
+        // Any message counts as a sign of life, pongs included.
+        let ct = loop {
+            let m = stream.next().await;
+            // Rounded up, so an answer within the same millisecond as the ping still counts.
+            seen.store(base.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
+            match m {
+                Some(Ok(Message::Binary(b))) => break b.to_vec(),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                _ => return Err(NetError::Closed),
+            }
+        };
         let pt = lock_link(&link).open(&ct)?;
         match pt.split_first() {
             Some((&T_DELIVER, rest)) if rest.len() >= 16 => {
