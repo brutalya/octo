@@ -10,6 +10,8 @@ import { ChatInput } from './components/ChatInput';
 import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
 import { useNodesStore } from './stores/nodes';
+import { useDevicesStore } from './stores/devices';
+import { useWakeOnResume } from './lib/wake';
 
 export function App() {
   const activeId = useThreadsStore((s) => s.activeId);
@@ -34,6 +36,14 @@ export function App() {
     const poll = setInterval(() => void useNodesStore.getState().load(), 5000);
     return () => clearInterval(poll);
   }, []);
+
+  // Back in front (phone unlocked): check the link at once and refresh what is shown.
+  useWakeOnResume(() => {
+    void useNodesStore.getState().load().then(() => {
+      void useThreadsStore.getState().load();
+      void useDevicesStore.getState().load();
+    });
+  });
 
   useEffect(() => {
     if (activeId && !useChatStore.getState().streaming[activeId]) {

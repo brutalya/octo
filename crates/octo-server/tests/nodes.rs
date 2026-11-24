@@ -1765,3 +1765,25 @@ async fn public_autosync_brings_missing_files_and_keeps_local_ones() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(read_public(&a, "only-beta.txt").await, None);
 }
+
+#[tokio::test]
+async fn wake_is_local_and_keeps_a_working_link() {
+    eprintln!("[Step 1/2] two paired devices; the UI says it is back in front");
+    let (a, b, id_b) = paired(None, None).await;
+    let (s, _) = raw(&a, "POST", "/api/network/wake").await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    eprintln!("[Step 2/2] the link is still good afterwards; and wake is not reachable remotely");
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let (s, v) = a.json("GET", "/api/nodes", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        v.as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["node_id"] == id_b.as_str() && n["online"] == true),
+        "{v}"
+    );
+    let id_a = a.id().await;
+    let (s, _) = raw(&b, "POST", &format!("/api/nodes/{id_a}/network/wake")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+}

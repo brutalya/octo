@@ -109,6 +109,10 @@ export const api = {
   pairingCancel: async (): Promise<void> => {
     await request('/pairing/cancel', { method: 'POST' }, true);
   },
+  /** The app is in front again: the local node checks its relay link now. */
+  wake: async (): Promise<void> => {
+    await request('/network/wake', { method: 'POST' }, true);
+  },
   /** This device's network (local only, like settings). */
   network: async (): Promise<NetworkView> => (await request('/network', undefined, true)).json(),
   /** Starts a network on the relay of a relay code, this device first. */

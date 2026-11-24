@@ -605,3 +605,132 @@ async fn probe_tells_ok_wrong_key_and_unreachable_apart() {
     let e = probe(&url(dead), t).await.unwrap_err().to_string();
     assert!(!e.contains("key"), "{e}");
 }
+
+/// A TCP forwarder whose open connections can go silent (a link that died while the phone
+/// slept: no error, nothing arrives). Connections made afterwards pass normally.
+struct Blackhole {
+    addr: std::net::SocketAddr,
+    opened: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    muted_upto: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Blackhole {
+    async fn to(target: std::net::SocketAddr) -> Self {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let opened = Arc::new(AtomicU64::new(0));
+        let muted_upto = Arc::new(AtomicU64::new(0));
+        let (o, m) = (opened.clone(), muted_upto.clone());
+        tokio::spawn(async move {
+            while let Ok((c, _)) = l.accept().await {
+                let Ok(s) = tokio::net::TcpStream::connect(target).await else {
+                    continue;
+                };
+                let id = o.fetch_add(1, Ordering::SeqCst) + 1;
+                let (mut cr, mut cw) = c.into_split();
+                let (mut sr, mut sw) = s.into_split();
+                let (m1, m2) = (m.clone(), m.clone());
+                tokio::spawn(async move {
+                    let mut b = vec![0u8; 65536];
+                    while let Ok(n) = cr.read(&mut b).await {
+                        if n == 0 {
+                            break;
+                        }
+                        if id > m1.load(Ordering::SeqCst) && sw.write_all(&b[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    let mut b = vec![0u8; 65536];
+                    while let Ok(n) = sr.read(&mut b).await {
+                        if n == 0 {
+                            break;
+                        }
+                        if id > m2.load(Ordering::SeqCst) && cw.write_all(&b[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        Self {
+            addr,
+            opened,
+            muted_upto,
+        }
+    }
+
+    /// Every connection open now goes silent for good.
+    fn mute(&self) {
+        let n = self.opened.load(std::sync::atomic::Ordering::SeqCst);
+        self.muted_upto
+            .store(n, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn wake_on_a_healthy_link_keeps_it() {
+    eprintln!("[Step 1/2] a client online on a working relay");
+    let (addr, _srv) = spawn_relay(RelayLimits::default()).await;
+    let k = NodeKey::generate();
+    let mut h = online(addr, &k, NET1).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), h.recv()).await {}
+    eprintln!("[Step 2/2] waking probes the link; the relay answers, nothing reconnects");
+    h.wake();
+    let r = tokio::time::timeout(Duration::from_secs(4), h.recv()).await;
+    assert!(r.is_err(), "unexpected event: {r:?}");
+    assert!(h.is_online());
+}
+
+#[tokio::test]
+async fn wake_on_a_dead_link_reconnects_at_once() {
+    eprintln!("[Step 1/3] a client online through a forwarder");
+    let (addr, _srv) = spawn_relay(RelayLimits::default()).await;
+    let bh = Blackhole::to(addr).await;
+    let k = NodeKey::generate();
+    let mut h = online(bh.addr, &k, NET1).await;
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(50), h.recv()).await {}
+    eprintln!("[Step 2/3] the link dies silently (the phone slept)");
+    bh.mute();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.is_online(), "nothing tells the client yet");
+    eprintln!("[Step 3/3] waking finds it dead and reconnects within a few seconds");
+    let t = std::time::Instant::now();
+    h.wake();
+    let got = tokio::time::timeout(Duration::from_secs(5), h.recv()).await;
+    assert_eq!(
+        got.ok().flatten(),
+        Some(Event::Disconnected),
+        "the dead link was not noticed"
+    );
+    let got = tokio::time::timeout(Duration::from_secs(5), h.recv()).await;
+    assert_eq!(got.ok().flatten(), Some(Event::Connected));
+    assert!(
+        t.elapsed() < Duration::from_secs(6),
+        "took {:?}",
+        t.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn wake_skips_the_reconnect_backoff() {
+    eprintln!("[Step 1/2] the relay is down; the client waits a long backoff");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    drop(l);
+    let k = NodeKey::generate();
+    let mut cfg = fast_cfg(addr, &k, NET1);
+    cfg.backoff_base = Duration::from_secs(30);
+    cfg.backoff_max = Duration::from_secs(30);
+    let h = RelayHandle::connect(cfg);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let tl = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let _srv = serve_on(tl, RelayLimits::default());
+    eprintln!("[Step 2/2] the relay is back; waking connects now, not in 30 s");
+    h.wake();
+    h.wait_online(Duration::from_secs(3)).await.unwrap();
+}

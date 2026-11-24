@@ -43,7 +43,8 @@ const RESP_HEADERS: [&str; 5] = [
 /// Largest request body accepted through the tunnel (same as the upload limit).
 const MAX_BODY: usize = crate::UPLOAD_LIMIT;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
-const PING_TIMEOUT: Duration = Duration::from_secs(2);
+/// A mobile link can take a few seconds; one slow answer is not a dead session.
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_NAME: &str = "octo";
 
 #[derive(Debug, Clone)]
@@ -105,6 +106,8 @@ enum Cmd {
     Control(NodeId, Vec<u8>),
     /// Tell established full members that private files changed here.
     Hint,
+    /// The UI is in front again: check the relay link now, reconnect without waiting.
+    Wake,
 }
 
 /// The local user's choice in the SAS dialog: accept, trust level, may run CLI agents here.
@@ -143,6 +146,8 @@ struct Shared {
     ts_path: std::path::PathBuf,
     hint: tokio::sync::Notify,
     sync: Mutex<HashMap<NodeId, SyncSlot>>,
+    /// Last ping result per peer: (online, misses in a row).
+    pings: Mutex<HashMap<NodeId, (bool, u32)>>,
     /// Peers a Public auto-sync pull is running from (at most one per peer).
     public_pulls: Mutex<std::collections::HashSet<NodeId>>,
     /// Every task spawned on behalf of the node (sync runs, streams, peer tasks, body pumps);
@@ -307,6 +312,7 @@ impl Node {
             hint: tokio::sync::Notify::new(),
             sync: Mutex::new(HashMap::new()),
             public_pulls: Mutex::new(std::collections::HashSet::new()),
+            pings: Mutex::new(HashMap::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
             link: Mutex::new(None),
         });
@@ -750,6 +756,12 @@ impl Node {
 
     /// Leaves the network: ends any pairing, forgets members (new network and private keys),
     /// the relay and the network name. The other devices see this one go offline.
+    /// The UI is in front again (phone unlocked, app resumed): a relay link that died
+    /// meanwhile is found and replaced within seconds instead of after its timeouts.
+    pub async fn wake(&self) {
+        let _ = self.sh.cmd.send(Cmd::Wake).await;
+    }
+
     pub async fn leave(&self) -> Result<(), NodeError> {
         self.cancel_pairing();
         let peers: Vec<NodeId> = {
@@ -854,6 +866,10 @@ fn full_members(m: &Membership) -> Vec<NodeId> {
 
 async fn ping(sh: &Arc<Shared>, peer: NodeId) -> bool {
     let Ok((stream, link)) = sh.open(peer).await else {
+        sh.pings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(peer, (false, 0));
         return false;
     };
     let probe = async {
@@ -869,12 +885,35 @@ async fn ping(sh: &Arc<Shared>, peer: NodeId) -> bool {
         let r: RespHead = f.read_head().await.ok()?;
         Some(r.status == 204)
     };
-    match tokio::time::timeout(PING_TIMEOUT, probe).await {
-        Ok(Some(true)) => true,
-        _ => {
-            let _ = sh.cmd.send(Cmd::Reset(peer, Some(link))).await;
-            false
-        }
+    let ok = matches!(
+        tokio::time::timeout(PING_TIMEOUT, probe).await,
+        Ok(Some(true))
+    );
+    let (online, reset) = {
+        let mut g = sh.pings.lock().unwrap_or_else(|e| e.into_inner());
+        let (online, reset, next) = ping_verdict(g.get(&peer).copied(), ok);
+        g.insert(peer, next);
+        (online, reset)
+    };
+    if reset {
+        let _ = sh.cmd.send(Cmd::Reset(peer, Some(link))).await;
+    }
+    online
+}
+
+/// One missed ping keeps the previous answer (a slow mobile link, a busy peer) and the
+/// session; the second miss in a row reports offline and starts a fresh session.
+/// Returns (online, reset the session, new state).
+fn ping_verdict(prev: Option<(bool, u32)>, ok: bool) -> (bool, bool, (bool, u32)) {
+    if ok {
+        return (true, false, (true, 0));
+    }
+    let (was, misses) = prev.unwrap_or((false, 0));
+    let misses = misses + 1;
+    if misses >= 2 || !was {
+        (false, true, (false, misses))
+    } else {
+        (true, false, (true, misses))
     }
 }
 
@@ -1379,6 +1418,11 @@ impl Actor {
     async fn on_cmd(&mut self, c: Cmd) {
         match c {
             Cmd::Reconfigure => self.reconfigure(),
+            Cmd::Wake => {
+                if let Some(r) = &self.relay {
+                    r.wake();
+                }
+            }
             Cmd::Reset(peer, link) => {
                 if let (Some(l), Some(p)) = (&link, self.peers.get(&peer))
                     && !p.link.same_channel(l)
@@ -1957,6 +2001,27 @@ mod tests {
 
     fn msg(t: &str, extra: &str) -> Vec<u8> {
         format!(r#"{{"t":"{t}"{extra}}}"#).into_bytes()
+    }
+
+    #[test]
+    fn one_slow_ping_is_forgiven_two_are_not() {
+        // A device that answered stays online through one miss; the session is kept.
+        assert_eq!(
+            ping_verdict(Some((true, 0)), false),
+            (true, false, (true, 1))
+        );
+        // The second miss in a row: offline, fresh session.
+        assert_eq!(
+            ping_verdict(Some((true, 1)), false),
+            (false, true, (false, 2))
+        );
+        // Never answered yet: a miss is offline right away.
+        assert_eq!(ping_verdict(None, false), (false, true, (false, 1)));
+        // An answer clears everything.
+        assert_eq!(
+            ping_verdict(Some((false, 5)), true),
+            (true, false, (true, 0))
+        );
     }
 
     #[test]
