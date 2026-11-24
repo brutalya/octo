@@ -2,8 +2,14 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { FolderPlus, Lock, PanelRightClose, PanelRightOpen, Upload, X } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { useThreadsStore } from '../stores/threads';
+import { useNodesStore } from '../stores/nodes';
+import { useAttachStore } from '../stores/attach';
 import { FileTree } from './FileTree';
+import { mergeDevices, type SharedEntry } from '../lib/shared';
 import type { Space } from '../api/types';
+
+/** Most files one message can carry (the server's limit). */
+const MAX_ATTACH = 10;
 
 const TABS: { space: Space; label: string }[] = [
   { space: 'private', label: 'Private' },
@@ -18,14 +24,65 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   const [choice, setChoice] = useState<{ forThread: Space | null; space: Space } | null>(null);
   const [newRoot, setNewRoot] = useState(false);
   const [over, setOver] = useState(false);
+  const [picked, setPicked] = useState<{ space: Space; paths: Set<string> }>({ space: 'public', paths: new Set() });
+  const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const nodes = useNodesStore((s) => s.nodes);
+  const selectedId = useNodesStore((s) => s.selectedId);
 
   // An explicit tab pick is kept until the active thread's space changes.
   const space: Space = choice && choice.forThread === threadSpace ? choice.space : (threadSpace ?? 'public');
+  const selected = picked.space === space ? picked.paths : new Set<string>();
+
+  const openNode = nodes.find((n) => (selectedId ? n.node_id === selectedId : n.is_self));
+  const device = openNode?.name ?? 'this device';
+  // The other devices whose public files join the tree (private files already sync on their own).
+  const others = nodes
+    .filter((n) => n.online && n !== openNode)
+    .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name }));
+  const othersKey = others.map((o) => o.id).join(',');
+  const shown = sheet || !collapsed;
 
   useEffect(() => {
-    if (sheet || !collapsed) void useFilesStore.getState().load(space);
-  }, [space, collapsed, sheet]);
+    if (shown) void useFilesStore.getState().load(space);
+  }, [space, shown]);
+  useEffect(() => {
+    if (!shown) return;
+    void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    // `others` is rebuilt every render; its ids are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [space, shown, othersKey]);
+
+  const select = (paths: string[], on: boolean) =>
+    setPicked(() => {
+      const next = new Set(selected);
+      for (const p of paths) {
+        if (on) next.add(p);
+        else next.delete(p);
+      }
+      return { space, paths: next };
+    });
+
+  const canAttach = threadSpace === space;
+  /** Brings files that are only elsewhere here first: the chat's agent reads them here. */
+  const attach = async (items: SharedEntry[]) => {
+    setBusy(true);
+    try {
+      const missing = items.filter((e) => !e.here);
+      if (missing.length) await useFilesStore.getState().getHere(space, missing);
+      const here = new Set(useFilesStore.getState().entries[space].map((e) => e.path));
+      useAttachStore.getState().add(items.filter((e) => here.has(e.path)).map((e) => ({ space, path: e.path })));
+      setPicked({ space, paths: new Set() });
+      if (sheet) onClose?.();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const attachPicked = () => {
+    const st = useFilesStore.getState();
+    const all = new Map(mergeDevices({ id: null, name: device, entries: st.entries[space] }, st.others[space]).map((e) => [e.path, e]));
+    void attach([...selected].map((p) => all.get(p)).filter((e): e is SharedEntry => !!e));
+  };
 
   if (collapsed && !sheet) {
     return (
@@ -126,10 +183,42 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
         onDrop={onDrop}
         className={`min-h-24 flex-1 overflow-y-auto px-2 ${over ? 'bg-indigo-50' : ''}`}
       >
-        <FileTree space={space} newRoot={newRoot} onNewRootDone={() => setNewRoot(false)} />
+        <FileTree
+          space={space}
+          device={device}
+          selected={selected}
+          onSelect={select}
+          onAttach={canAttach ? (e) => void attach([e]) : undefined}
+          newRoot={newRoot}
+          onNewRootDone={() => setNewRoot(false)}
+        />
       </div>
       {error && <div className="px-3 py-1 text-xs text-red-500">{error}</div>}
-      {!sheet && (
+      {selected.size > 0 && (
+        <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-sm text-slate-700">
+            {busy ? `Getting files on ${device}…` : `${selected.size} selected`}
+            {!busy && !canAttach && <span className="block text-xs text-slate-400">Open a {space} chat to attach</span>}
+            {!busy && canAttach && selected.size > MAX_ATTACH && <span className="block text-xs text-slate-400">Up to {MAX_ATTACH} files</span>}
+          </span>
+          <button
+            onClick={() => setPicked({ space, paths: new Set() })}
+            className="h-9 rounded-md px-2 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-800 max-md:h-11"
+          >
+            Clear
+          </button>
+          {canAttach && (
+            <button
+              disabled={busy || selected.size > MAX_ATTACH}
+              onClick={attachPicked}
+              className="h-9 rounded-md bg-indigo-500 px-3 text-sm font-medium text-slate-50 hover:bg-indigo-600 disabled:opacity-40 max-md:h-11"
+            >
+              Attach to chat
+            </button>
+          )}
+        </div>
+      )}
+      {!sheet && selected.size === 0 && (
         <div className="m-3 rounded-lg border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400">
           Drop files here
         </div>

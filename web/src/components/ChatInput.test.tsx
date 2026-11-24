@@ -3,6 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChatInput } from './ChatInput';
 import { useFilesStore } from '../stores/files';
+import { useAttachStore } from '../stores/attach';
+import { attachDir } from '../lib/files';
 
 describe('ChatInput', () => {
   it('Enter sends and clears', async () => {
@@ -48,26 +50,55 @@ describe('ChatInput attachments', () => {
     { path: 'dir', kind: 'dir' as const, size: 0, modified: 1 },
   ];
   beforeEach(() => {
+    useAttachStore.setState({ fromFiles: [] });
     useFilesStore.setState({ entries: { private: [], public: files }, load: vi.fn(async () => {}) });
   });
 
-  it('paperclip picks a file from the current space and shows a chip', async () => {
+  const dropTree = (path: string, space = 'public') =>
+    fireEvent.drop(screen.getByTestId('chat-input'), {
+      dataTransfer: {
+        getData: (t: string) => (t === 'application/x-octo-file' ? JSON.stringify({ space, path }) : ''),
+        types: ['application/x-octo-file'],
+      },
+    });
+
+  it('files picked in Files show as one chip, are sent and then cleared', async () => {
+    console.log('[Step 1/3] three files were attached from the Files panel');
+    useAttachStore.setState({ fromFiles: [
+      { space: 'public', path: 'a.md' }, { space: 'public', path: 'docs/b.md' }, { space: 'private', path: 's.md' },
+    ] });
     const onSend = vi.fn();
     render(<ChatInput space="public" streaming={false} onSend={onSend} onStop={() => {}} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
-    expect(screen.queryByRole('menuitem', { name: 'dir' })).toBeNull();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'a.md' }));
-    expect(screen.getByText('a.md')).toBeInTheDocument();
+    console.log('[Step 2/3] one chip for the ones of this space; it lists them on click');
+    await userEvent.click(screen.getByRole('button', { name: '2 files from Files' }));
+    expect(screen.getByRole('list', { name: 'Files from Files' })).toHaveTextContent('docs/b.md');
+    console.log('[Step 3/3] sending carries them and clears the picks');
     await userEvent.type(screen.getByRole('textbox'), 'hi{Enter}');
-    expect(onSend).toHaveBeenCalledWith('hi', [{ space: 'public', path: 'a.md' }]);
-    expect(screen.queryByText('a.md')).toBeNull();
+    expect(onSend).toHaveBeenCalledWith('hi', [{ space: 'public', path: 'a.md' }, { space: 'public', path: 'docs/b.md' }]);
+    expect(useAttachStore.getState().fromFiles).toEqual([]);
+    expect(screen.queryByText(/from Files/)).toBeNull();
+  });
+
+  it('the Files chip can be removed', async () => {
+    useAttachStore.setState({ fromFiles: [{ space: 'public', path: 'a.md' }] });
+    const onSend = vi.fn();
+    render(<ChatInput space="public" streaming={false} onSend={onSend} onStop={() => {}} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Remove files from Files' }));
+    await userEvent.type(screen.getByRole('textbox'), 'hi{Enter}');
+    expect(onSend).toHaveBeenCalledWith('hi', []);
+  });
+
+  it('a rejected send gives the picks back', async () => {
+    useAttachStore.setState({ fromFiles: [{ space: 'public', path: 'a.md' }] });
+    render(<ChatInput space="public" streaming={false} onSend={async () => false} onStop={() => {}} />);
+    await userEvent.type(screen.getByRole('textbox'), 'hi{Enter}');
+    await vi.waitFor(() => expect(useAttachStore.getState().fromFiles).toEqual([{ space: 'public', path: 'a.md' }]));
   });
 
   it('chip can be removed', async () => {
     const onSend = vi.fn();
     render(<ChatInput space="public" streaming={false} onSend={onSend} onStop={() => {}} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'a.md' }));
+    dropTree('a.md');
     await userEvent.click(screen.getByRole('button', { name: 'Remove a.md' }));
     await userEvent.type(screen.getByRole('textbox'), 'hi{Enter}');
     expect(onSend).toHaveBeenCalledWith('hi', []);
@@ -114,29 +145,29 @@ describe('ChatInput restore', () => {
   it('attachment chip shows the basename with the full path as title', async () => {
     useFilesStore.setState({ entries: { private: [], public: [{ path: 'docs/a.md', kind: 'file', size: 1, modified: 1 }] } });
     render(<ChatInput space="public" streaming={false} onSend={() => {}} onStop={() => {}} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'docs/a.md' }));
+    fireEvent.drop(screen.getByTestId('chat-input'), {
+      dataTransfer: { getData: () => JSON.stringify({ space: 'public', path: 'docs/a.md' }), types: ['application/x-octo-file'] },
+    });
     expect(screen.getByTitle('docs/a.md')).toHaveTextContent('a.md');
     expect(screen.getByTitle('docs/a.md')).not.toHaveTextContent('docs');
   });
 
-  it('paperclip uploads a file from the device and attaches it', async () => {
-    const stored = [{ path: 'photo.png', kind: 'file' as const, size: 3, modified: 1 }];
-    const upload = vi.fn(async () => stored);
+  it('paperclip uploads into the chat\'s attachments folder and attaches it', async () => {
+    const upload = vi.fn(async (_s: string, d: string, fs: File[]) =>
+      fs.map((f) => ({ path: `${d}/${f.name}`, kind: 'file' as const, size: f.size, modified: 1 })),
+    );
     useFilesStore.setState({ entries: { private: [], public: [] }, upload });
     const onSend = vi.fn();
-    render(<ChatInput space="public" streaming={false} onSend={onSend} onStop={() => {}} />);
-    // [1/3] the menu offers an upload even when the space has no files yet
-    await userEvent.click(screen.getByRole('button', { name: 'Attach' }));
-    expect(screen.getByRole('menuitem', { name: 'Upload file' })).toBeInTheDocument();
-    // [2/3] picking a file uploads it to the thread's space
+    render(<ChatInput space="public" title="Trip plan" streaming={false} onSend={onSend} onStop={() => {}} />);
+    console.log('[Step 1/2] picking a file uploads it to Attachments/<today> Trip plan');
     const file = new File(['png'], 'photo.png', { type: 'image/png' });
     await userEvent.upload(screen.getByLabelText('Upload attachment'), file);
-    expect(upload).toHaveBeenCalledWith('public', '', [file]);
-    // [3/3] and attaches what the server stored
+    const dir = upload.mock.calls[0][1];
+    expect(dir).toMatch(/^Attachments\/\d{4}-\d{2}-\d{2} Trip plan$/);
+    console.log('[Step 2/2] what the server stored is attached');
     expect(await screen.findByText('photo.png')).toBeInTheDocument();
     await userEvent.type(screen.getByRole('textbox'), 'look{Enter}');
-    expect(onSend).toHaveBeenCalledWith('look', [{ space: 'public', path: 'photo.png' }]);
+    expect(onSend).toHaveBeenCalledWith('look', [{ space: 'public', path: `${dir}/photo.png` }]);
   });
 
   it('files dropped from the computer are uploaded and attached', async () => {
@@ -148,7 +179,7 @@ describe('ChatInput restore', () => {
     const file = new File(['%PDF'], 'labs.pdf', { type: 'application/pdf' });
     fireEvent.drop(screen.getByTestId('chat-input'), { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } });
     expect(await screen.findByText('labs.pdf')).toBeInTheDocument();
-    expect(upload).toHaveBeenCalledWith('public', '', [file]);
+    expect(upload).toHaveBeenCalledWith('public', expect.stringMatching(/^Attachments\/\d{4}-\d{2}-\d{2}$/), [file]);
   });
 
   it('a pasted screenshot is uploaded under a fresh name and attached', async () => {
@@ -178,7 +209,8 @@ describe('ChatInput restore', () => {
     const upload = vi.fn(async (_s: string, _d: string, fs: File[]) =>
       fs.map((f) => ({ path: f.name, kind: 'file' as const, size: f.size, modified: 1 })),
     );
-    useFilesStore.setState({ entries: { private: [], public: [{ path: 'a.md', kind: 'file', size: 1, modified: 1 }] }, upload });
+    const day = attachDir(null);
+    useFilesStore.setState({ entries: { private: [], public: [{ path: `${day}/a.md`, kind: 'file', size: 1, modified: 1 }] }, upload });
     render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
     await userEvent.upload(screen.getByLabelText('Upload attachment'), new File(['new'], 'a.md'));
     expect(await screen.findByText('a (1).md')).toBeInTheDocument();
