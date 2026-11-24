@@ -15,6 +15,7 @@ beforeEach(() => {
   f = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/settings' && init?.method === 'PATCH') return json(settings);
     if (url === '/api/settings') return json(settings);
+    if (url === '/api/network') return json({ joined: false, name: null, relay_host: null, devices: 1 });
     if (url === '/api/providers/ollama/models') return json([{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }]);
     if (url === '/api/providers/openrouter/models') return json([{ id: 'x', name: 'x' }]);
     return json({}, 404);
@@ -90,12 +91,12 @@ describe('SettingsModal', () => {
     expect(await screen.findByLabelText('Ollama URL')).toBeInTheDocument();
   });
 
-  it('is a page with sections for models, devices and relay', async () => {
+  it('is a page with sections for models and the network', async () => {
     render(<SettingsModal onClose={() => {}} />);
     const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
-    for (const name of ['Models', 'Devices', 'Relay']) {
-      expect(within(nav).getByRole('link', { name })).toBeInTheDocument();
-      expect(screen.getByRole('heading', { name })).toBeInTheDocument();
-    }
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['Models', 'Network']);
+    expect(screen.getByRole('heading', { name: 'Models' })).toHaveAttribute('id', 'settings-models');
+    // The network section's heading follows its state; the link target is always there.
+    expect(await screen.findByRole('heading', { name: 'This device is not in a network' })).toHaveAttribute('id', 'settings-network');
   });
 });
