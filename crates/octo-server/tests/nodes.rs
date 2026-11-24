@@ -1424,3 +1424,135 @@ async fn cancel_ends_a_join_and_is_idempotent() {
     let (_, v) = b.json("GET", "/api/pairing", None).await;
     assert_eq!(v["stage"], "idle");
 }
+
+async fn network(n: &N) -> Value {
+    let (s, v) = n.json("GET", "/api/network", None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v
+}
+
+/// A device is in a network once it has a relay (created) or members (joined). The name
+/// defaults to the relay host and can be set per device.
+#[tokio::test]
+async fn network_view_and_create() {
+    println!("[Step 1/4] a fresh device is in no network");
+    let url = relay().await;
+    let a = start("", "alpha", None, None).await;
+    assert_eq!(
+        network(&a).await,
+        json!({"joined": false, "name": null, "relay_host": null, "devices": 1})
+    );
+
+    println!("[Step 2/4] a bad relay code is refused and changes nothing");
+    let (s, _) = a
+        .json(
+            "POST",
+            "/api/network/create",
+            Some(json!({"relay_url": "http://x", "name": "Home"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(network(&a).await["joined"], false);
+
+    println!("[Step 3/4] create with the relay code and a name");
+    let (s, v) = a
+        .json(
+            "POST",
+            "/api/network/create",
+            Some(json!({"relay_url": url, "name": " Home "})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v,
+        json!({"joined": true, "name": "Home", "relay_host": "127.0.0.1", "devices": 1})
+    );
+    assert_eq!(relay_of(&a).await, url);
+
+    println!("[Step 4/4] an empty name falls back to the relay host");
+    let (s, _) = a
+        .json("PATCH", "/api/settings", Some(json!({"network_name": ""})))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(network(&a).await["name"], "127.0.0.1");
+}
+
+/// A device already paired with others must leave first: creating, or joining another
+/// network (which used to be dropped silently after both sides confirmed), is refused.
+#[tokio::test]
+async fn in_a_network_create_and_join_are_refused() {
+    println!("[Step 1/3] a and b share a network; c is alone on another relay");
+    let (a, _b, _) = paired(None, None).await;
+    assert_eq!(network(&a).await["devices"], 2);
+    let other = relay().await;
+    let c = start(&other, "gamma", None, None).await;
+
+    println!("[Step 2/3] create on a is refused");
+    let (s, v) = a
+        .json(
+            "POST",
+            "/api/network/create",
+            Some(json!({"relay_url": other, "name": "Work"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+
+    println!("[Step 3/3] joining c's network is refused up front, c's code stays usable");
+    let (_, inv) = c.json("POST", "/api/pairing/invite", None).await;
+    let (s, v) = a
+        .json(
+            "POST",
+            "/api/pairing/join",
+            Some(json!({"code": inv["code"], "name": "alpha"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(a.json("GET", "/api/pairing", None).await.1["stage"], "idle");
+    assert_eq!(
+        c.json("GET", "/api/pairing", None).await.1["stage"],
+        "inviting"
+    );
+}
+
+/// Leave forgets the members, the relay and the name; the device can then join another
+/// network with a code.
+#[tokio::test]
+async fn leave_then_join_another_network() {
+    println!("[Step 1/3] a and b share a network");
+    let (a, _b, id_b) = paired(None, None).await;
+    let (_, s) = a
+        .json(
+            "PATCH",
+            "/api/settings",
+            Some(json!({"network_name": "Home"})),
+        )
+        .await;
+    assert_eq!(s["network_name"], "Home");
+
+    println!("[Step 2/3] a leaves");
+    assert_eq!(
+        a.call("POST", "/api/network/leave", None).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        network(&a).await,
+        json!({"joined": false, "name": null, "relay_host": null, "devices": 1})
+    );
+    let (_, nodes) = a.json("GET", "/api/nodes", None).await;
+    assert!(
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["node_id"] != id_b)
+    );
+
+    println!("[Step 3/3] a joins c's network with c's code");
+    let other = relay().await;
+    let c = start(&other, "gamma", None, None).await;
+    pair_nodes(&c, &a, None).await;
+    let id_a = a.id().await;
+    wait_online(&c, &id_a).await;
+    assert_eq!(relay_of(&a).await, other);
+    assert_eq!(network(&a).await["devices"], 2);
+}

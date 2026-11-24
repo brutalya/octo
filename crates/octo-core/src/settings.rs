@@ -14,6 +14,8 @@ pub struct Settings {
     pub history_char_budget: usize,
     pub relay_url: Option<String>,
     pub node_name: Option<String>,
+    /// This device's label for its network (default in the UI: the relay host).
+    pub network_name: Option<String>,
 }
 
 impl Default for Settings {
@@ -24,6 +26,7 @@ impl Default for Settings {
             history_char_budget: DEFAULT_HISTORY_BUDGET,
             relay_url: None,
             node_name: None,
+            network_name: None,
         }
     }
 }
@@ -40,6 +43,7 @@ impl std::fmt::Debug for Settings {
             .field("history_char_budget", &self.history_char_budget)
             .field("relay_url", &self.relay_url)
             .field("node_name", &self.node_name)
+            .field("network_name", &self.network_name)
             .finish()
     }
 }
@@ -54,6 +58,7 @@ pub struct SettingsView {
     pub history_char_budget: usize,
     pub relay_url: Option<String>,
     pub node_name: Option<String>,
+    pub network_name: Option<String>,
 }
 
 /// The part of the settings the network node cares about.
@@ -79,6 +84,9 @@ pub struct SettingsPatch {
     /// Display name of this node (max 64 chars); `""` resets to the default.
     #[ts(optional)]
     pub node_name: Option<String>,
+    /// This device's label for its network (max 64 chars); `""` resets to the relay host.
+    #[ts(optional)]
+    pub network_name: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -125,6 +133,7 @@ impl Settings {
             history_char_budget: self.history_char_budget,
             relay_url: self.relay_url.clone(),
             node_name: self.node_name.clone(),
+            network_name: self.network_name.clone(),
         }
     }
 
@@ -169,6 +178,10 @@ impl Settings {
         if let Some(n) = p.node_name {
             let n: String = n.trim().chars().take(64).collect();
             self.node_name = (!n.is_empty()).then_some(n);
+        }
+        if let Some(n) = p.network_name {
+            let n: String = n.trim().chars().take(64).collect();
+            self.network_name = (!n.is_empty()).then_some(n);
         }
         if let Some(u) = url {
             self.ollama_url = u;

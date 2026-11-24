@@ -10,8 +10,8 @@ use octo_core::Hub;
 use octo_core::files::FilesError;
 use octo_core::files::private::{Action, SyncEntry, plan};
 use octo_core::nodes::{
-    NodeInfo, PairingInvite, PairingPending, PairingStage, PairingState, RelayCheck, RelayStatus,
-    TrustLevel,
+    NetworkView, NodeInfo, PairingInvite, PairingPending, PairingStage, PairingState, RelayCheck,
+    RelayStatus, TrustLevel,
 };
 use octo_core::settings::NetSettings;
 use octo_net::NetError;
@@ -72,6 +72,10 @@ pub enum NodeError {
     BadCode,
     #[error("unknown node")]
     UnknownNode,
+    #[error("this device is already in a network; leave it first")]
+    InNetwork,
+    #[error("the relay code must be a ws:// or wss:// address")]
+    BadRelay,
     #[error("invalid path")]
     BadPath,
     #[error("request body too large")]
@@ -619,6 +623,11 @@ impl Node {
 
     pub fn join(&self, code: &str, name: &str) -> Result<(), NodeError> {
         let code = PairingCode::parse(code).map_err(|_| NodeError::BadCode)?;
+        // Adopting another network only works while this one has no members; refuse up front
+        // instead of letting the host add a device that then never joins.
+        if !self.sh.membership().members().is_empty() {
+            return Err(NodeError::InNetwork);
+        }
         let name: String = name.trim().chars().take(64).collect();
         let name = if name.is_empty() {
             self.sh.name()
@@ -641,6 +650,81 @@ impl Node {
         if p.gen_ == gen_ && !matches!(p.st, Pair::Idle) {
             p.abort = Some(task.abort_handle());
         }
+    }
+
+    // ------------------------------------------------------------ network
+
+    pub fn network(&self) -> NetworkView {
+        let s = self.sh.hub.settings();
+        let others = self.sh.membership().members().len();
+        let relay_host = s.relay_url.as_deref().and_then(relay_host);
+        let joined = s.relay_url.is_some() || others > 0;
+        let name = joined.then(|| {
+            s.network_name
+                .clone()
+                .or_else(|| relay_host.clone())
+                .unwrap_or_else(|| "Network".into())
+        });
+        NetworkView {
+            joined,
+            name,
+            relay_host,
+            devices: u32::try_from(others + 1).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Starts a network on `relay_url` (the relay code) with this device as its first member.
+    pub async fn create_network(
+        &self,
+        relay_url: &str,
+        name: &str,
+    ) -> Result<NetworkView, NodeError> {
+        if !self.sh.membership().members().is_empty() {
+            return Err(NodeError::InNetwork);
+        }
+        let url = relay_url.trim();
+        if url.is_empty() {
+            return Err(NodeError::BadRelay);
+        }
+        let patch = octo_core::settings::SettingsPatch {
+            relay_url: Some(url.to_string()),
+            network_name: Some(name.to_string()),
+            ..Default::default()
+        };
+        self.sh.hub.update_settings(patch).map_err(|e| match e {
+            octo_core::CoreError::Settings(octo_core::settings::SettingsError::BadRelayUrl) => {
+                NodeError::BadRelay
+            }
+            e => NodeError::Net(NetError::Relay(e.to_string())),
+        })?;
+        let _ = self.sh.cmd.send(Cmd::Reconfigure).await;
+        Ok(self.network())
+    }
+
+    /// Leaves the network: ends any pairing, forgets members (new network and private keys),
+    /// the relay and the network name. The other devices see this one go offline.
+    pub async fn leave(&self) -> Result<(), NodeError> {
+        self.cancel_pairing();
+        let peers: Vec<NodeId> = {
+            let mut g = self.sh.members.write().unwrap_or_else(|e| e.into_inner());
+            let ids = g.members().iter().map(|m| m.node_id).collect();
+            g.reset()?;
+            ids
+        };
+        for p in peers {
+            let _ = self.sh.cmd.send(Cmd::Reset(p, None)).await;
+        }
+        let patch = octo_core::settings::SettingsPatch {
+            relay_url: Some(String::new()),
+            network_name: Some(String::new()),
+            ..Default::default()
+        };
+        self.sh
+            .hub
+            .update_settings(patch)
+            .map_err(|e| NodeError::Net(NetError::Relay(e.to_string())))?;
+        let _ = self.sh.cmd.send(Cmd::Reconfigure).await;
+        Ok(())
     }
 
     pub fn relay_status(&self) -> RelayStatus {
@@ -1683,6 +1767,11 @@ async fn sync_once(sh: &Arc<Shared>, peer: NodeId) -> Option<()> {
 /// failure (the run is retried).
 fn trust_gone_or_failed(sh: &Arc<Shared>, peer: NodeId) -> Option<()> {
     (sh.trust_of(&peer) != Some(Trust::Full)).then_some(())
+}
+
+/// Host of a relay URL, for naming the network.
+fn relay_host(url: &str) -> Option<String> {
+    url::Url::parse(url).ok()?.host_str().map(str::to_string)
 }
 
 #[cfg(test)]

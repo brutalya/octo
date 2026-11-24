@@ -769,9 +769,11 @@ async fn delete_file(
 impl IntoResponse for NodeError {
     fn into_response(self) -> Response {
         let status = match &self {
-            NodeError::NoRelay | NodeError::BadCode | NodeError::BadPath => StatusCode::BAD_REQUEST,
+            NodeError::NoRelay | NodeError::BadCode | NodeError::BadPath | NodeError::BadRelay => {
+                StatusCode::BAD_REQUEST
+            }
             NodeError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            NodeError::Busy => StatusCode::CONFLICT,
+            NodeError::Busy | NodeError::InNetwork => StatusCode::CONFLICT,
             NodeError::NoPending | NodeError::UnknownNode => StatusCode::NOT_FOUND,
             NodeError::Unreachable | NodeError::Net(_) => StatusCode::BAD_GATEWAY,
         };
@@ -802,6 +804,9 @@ fn node_routes(node: Arc<Node>) -> Router {
         .route("/pairing/reject", post(pairing_reject))
         .route("/pairing/cancel", post(pairing_cancel))
         .route("/pairing", get(pairing_state))
+        .route("/network", get(network_view))
+        .route("/network/create", post(network_create))
+        .route("/network/leave", post(network_leave))
         .with_state(node)
 }
 
@@ -942,6 +947,29 @@ async fn remove_node(
 
 async fn pairing_state(State(n): State<Arc<Node>>) -> impl IntoResponse {
     Json(n.pairing_state())
+}
+
+async fn network_view(State(n): State<Arc<Node>>) -> impl IntoResponse {
+    Json(n.network())
+}
+
+#[derive(Deserialize)]
+struct CreateNetworkBody {
+    relay_url: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn network_create(
+    State(n): State<Arc<Node>>,
+    Json(b): Json<CreateNetworkBody>,
+) -> Result<impl IntoResponse, NodeError> {
+    Ok(Json(n.create_network(&b.relay_url, &b.name).await?))
+}
+
+async fn network_leave(State(n): State<Arc<Node>>) -> Result<StatusCode, NodeError> {
+    n.leave().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn pairing_cancel(State(n): State<Arc<Node>>) -> StatusCode {
