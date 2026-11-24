@@ -44,7 +44,7 @@ Risk: claude -p as root refuses bypassPermissions (needs `IS_SANDBOX=1`), so oct
 - `POST /api/threads/:id/approvals/:aid {allow: bool}` -> 204, 404 if unknown. Through the tunnel it requires the `agents` permission (policy + test).
 - SSE responses send a keep-alive comment every 15 s (mux idle timeout is 60 s; waiting for a decision is silent).
 - `GET /api/threads/:id/approvals` -> pending list, so a reopened UI (or another device) sees open requests.
-- UI: inline row under the streaming message: summary + Allow (Check) / Deny (X) icon buttons, no text. Disappears when resolved.
+- UI: inline card under the streaming message, titled `Wants to use <tool>`: summary + labelled Allow and Deny buttons. Disappears when resolved.
 - Tests first: MCP protocol unit tests (initialize, tools/list, tools/call allow/deny, bad token 401/404, after-run token rejected); broker (resolve, timeout, cancel); fake-claude fixture script that calls the MCP endpoint with curl-free Rust? -> use a small test helper acting as the MCP client plus the existing fake CLI; tunnel policy; web vitest for the approval row.
 
 ### Deviations from the spec (as built)

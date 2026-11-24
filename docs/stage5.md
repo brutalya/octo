@@ -11,7 +11,7 @@ Goal: the phone is a full Octo node (own identity, pairing, relay link, private 
 - Remote is the main mode: when members exist, the node switcher defaults to the last used node (remembered in localStorage).
 
 ## Web: phone layout (< 768 px)
-- One column. Sidebar (threads, node switcher, settings) becomes a drawer opened by a menu button; files panel becomes a full-screen sheet.
+- One column. Sidebar (threads, node switcher, settings) becomes a full-screen menu opened by the menu button and closed with a cross; files panel becomes a full-screen sheet.
 - Composer sticks to the bottom, respects safe-area insets and the on-screen keyboard (`visualViewport`).
 - Touch targets ≥ 40 px. No hover-only actions (context actions via long-press or a visible `…` button).
 - File upload from the phone: `<input type=file>` (camera/voice recorder via system picker), same Files API.

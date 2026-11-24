@@ -54,7 +54,7 @@ Thread: `{id, title, provider, space, created_at, updated_at}`. Message: `{id, t
 TS types generated with `ts-rs` into `web/src/api/types/`.
 
 ## Web UI
-- Left: thread list, one "+" button with dropdown of installed providers, space toggle (private/public) on creation.
+- Left: thread list, one New thread button opening a dialog: installed providers, space choice (private/public).
 - Center: message feed (markdown), input at bottom, stop button while streaming.
 - Dark theme by default; reuse token/theme approach from old `frontend/src/index.css` + `tailwind.config.js` (drop vogue palette).
 - Dev: Vite proxy `/api` -> `127.0.0.1:7878`.
