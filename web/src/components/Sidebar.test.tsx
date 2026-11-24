@@ -175,13 +175,16 @@ describe('Sidebar in a network', () => {
     expect(headers).toEqual(['pc, online', 'linux, online', 'phone, this device', 'laptop, offline']);
   });
 
-  it('shows the 3 most recent chats per device and expands to all', async () => {
+  it('shows the 3 most recent chats per device; All chats on pc opens the list on pc', async () => {
     render(<Sidebar />);
     const pc = screen.getByRole('list', { name: 'Chats on pc' });
     expect(within(pc).getAllByRole('button', { name: /^(Relay|Taxes|Notes|Old one)$/ })).toHaveLength(3);
     await userEvent.click(screen.getByRole('button', { name: 'All chats on pc · 4' }));
-    expect(within(pc).getByText('Old one')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'All chats' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'pc' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('button', { name: 'Open Old one' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('list', { name: 'Chats on pc' })).toBeInTheDocument();
   });
 
   it('an offline device shows no chats', () => {
@@ -237,14 +240,12 @@ describe('Sidebar in a network', () => {
     expect(screen.queryByText('Server backups')).toBeNull();
   });
 
-  it('search looks through every device and shows all matches', async () => {
+  it('search opens All chats over every device', async () => {
     render(<Sidebar />);
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Search chats' }), 'e');
-    // pc: Relay, Taxes, Notes, Old one all match 'e' and none is cut to 3.
-    expect(within(screen.getByRole('list', { name: 'Chats on pc' })).getByText('Old one')).toBeInTheDocument();
-    await userEvent.clear(screen.getByRole('searchbox', { name: 'Search chats' }));
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Search chats' }), 'backup');
-    expect(screen.getByText('Server backups')).toBeInTheDocument();
-    expect(screen.queryByText('Relay')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Search all chats' }));
+    expect(screen.getByRole('button', { name: 'All devices' })).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search all chats' }), 'backup');
+    expect(await screen.findByRole('button', { name: 'Open Server backups' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open Relay' })).toBeNull();
   });
 });
