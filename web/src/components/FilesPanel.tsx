@@ -6,6 +6,7 @@ import { useNodesStore } from '../stores/nodes';
 import { useAttachStore } from '../stores/attach';
 import { FileTree } from './FileTree';
 import { mergeDevices, type SharedEntry } from '../lib/shared';
+import { api } from '../api/client';
 import type { Space } from '../api/types';
 
 /** Most files one message can carry (the server's limit). */
@@ -42,13 +43,46 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
     .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name }));
   const othersKey = others.map((o) => o.id).join(',');
   const shown = sheet || !collapsed;
+  // Auto-sync is this device's own setting: offered while this device is the open one.
+  const [publicSync, setPublicSync] = useState<boolean | null>(null);
+  const local = !selectedId;
+  useEffect(() => {
+    if (!shown || !local) return;
+    let live = true;
+    api.settings().then(
+      (v) => live && setPublicSync(v.public_sync),
+      () => live && setPublicSync(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [shown, local]);
+  const toggleSync = () => {
+    const next = !publicSync;
+    setPublicSync(next);
+    api.patchSettings({ public_sync: next }).then(
+      (v) => {
+        setPublicSync(v.public_sync);
+        // The first pull starts right away: show what it brought soon.
+        if (v.public_sync) setTimeout(() => void useFilesStore.getState().load('public'), 3000);
+      },
+      () => setPublicSync(!next),
+    );
+  };
 
   useEffect(() => {
     if (shown) void useFilesStore.getState().load(space);
   }, [space, shown]);
   useEffect(() => {
     if (!shown) return;
-    void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    const refresh = () => void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    refresh();
+    // Files change on other devices (and arrive by sync): the open panel follows every 20 s.
+    const t = setInterval(() => {
+      void useFilesStore.getState().load(space);
+      refresh();
+    }, 20_000);
+    return () => clearInterval(t);
     // `others` is rebuilt every render; its ids are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, shown, othersKey]);
@@ -189,6 +223,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
           selected={selected}
           onSelect={select}
           onAttach={canAttach ? (e) => void attach([e]) : undefined}
+          autoSync={local && space === 'public' && publicSync !== null ? { on: publicSync, toggle: toggleSync } : undefined}
           newRoot={newRoot}
           onNewRootDone={() => setNewRoot(false)}
         />

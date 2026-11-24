@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { api, nodeGeneration } from '../api/client';
 import { errMsg } from '../lib/format';
+import { uniqueName } from '../lib/files';
 import type { Holder, SharedEntry } from '../lib/shared';
 import type { FileEntry, Space } from '../api/types';
 
@@ -35,6 +36,8 @@ interface FilesState {
   getHere: (space: Space, items: SharedEntry[]) => Promise<number>;
   removeEverywhere: (space: Space, e: SharedEntry) => Promise<void>;
   renameEverywhere: (space: Space, e: SharedEntry, newPath: string) => Promise<void>;
+  /** Copies a Public file into Private (same folder), then removes every Public copy. */
+  moveToPrivate: (e: SharedEntry) => Promise<void>;
 }
 
 const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '');
@@ -183,6 +186,25 @@ export const useFilesStore = create<FilesState>((set, get) => {
       });
       renameOthers(space, e.path, newPath);
       await load(space);
+    },
+    moveToPrivate: async (e) => {
+      const from = e.here ? null : e.on[0];
+      if (e.kind !== 'file' || (!e.here && !from)) return;
+      let moved = false;
+      await run(async () => {
+        const blob = from ? await api.fileBlobOn(from.id, 'public', e.path) : await api.fileBlob('public', e.path);
+        const dir = parentOf(e.path);
+        const inDir = (await api.files('private'))
+          .filter((x) => parentOf(x.path) === dir)
+          .map((x) => nameOf(x.path));
+        await api.upload('private', dir, new File([await blob.arrayBuffer()], uniqueName(nameOf(e.path), inDir)));
+        // Only once the private copy is stored.
+        if (e.here) await api.deleteFile('public', e.path);
+        for (const h of e.on) await api.deleteFileOn(h.id, 'public', e.path);
+        moved = true;
+      });
+      if (moved) dropOthers('public', e.path);
+      await Promise.all([load('public'), load('private')]);
     },
   };
 });

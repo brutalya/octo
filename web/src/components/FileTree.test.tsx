@@ -192,4 +192,56 @@ describe('FileTree', () => {
       expect(upload).toHaveBeenCalledWith('public', 'docs', [f]);
     });
   });
+
+  describe('moving', () => {
+    it('Move to folder lists the other folders and moves there on every device', async () => {
+      const moveToPrivate = vi.fn(async () => {});
+      useFilesStore.setState({ moveToPrivate });
+      render(<FileTree space="public" device="pc" />);
+      fireEvent.contextMenu(screen.getByText('top.txt'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
+      // its own folder (the top) is not offered
+      expect(screen.queryByRole('menuitem', { name: 'Public' })).toBeNull();
+      await userEvent.click(screen.getByRole('menuitem', { name: 'docs' }));
+      expect(renameEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'top.txt' }), 'docs/top.txt');
+    });
+
+    it('a folder is never offered as a place inside itself', async () => {
+      render(<FileTree space="public" device="pc" />);
+      await userEvent.click(screen.getByText('docs'));
+      fireEvent.contextMenu(screen.getByText('a.md'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Public' }));
+      expect(renameEverywhere).toHaveBeenCalledWith('public', expect.objectContaining({ path: 'docs/a.md' }), 'a.md');
+      fireEvent.contextMenu(screen.getByText('docs'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move to folder' }));
+      expect(screen.queryByRole('menuitem', { name: 'docs' })).toBeNull();
+    });
+
+    it('Move to Private is offered for Public files only', async () => {
+      const moveToPrivate = vi.fn(async () => {});
+      useFilesStore.setState({ moveToPrivate });
+      const { unmount } = render(<FileTree space="public" />);
+      fireEvent.contextMenu(screen.getByText('top.txt'));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Move to Private' }));
+      expect(moveToPrivate).toHaveBeenCalledWith(expect.objectContaining({ path: 'top.txt' }));
+      unmount();
+      useFilesStore.setState({ entries: { public: [], private: [{ path: 's.md', kind: 'file', size: 1, modified: 1 }] } });
+      render(<FileTree space="private" />);
+      fireEvent.contextMenu(screen.getByText('s.md'));
+      expect(screen.queryByRole('menuitem', { name: 'Move to Private' })).toBeNull();
+    });
+  });
+
+  it('the space menu switches auto-sync when this device offers it', async () => {
+    const toggle = vi.fn();
+    render(<FileTree space="public" device="pc" autoSync={{ on: false, toggle }} />);
+    expect(screen.getByText('Auto-sync off')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Public actions' }));
+    const sw = screen.getByRole('menuitemcheckbox', { name: 'Auto-sync Public' });
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(sw);
+    expect(toggle).toHaveBeenCalled();
+  });
 });
+

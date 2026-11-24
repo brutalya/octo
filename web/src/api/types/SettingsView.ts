@@ -3,4 +3,4 @@
 /**
  * What the API returns: the key is masked.
  */
-export type SettingsView = { ollama_url: string, openrouter_api_key: string | null, history_char_budget: number, relay_url: string | null, node_name: string | null, network_name: string | null, };
+export type SettingsView = { ollama_url: string, openrouter_api_key: string | null, history_char_budget: number, relay_url: string | null, node_name: string | null, network_name: string | null, public_sync: boolean, };

@@ -143,6 +143,8 @@ struct Shared {
     ts_path: std::path::PathBuf,
     hint: tokio::sync::Notify,
     sync: Mutex<HashMap<NodeId, SyncSlot>>,
+    /// Peers a Public auto-sync pull is running from (at most one per peer).
+    public_pulls: Mutex<std::collections::HashSet<NodeId>>,
     /// Every task spawned on behalf of the node (sync runs, streams, peer tasks, body pumps);
     /// aborted when the node is dropped.
     tasks: Mutex<tokio::task::JoinSet<()>>,
@@ -304,6 +306,7 @@ impl Node {
             ts_path,
             hint: tokio::sync::Notify::new(),
             sync: Mutex::new(HashMap::new()),
+            public_pulls: Mutex::new(std::collections::HashSet::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
             link: Mutex::new(None),
         });
@@ -1282,10 +1285,19 @@ async fn run(sh: Arc<Shared>, sessions: Sessions, mut cmd_rx: mpsc::Receiver<Cmd
                 let online: Vec<NodeId> = a.peers.keys().copied().collect();
                 for p in online {
                     trigger_sync(&a.sh, p);
+                    trigger_public(&a.sh, p);
                 }
             }
             r = net_rx.changed(), if net_open => {
-                if r.is_err() { net_open = false } else { a.reconfigure() }
+                if r.is_err() {
+                    net_open = false
+                } else {
+                    a.reconfigure();
+                    // Auto-sync may have just been turned on: pull from who is online now.
+                    for p in a.peers.keys().copied() {
+                        trigger_public(&a.sh, p);
+                    }
+                }
             }
         }
     }
@@ -1558,6 +1570,7 @@ impl Actor {
         for c in self.ctl.take(&peer) {
             self.send_ctl(peer, &c).await;
         }
+        trigger_public(&self.sh, peer);
         if self.sh.trust_of(&peer) == Some(Trust::Full) {
             let epoch = self.sh.membership().private_epoch();
             if let Ok(msg) =
@@ -1655,6 +1668,94 @@ fn trigger_sync(sh: &Arc<Shared>, peer: NodeId) {
             }
         }
     });
+}
+
+// ---------------------------------------------------------------- public files auto-sync
+
+/// What a public file listing entry needs to say for a pull.
+#[derive(serde::Deserialize)]
+struct RemoteEntry {
+    path: String,
+    kind: octo_core::files::FileKind,
+    size: u64,
+}
+
+/// Pulls Public files `peer` has and this device lacks, when auto-sync is on. Additive only:
+/// nothing here is overwritten or deleted (Delete and Rename in the UI act on every device).
+fn trigger_public(sh: &Arc<Shared>, peer: NodeId) {
+    if !sh.net().public_sync {
+        return;
+    }
+    if !sh
+        .public_pulls
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer)
+    {
+        return; // one is running
+    }
+    let sh2 = sh.clone();
+    sh.spawn(async move {
+        public_once(&sh2, peer).await;
+        sh2.public_pulls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&peer);
+    });
+}
+
+async fn public_once(sh: &Arc<Shared>, peer: NodeId) {
+    use octo_core::files::FileKind;
+    use octo_core::storage::Space;
+    let Some(list) = peer_get(sh, peer, "/api/files/public", MAX_MANIFEST).await else {
+        return;
+    };
+    let Ok(remote) = serde_json::from_slice::<Vec<RemoteEntry>>(&list) else {
+        return;
+    };
+    let files = sh.hub.files().clone();
+    let Ok(Ok(local)) = tokio::task::spawn_blocking(move || files.list(Space::Public)).await else {
+        return;
+    };
+    let have: std::collections::HashSet<String> = local.into_iter().map(|e| e.path).collect();
+    for e in remote {
+        if e.kind != FileKind::File || have.contains(&e.path) || e.size > MAX_BLOB as u64 {
+            continue;
+        }
+        if !sh.net().public_sync {
+            return; // turned off meanwhile
+        }
+        let q: String = url::form_urlencoded::byte_serialize(e.path.as_bytes()).collect();
+        let Some(data) = peer_get(
+            sh,
+            peer,
+            &format!("/api/files/public/content?path={q}"),
+            MAX_BLOB,
+        )
+        .await
+        else {
+            continue;
+        };
+        let files = sh.hub.files().clone();
+        let path = e.path.clone();
+        let wrote = tokio::task::spawn_blocking(move || {
+            // Re-checked right before writing: a file put here meanwhile is kept.
+            if files.size(Space::Public, &path).is_ok() {
+                return Ok(());
+            }
+            files.write(Space::Public, &path, &data).map(|_| ())
+        })
+        .await;
+        // A folder or file of that name here is a lasting conflict: not worth a log line a minute.
+        if let Ok(Err(err)) = wrote
+            && !matches!(
+                err,
+                FilesError::NotDir | FilesError::IsDir | FilesError::Exists
+            )
+        {
+            eprintln!("octo: public sync from {peer}: {:?}: {err}", e.path);
+        }
+    }
 }
 
 /// GET `uri` on `peer` through the tunnel; the body is capped at `cap` bytes. `None` unless 200.
