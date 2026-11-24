@@ -1,6 +1,6 @@
 import { readAgentEvents } from './sse';
 import type {
-  AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NetworkView, NodeInfo, PairingInvite, PairingPending, PairingState, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
+  AccessView, AgentEvent, Approval, AttachmentRef, FileEntry, Message, ModelInfo, NetworkView, NodeInfo, PairingInvite, PairingPending, PairingState, RelayCheck, RelayStatus, PendingApproval, ProviderKind, ProviderStatus,
   SessionSummary, SettingsView, SettingsPatch, Space, Thread, TrustLevel,
 } from './types';
 
@@ -76,6 +76,8 @@ export const api = {
     (await requestAt(baseOf(nodeId), '/providers')).json(),
   importSessionsOn: async (nodeId: string | null, kind: ProviderKind, q: string): Promise<SessionSummary[]> =>
     (await requestAt(baseOf(nodeId), `/import/${kind}/sessions?q=${encodeURIComponent(q)}`)).json(),
+  /** What this device may do on a member (asked through the tunnel). */
+  accessOn: async (nodeId: string): Promise<AccessView> => (await requestAt(baseOf(nodeId), '/access')).json(),
   /** Threads of a given device (null = this one), whatever device is open. */
   threadsOn: async (nodeId: string | null): Promise<Thread[]> =>
     (await requestAt(baseOf(nodeId), '/threads')).json(),

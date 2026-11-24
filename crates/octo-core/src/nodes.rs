@@ -80,6 +80,15 @@ pub struct NetworkView {
     pub devices: u32,
 }
 
+/// What the caller may do on this node: run CLI agents (the node's switch for the caller) and
+/// use the private space (full trust). Asked through the tunnel; locally both are true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AccessView {
+    pub agents: bool,
+    pub private_files: bool,
+}
+
 /// Result of a one-off connection attempt to a relay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]

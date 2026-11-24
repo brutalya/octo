@@ -46,6 +46,7 @@ beforeEach(() => {
   });
   useDevicesStore.setState({
     lists: { lin: [t('l1', 'Relay on a VPS', 3 * DAY)], me: [], lap: [t('x', 'Relay offline', HOUR)] },
+    access: { pc: { agents: true, private_files: true }, lin: { agents: true, private_files: true } },
     load: async () => {},
   });
   f = vi.fn(async (url: string) => {

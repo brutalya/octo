@@ -55,7 +55,7 @@ export function AllChats({
   onBack: () => void;
   onNavigate?: () => void;
 }) {
-  const { nodes, selfId, multi, order, reachable, listOf, goTo } = useDeviceChats();
+  const { selfId, multi, order, reachable, listOf, goTo } = useDeviceChats();
   const pins = usePinsStore((s) => s.pins);
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<string>(device ?? 'all');
@@ -64,12 +64,12 @@ export function AllChats({
 
   // Outside sessions: asked from each reachable device; a device that refuses (no agents
   // allowed, agent not installed) simply has none.
-  const reach = nodes.filter(reachable).map((n) => n.node_id).join(',');
+  const reach = order.filter(reachable).map((n) => n.node_id).join(',');
   useEffect(() => {
     let live = true;
     const q = query.trim();
     const timer = setTimeout(() => {
-      const targets = nodes.filter(reachable);
+      const targets = order.filter(reachable);
       void Promise.all(
         targets.map(async (n) => {
           const per = await Promise.all(
@@ -90,7 +90,7 @@ export function AllChats({
       live = false;
       clearTimeout(timer);
     };
-    // `nodes` changes identity on every load; `reach` is what matters.
+    // `order` changes identity on every render; `reach` is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reach, query]);
 

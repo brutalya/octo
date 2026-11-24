@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { NewThreadDialog } from './NewThreadDialog';
 import { useThreadsStore } from '../stores/threads';
 import { useNodesStore } from '../stores/nodes';
+import { useDevicesStore } from '../stores/devices';
 import type { ProviderStatus } from '../api/types';
 
 const providers: ProviderStatus[] = [
@@ -144,6 +145,7 @@ describe('NewThreadDialog in a network', () => {
     console.log('[Step 1/3] pc is open, the picker shows it, offline laptop cannot be picked');
     const select = vi.fn();
     useNodesStore.setState({ nodes, selectedId: 'pc', select });
+    useDevicesStore.setState({ access: { lin: { agents: true, private_files: true }, lap: { agents: true, private_files: true } } });
     fetchMock.mockImplementation(async (url: string) =>
       new Response(JSON.stringify(url === '/api/nodes/lin/providers' ? linux : models)),
     );
@@ -164,6 +166,15 @@ describe('NewThreadDialog in a network', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start on linux' }));
     expect(select).toHaveBeenCalledWith('lin');
     expect(create).toHaveBeenCalledWith('ollama', 'public', 'confirm', 'llama3:8b');
+  });
+
+  it('a device that does not allow agents is not offered', () => {
+    useNodesStore.setState({ nodes, selectedId: null });
+    useDevicesStore.setState({ access: { pc: { agents: true, private_files: true }, lin: { agents: false, private_files: true } } });
+    render(<NewThreadDialog />);
+    const device = screen.getByRole('combobox', { name: 'Device' });
+    expect(within(device).queryByRole('option', { name: /linux/ })).toBeNull();
+    expect(within(device).getByRole('option', { name: 'pc · online' })).toBeInTheDocument();
   });
 
   it('one device: no picker', () => {

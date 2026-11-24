@@ -1592,3 +1592,44 @@ async fn joiner_takes_the_network_name() {
     wait_online(&d, &id_c).await;
     assert_eq!(network(&d).await["name"], "127.0.0.1");
 }
+
+/// A device can ask a member what it may do there: run agents (the member's own switch for
+/// this device) and use private files (full trust). Locally the answer is always yes.
+#[tokio::test]
+async fn access_tells_what_the_caller_may_do() {
+    println!("[Step 1/3] locally everything is allowed");
+    let (a, b, id_b) = paired(None, None).await;
+    let (s, v) = a.json("GET", "/api/access", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"agents": true, "private_files": true}));
+
+    println!("[Step 2/3] b has not allowed agents for a, and trusts it as public");
+    let (s, v) = a
+        .json("GET", &format!("/api/nodes/{id_b}/access"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"agents": false, "private_files": false}));
+
+    println!("[Step 3/3] b allows agents and private files for a");
+    let id_a = a.id().await;
+    let (s, _) = b
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_a}/agents"),
+            Some(json!({"agents": true})),
+        )
+        .await;
+    assert!(s.is_success());
+    let (s, _) = b
+        .json(
+            "PATCH",
+            &format!("/api/nodes/{id_a}/trust"),
+            Some(json!({"trust": "full"})),
+        )
+        .await;
+    assert!(s.is_success());
+    let (_, v) = a
+        .json("GET", &format!("/api/nodes/{id_b}/access"), None)
+        .await;
+    assert_eq!(v, json!({"agents": true, "private_files": true}));
+}

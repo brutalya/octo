@@ -20,4 +20,10 @@ describe('Markdown', () => {
     const { container } = render(<Markdown>{'```\nplain\n```'}</Markdown>);
     expect(container.querySelector('pre code')?.className).not.toMatch(/bg-slate-100|px-1/);
   });
+
+  it('long words and paths may break anywhere; code blocks scroll in their own box', () => {
+    const { container } = render(<Markdown>{'see `C:\\Users\\Administrator\\AppData`\n\n```\nlong line\n```'}</Markdown>);
+    expect((container.firstChild as HTMLElement).className).toContain('[overflow-wrap:anywhere]');
+    expect(container.querySelector('pre')?.className).toContain('overflow-x-auto');
+  });
 });

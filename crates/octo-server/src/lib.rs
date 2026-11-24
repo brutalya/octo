@@ -492,6 +492,16 @@ fn local_api(hub: Shared) -> Router {
         .route("/import/{kind}/sessions", get(import_sessions))
         .route("/import/{kind}", post(import_session))
         .route("/settings", get(get_settings).patch(patch_settings))
+        // This device asking itself; through the tunnel the node answers for the member.
+        .route(
+            "/access",
+            get(|| async {
+                Json(octo_core::nodes::AccessView {
+                    agents: true,
+                    private_files: true,
+                })
+            }),
+        )
         .route(
             "/files/{space}",
             get(list_files)

@@ -10,8 +10,8 @@ use octo_core::Hub;
 use octo_core::files::FilesError;
 use octo_core::files::private::{Action, SyncEntry, plan};
 use octo_core::nodes::{
-    NetworkView, NodeInfo, PairingInvite, PairingPending, PairingStage, PairingState, RelayCheck,
-    RelayStatus, TrustLevel,
+    AccessView, NetworkView, NodeInfo, PairingInvite, PairingPending, PairingStage, PairingState,
+    RelayCheck, RelayStatus, TrustLevel,
 };
 use octo_core::settings::NetSettings;
 use octo_net::NetError;
@@ -960,6 +960,24 @@ enum Caller {
 
 /// Runs a request against the local router (no TCP, no bearer token).
 async fn dispatch(sh: &Shared, caller: Caller, head: ReqHead, body: Bytes) -> Response<Body> {
+    // What the caller may do here; answered from the caller itself, never routed further.
+    if head.method == "GET" && head.uri.split('?').next() == Some("/api/access") {
+        let access = match caller {
+            Caller::Local => AccessView {
+                agents: true,
+                private_files: true,
+            },
+            Caller::Member { trust, agents } => AccessView {
+                agents,
+                private_files: trust == Trust::Full,
+            },
+        };
+        let json = serde_json::to_vec(&access).unwrap_or_default();
+        return Response::builder()
+            .header("content-type", "application/json")
+            .body(Body::from(json))
+            .unwrap_or_else(|_| Response::new(Body::empty()));
+    }
     if !policy::path_allowed(&head.uri) {
         return reply(StatusCode::FORBIDDEN, "not available through the tunnel");
     }
