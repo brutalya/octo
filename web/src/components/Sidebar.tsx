@@ -10,6 +10,7 @@ import { useDeviceChats } from '../lib/deviceChats';
 import { pinKey, usePinsStore } from '../stores/pins';
 import { relativeTime } from '../lib/format';
 import { useClickOutside } from '../lib/useClickOutside';
+import { Logo } from './Logo';
 import type { NetworkView, NodeInfo, Thread } from '../api/types';
 
 const RECENT = 3;
@@ -233,7 +234,10 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
     >
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 flex-col pl-1">
-          <span className="text-base font-semibold text-slate-800">Octo</span>
+          <span className="flex items-center gap-1.5 text-base font-semibold text-slate-800">
+            <Logo className="h-4 w-auto shrink-0" />
+            Octo
+          </span>
           {net && (
             <span className="truncate text-xs text-slate-500">
               {net.name} · {net.devices} {net.devices === 1 ? 'device' : 'devices'}

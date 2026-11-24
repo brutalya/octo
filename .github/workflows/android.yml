@@ -55,6 +55,18 @@ jobs:
           test -f "$dst" || { echo "generated $dst not found"; find gen/android -name 'MainActivity*'; exit 1; }
           echo "--- generated:"; cat "$dst"
           cp android/MainActivity.kt "$dst"
+      # Our launcher icon (adaptive, with a themed monochrome layer). The generated launcher icons
+      # are removed first so no ic_launcher resource is defined twice (.png next to .webp).
+      - name: Use our launcher icon
+        working-directory: crates/octo-desktop
+        run: |
+          res=gen/android/app/src/main/res
+          test -d "$res" || { echo "generated $res not found"; exit 1; }
+          echo "--- generated:"; find "$res" -name 'ic_launcher*' | sort
+          find "$res" -path '*/mipmap-*' -name 'ic_launcher*' -delete
+          cp -r android/res/. "$res/"
+          grep -q 'android:icon="@mipmap/ic_launcher"' gen/android/app/src/main/AndroidManifest.xml ||
+            { echo "manifest does not use @mipmap/ic_launcher"; exit 1; }
       # Debug build (the debug manifest allows cleartext HTTP to the loopback server). Gradle would
       # sign it with a random debug key per run, and Android refuses to update over an APK signed
       # with another key. The repo secret holds one fixed keystore (alias androiddebugkey,
