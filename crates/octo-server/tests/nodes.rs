@@ -1556,3 +1556,39 @@ async fn leave_then_join_another_network() {
     assert_eq!(relay_of(&a).await, other);
     assert_eq!(network(&a).await["devices"], 2);
 }
+
+/// The network name travels with the welcome: a device that joins shows the host's name, not
+/// the relay host. Without a name on the host the joiner falls back to the relay host too.
+#[tokio::test]
+async fn joiner_takes_the_network_name() {
+    println!("[Step 1/2] host named the network, joiner adopts it");
+    let url = relay().await;
+    let a = start(&url, "alpha", None, None).await;
+    let (s, _) = a
+        .json(
+            "PATCH",
+            "/api/settings",
+            Some(json!({"network_name": "Home"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let b = start("", "beta", None, None).await;
+    pair_nodes(&a, &b, None).await;
+    let mut name = Value::Null;
+    for _ in 0..100 {
+        name = network(&b).await["name"].clone();
+        if name == "Home" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(name, "Home");
+
+    println!("[Step 2/2] host without a name: the joiner shows the relay host");
+    let c = start(&url, "gamma", None, None).await;
+    let d = start("", "delta", None, None).await;
+    pair_nodes(&c, &d, None).await;
+    let id_c = c.id().await;
+    wait_online(&d, &id_c).await;
+    assert_eq!(network(&d).await["name"], "127.0.0.1");
+}
