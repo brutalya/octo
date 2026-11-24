@@ -94,6 +94,8 @@ struct Ready {
     send: u64,
     recv: ReplayWindow,
     failures: u32,
+    /// A frame was skipped (lost on the way) since the last `take_gap`.
+    gap: bool,
 }
 
 enum Slot {
@@ -107,6 +109,7 @@ fn ready(hs: HandshakeState) -> Result<Slot> {
         send: 0,
         recv: ReplayWindow::new(),
         failures: 0,
+        gap: false,
     })))
 }
 
@@ -331,6 +334,10 @@ impl Sessions {
         let mut pl = vec![0u8; ct.len()];
         match r.t.read_message(nonce, ct, &mut pl) {
             Ok(n) => {
+                // Frames arrive in order (one relay connection each way), so a nonce past the
+                // next expected one means frames in between were lost.
+                let next = if r.recv.started { r.recv.top + 1 } else { 0 };
+                r.gap |= nonce > next;
                 r.recv.mark(nonce);
                 r.failures = 0;
                 pl.truncate(n);
@@ -344,6 +351,15 @@ impl Sessions {
                 }
                 Err(e.into())
             }
+        }
+    }
+
+    /// Whether frames from `peer` were lost since the last call. The session itself carries on;
+    /// anything built on it that needs every frame (the stream multiplexer) must restart.
+    pub fn take_gap(&mut self, peer: &NodeId) -> bool {
+        match self.slots.get_mut(peer) {
+            Some(Slot::Ready(r)) => std::mem::take(&mut r.gap),
+            _ => false,
         }
     }
 

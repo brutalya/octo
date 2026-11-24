@@ -37,6 +37,16 @@ fn fake() -> PathBuf {
 }
 
 async fn start(relay_url: &str, name: &str, token: Option<&str>, seed: Option<&str>) -> N {
+    start_opts(relay_url, name, token, seed, NodeOpts::default()).await
+}
+
+async fn start_opts(
+    relay_url: &str,
+    name: &str,
+    token: Option<&str>,
+    seed: Option<&str>,
+    opts: NodeOpts,
+) -> N {
     let dir = tempfile::tempdir().unwrap();
     if let Some(m) = seed {
         std::fs::write(dir.path().join("membership.json"), m).unwrap();
@@ -54,6 +64,7 @@ async fn start(relay_url: &str, name: &str, token: Option<&str>, seed: Option<&s
         dir.path(),
         NodeOpts {
             connect_timeout: Duration::from_millis(1500),
+            ..opts
         },
     )
     .unwrap();
@@ -839,6 +850,7 @@ async fn restart(dir: tempfile::TempDir) -> N {
         dir.path(),
         NodeOpts {
             connect_timeout: Duration::from_millis(1500),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -1632,4 +1644,76 @@ async fn access_tells_what_the_caller_may_do() {
         .json("GET", &format!("/api/nodes/{id_b}/access"), None)
         .await;
     assert_eq!(v, json!({"agents": true, "private_files": true}));
+}
+
+/// A relay that drops frames (its queue towards a node is tiny) loses parts of a large upload.
+/// That must never arrive as a cut file, nor hang until the stream idles out: the session is
+/// reset, the request is sent again once, and it fails cleanly in seconds.
+#[tokio::test]
+async fn a_stalled_upload_fails_fast_instead_of_hanging() {
+    println!("[Step 1/3] relay that keeps only 2 frames per connection");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let limits = octo_net::relay::RelayLimits {
+        queue: 2,
+        ..Default::default()
+    };
+    let app = router(Relay::new(limits).unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(l, app).await;
+    });
+    let url = format!("ws://{addr}/relay");
+    let opts = NodeOpts {
+        stall_timeout: Duration::from_millis(800),
+        ..Default::default()
+    };
+    let a = start_opts(&url, "alpha", None, None, opts.clone()).await;
+    let b = start_opts(&url, "beta", None, None, opts).await;
+    pair_nodes(&a, &b, None).await;
+    let id_b = b.id().await;
+    wait_online(&a, &id_b).await;
+
+    println!("[Step 2/3] upload 4 MB to b through the tunnel");
+    let boundary = "XB";
+    let mut body = format!(
+        "--{boundary}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"big.bin\"\r\ncontent-type: application/octet-stream\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend(std::iter::repeat_n(7u8, 4 << 20));
+    body.extend(format!("\r\n--{boundary}--\r\n").into_bytes());
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/nodes/{id_b}/files/public?path="))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    let started = std::time::Instant::now();
+    let r = a.app.clone().oneshot(req).await.unwrap();
+
+    println!("[Step 3/3] a clear error within seconds, not after the 60 s idle timeout");
+    let status = r.status();
+    let text = r.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::BAD_GATEWAY,
+        "{}",
+        String::from_utf8_lossy(&text)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    let (_, files) = b.json("GET", "/api/files/public", None).await;
+    assert!(
+        files
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["path"] != "big.bin"),
+        "no cut file is saved: {files}"
+    );
 }
