@@ -34,6 +34,8 @@ Client setup: on the first device open Settings, Network, Create a network and p
 
 For an open relay (any Octo node may use it) remove `command` and the volume from the compose file.
 
+**Updates.** The relay image `:latest` is the newest release (`:main` follows every merge, `:X.Y.Z` pins one). The compose file's `updater` service keeps the relay on it: every `CHECK_EVERY` (6 h) it runs `docker compose pull octo-relay` and `up -d octo-relay` in this folder's compose project, so the relay is recreated only when a new release is out; the secret stays in the volume. Set `AUTO_UPDATE: "false"` to update by hand (`docker compose pull && docker compose up -d`). It uses the official `docker:27-cli` image and the Docker socket (root-equivalent on the host, like any Docker updater), and mounts this folder read-only so `.env` settings apply. While the GHCR package is private it needs your registry login: uncomment the `~/.docker/config.json` line (only if that file exists; otherwise Docker creates a folder there), or make the package public. `docker compose logs updater` shows each check. Old images are not removed automatically: `docker image ls`, `docker image rm`.
+
 Update: `docker compose pull && docker compose up -d`.
 
 ## Node (web UI + API + Claude Code)

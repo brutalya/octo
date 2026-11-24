@@ -90,7 +90,7 @@ Docker relay/node behind Nginx Proxy Manager, systemd alternative: [docs/deploy.
 Quick start (relay):
 
     docker login ghcr.io
-    cp deploy/relay/docker-compose.yml . && $EDITOR docker-compose.yml   # set image and domain
+    cp deploy/relay/docker-compose.yml . && $EDITOR docker-compose.yml   # set image and domain; AUTO_UPDATE on or off
     docker compose up -d
     # NPM: host relay.example.com -> octo-relay:7443, Websockets ON, SSL
     curl https://relay.example.com/healthz
