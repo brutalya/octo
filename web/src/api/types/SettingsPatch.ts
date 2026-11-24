@@ -11,4 +11,8 @@ relay_url?: string,
 /**
  * Display name of this node (max 64 chars); `""` resets to the default.
  */
-node_name?: string, };
+node_name?: string, 
+/**
+ * This device's label for its network (max 64 chars); `""` resets to the relay host.
+ */
+network_name?: string, };

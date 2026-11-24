@@ -14,7 +14,7 @@ let pending: Response | null;
 let relayStatus: unknown;
 let relayCheck: unknown;
 let pairing: unknown;
-const settings = { ollama_url: '', openrouter_api_key: null, history_char_budget: 1, relay_url: 'ws://r/relay', node_name: 'Home' };
+const settings = { ollama_url: '', openrouter_api_key: null, history_char_budget: 1, relay_url: 'ws://r/relay', node_name: 'Home', network_name: null };
 const calls = (m: string, u: string) =>
   f.mock.calls.filter((c) => c[0] === u && ((c[1] as RequestInit | undefined)?.method ?? 'GET') === m);
 

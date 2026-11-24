@@ -222,3 +222,22 @@ fn agents_flag_persists_and_old_files_read_false() {
             .agents
     );
 }
+
+/// Leaving a network: members gone, a new network key and private key, persisted.
+#[test]
+fn reset_starts_a_fresh_network() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("m.json");
+    let mut m = Membership::load_or_create(&p).unwrap();
+    m.add(Member::new(NodeKey::generate().public(), "a"))
+        .unwrap();
+    let (old_id, old_private) = (m.network_id(), *m.private_key().unwrap().as_bytes());
+    m.reset().unwrap();
+    let again = Membership::load_or_create(&p).unwrap();
+    for x in [&m, &again] {
+        assert!(x.members().is_empty());
+        assert_ne!(x.network_id(), old_id);
+        assert_ne!(*x.private_key().unwrap().as_bytes(), old_private);
+    }
+    assert_eq!(again.network_id(), m.network_id());
+}

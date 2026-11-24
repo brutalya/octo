@@ -140,3 +140,21 @@ fn urls_are_parsed_not_prefix_matched() {
         assert!(Settings::default().apply(p).is_err(), "{body}");
     }
 }
+
+#[test]
+fn network_name_patch_trims_caps_and_clears() {
+    let mut s = Settings::default();
+    s.apply(SettingsPatch {
+        network_name: Some(format!("  {}  ", "n".repeat(80))),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(s.network_name.as_deref(), Some("n".repeat(64).as_str()));
+    assert_eq!(s.view().network_name, s.network_name);
+    s.apply(SettingsPatch {
+        network_name: Some(" ".into()),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(s.network_name, None);
+}

@@ -399,6 +399,13 @@ impl Membership {
         Ok(true)
     }
 
+    /// Leaves the network: no members, a new network key and a new private key, persisted.
+    pub fn reset(&mut self) -> Result<()> {
+        let key = NetworkKey::generate();
+        let private = Some((1, PrivateKey::generate()));
+        self.adopt(key, Vec::new(), private)
+    }
+
     /// Replaces key and members (a joining node adopting the host's network).
     pub(crate) fn adopt(
         &mut self,

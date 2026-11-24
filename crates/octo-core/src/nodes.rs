@@ -67,6 +67,19 @@ pub struct RelayStatus {
     pub error: Option<String>,
 }
 
+/// This device's network as Settings shows it. A device is in a network once it has a relay
+/// (it created one, or joined with a code) or members.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NetworkView {
+    pub joined: bool,
+    /// This device's label for the network: the saved name, else the relay host.
+    pub name: Option<String>,
+    pub relay_host: Option<String>,
+    /// Devices in the network, this one included.
+    pub devices: u32,
+}
+
 /// Result of a one-off connection attempt to a relay.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
