@@ -181,6 +181,28 @@ describe('FileTree', () => {
       expect(onAttach).toHaveBeenCalledWith(expect.objectContaining({ path: 'top.txt' }));
     });
 
+    it('Upload here opens the file chooser from the click itself, then uploads into that folder', async () => {
+      const upload = vi.fn(async () => []);
+      useFilesStore.setState({ upload });
+      const click = vi.spyOn(HTMLInputElement.prototype, 'click');
+      try {
+        render(<FileTree space="public" />);
+        await userEvent.click(screen.getByText('docs'));
+        fireEvent.contextMenu(screen.getByText('a.md'));
+        expect(screen.queryByRole('menuitem', { name: 'Upload here' })).toBeNull();
+        fireEvent.contextMenu(screen.getByText('docs'));
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Upload here' }));
+        const chooser = screen.getByLabelText('Upload to folder');
+        expect(click.mock.contexts).toContain(chooser);
+        expect(screen.queryByRole('menuitem', { name: 'Upload here' })).toBeNull();
+        const f = new File(['x'], 'x.txt');
+        await userEvent.upload(chooser, f);
+        expect(upload).toHaveBeenCalledWith('public', 'docs', [f]);
+      } finally {
+        click.mockRestore();
+      }
+    });
+
     it('Upload here uploads into that folder', async () => {
       const upload = vi.fn(async () => []);
       useFilesStore.setState({ upload });

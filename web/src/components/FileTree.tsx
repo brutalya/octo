@@ -301,10 +301,17 @@ export function FileTree({
           >
             New folder
           </button>
-          {/* A label opens the file chooser itself, as part of the same click. */}
-          <label role="menuitem" htmlFor={inputId} className={`${item} cursor-pointer`} onClick={act(() => setUploadDir(e.path))}>
+          <button
+            role="menuitem"
+            className={item}
+            onClick={act(() => {
+              // The chooser must open synchronously inside the tap; closing the menu first would be too late.
+              setUploadDir(e.path);
+              document.getElementById(inputId)?.click();
+            })}
+          >
             Upload here
-          </label>
+          </button>
           {missing.length > 0 && (
             <button role="menuitem" className={item} onClick={act(() => void st.getHere(space, missing))}>
               Get all on {device}
