@@ -2,6 +2,7 @@
 pub mod antigravity;
 pub mod claude;
 pub mod time;
+mod wire;
 
 use crate::storage::SourceMessage;
 use serde::Serialize;
