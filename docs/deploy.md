@@ -11,7 +11,7 @@
 | systemd | no Docker | `deploy/systemd/` (units, Caddyfile example); binary at `/opt/octo/bin/octo-server`, user and paths adjustable. |
 
 Images (built by `.github/workflows/docker.yml` on merges to `main` that change code or deploy files, and for every release tag; linux/amd64):
-`ghcr.io/<owner>/<repo>-relay` and `ghcr.io/<owner>/<repo>-node`, tags `main`, `sha-<short>`, `X.Y.Z`, `X.Y`.
+`ghcr.io/<owner>/<repo>-relay` and `ghcr.io/<owner>/<repo>-node`, tags `main`, `sha-<short>`, and for release tags `X.Y.Z`, `X.Y`, `latest` (used by the relay compose file).
 
 ## Relay (behind Nginx Proxy Manager)
 
