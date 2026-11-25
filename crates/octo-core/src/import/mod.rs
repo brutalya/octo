@@ -38,6 +38,8 @@ pub struct Session {
 pub struct SessionData {
     pub session: Session,
     pub messages: Vec<SourceMessage>,
+    /// The messages are a fallback (prompts only, assistant side missing).
+    pub lossy: bool,
 }
 
 /// Session ids are used to look files up; only plain id characters are accepted.
