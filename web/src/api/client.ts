@@ -62,6 +62,15 @@ async function requestAt(prefix: string, path: string, init?: RequestInit): Prom
   return res;
 }
 
+/** Abort init for a request that must not hang forever (dead connection after resume). */
+function withTimeout(ms: number): { init: RequestInit; done: () => void } {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(new Error('Request timed out')), ms);
+  return { init: { signal: ctl.signal }, done: () => clearTimeout(timer) };
+}
+
+const SETTINGS_TIMEOUT_MS = 10_000;
+
 const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'content-type': 'application/json' },
@@ -91,7 +100,14 @@ export const api = {
   importSession: async (kind: ProviderKind, externalId: string): Promise<Thread> =>
     (await request(`/import/${kind}`, jsonInit('POST', { external_id: externalId }))).json(),
   models: async (kind: ProviderKind): Promise<ModelInfo[]> => (await request(`/providers/${kind}/models`)).json(),
-  settings: async (): Promise<SettingsView> => (await request('/settings', undefined, true)).json(),
+  settings: async (): Promise<SettingsView> => {
+    const t = withTimeout(SETTINGS_TIMEOUT_MS);
+    try {
+      return await (await request('/settings', t.init, true)).json();
+    } finally {
+      t.done();
+    }
+  },
   patchSettings: async (patch: SettingsPatch): Promise<SettingsView> =>
     (await request('/settings', jsonInit('PATCH', patch), true)).json(),
   nodes: async (): Promise<NodeInfo[]> => {

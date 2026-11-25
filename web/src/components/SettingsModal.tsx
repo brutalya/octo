@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { api } from '../api/client';
 import { Network } from './Network';
 import { errMsg } from '../lib/format';
+import type { UIEvent } from 'react';
 import type { ProviderKind, SettingsView, SettingsPatch } from '../api/types';
 
 type Result = { ok: true; count: number } | { ok: false; error: string };
@@ -66,13 +67,41 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [url, setUrl] = useState('');
   const [key, setKey] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [active, setActive] = useState(SECTIONS[0].id);
+  const loaded = useRef(false);
+  const inflight = useRef(0);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    const id = ++inflight.current;
+    setError(null);
     api.settings().then((s) => {
+      if (id !== inflight.current) return;
+      loaded.current = true;
       setSettings(s);
       setUrl(s.ollama_url);
-    }).catch((e: unknown) => setError(errMsg(e)));
+    }).catch((e: unknown) => {
+      if (id === inflight.current) setError(errMsg(e));
+    });
   }, []);
+
+  useEffect(() => {
+    load();
+    const onVisible = () => {
+      if (document.visibilityState !== 'hidden' && !loaded.current) load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [load]);
+
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const top = e.currentTarget.getBoundingClientRect().top;
+    let cur = SECTIONS[0].id;
+    for (const x of SECTIONS) {
+      const el = document.getElementById(x.id);
+      if (el && el.getBoundingClientRect().top - top <= 80) cur = x.id;
+    }
+    setActive(cur);
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -115,17 +144,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           <a
             key={x.id}
             href={`#${x.id}`}
+            aria-current={active === x.id ? 'true' : undefined}
             onClick={(e) => {
               e.preventDefault();
+              setActive(x.id);
               document.getElementById(x.id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
             }}
-            className="flex h-9 items-center rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800 max-md:h-11 max-md:shrink-0"
+            className="flex h-9 items-center rounded-lg px-2.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-800 aria-[current]:bg-slate-100 aria-[current]:text-slate-800 max-md:h-11 max-md:shrink-0"
           >
             {x.label}
           </a>
         ))}
       </nav>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div data-testid="settings-body" onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-10 px-8 py-8 max-md:px-4 max-md:py-5">
           <section aria-labelledby="settings-models" className="flex flex-col gap-4">
             <div className="flex flex-col gap-1">
@@ -159,7 +190,20 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
                 />
               </>
             )}
-            {error && <span className="text-xs text-red-500">{error}</span>}
+            {!settings && !error && (
+              <span role="status" className="text-sm text-slate-500">Loading</span>
+            )}
+            {!settings && error && (
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-red-500">{error}</span>
+                <button
+                  onClick={load}
+                  className="h-9 shrink-0 rounded-lg border border-slate-300 px-3.5 text-sm text-slate-700 hover:bg-slate-100"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
           </section>
           <Network />
         </div>
