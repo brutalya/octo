@@ -46,7 +46,7 @@ beforeEach(() => {
   });
   useDevicesStore.setState({
     lists: { lin: [t('l1', 'Relay on a VPS', 3 * DAY)], me: [], lap: [t('x', 'Relay offline', HOUR)] },
-    access: { pc: { agents: true, private_files: true }, lin: { agents: true, private_files: true } },
+    access: { pc: { agents: true, private_files: true }, lin: { agents: true, private_files: true }, lap: { agents: true, private_files: false } },
     load: async () => {},
   });
   f = vi.fn(async (url: string) => {
@@ -73,19 +73,27 @@ afterEach(() => {
 const titles = (el: HTMLElement) => within(el).getAllByRole('button', { name: /^Open / }).map((b) => b.getAttribute('aria-label'));
 
 describe('AllChats', () => {
+  it('a device that answered agents:false has no chats here, even from its cache', async () => {
+    useDevicesStore.setState((s) => ({ access: { ...s.access, lap: { agents: false, private_files: false } } }));
+    render(<AllChats device={null} onBack={() => {}} />);
+    expect(await screen.findByText('Relay on a VPS')).toBeInTheDocument();
+    expect(screen.queryByText('Relay offline')).toBeNull();
+  });
+
+
   it('merges chats and outside sessions of every reachable device, newest first, by day', async () => {
     console.log('[Step 1/2] open All chats');
     render(<AllChats device={null} onBack={() => {}} />);
-    console.log('[Step 2/2] Today / Yesterday / This week; imported sessions and offline devices left out');
+    console.log('[Step 2/2] Today / Yesterday / This week; imported sessions left out, an offline allowed device keeps its chats');
     const today = await screen.findByRole('list', { name: 'Today' });
     await waitFor(() => expect(titles(today)).toContain('Open Relay secret rotation'));
-    expect(titles(today)).toEqual(['Open Refactor the relay', 'Open Relay secret rotation']);
+    expect(titles(today)).toEqual(['Open Refactor the relay', 'Open Relay offline', 'Open Relay secret rotation']);
     expect(titles(screen.getByRole('list', { name: 'Yesterday' }))).toEqual([
       'Open Relay deploy notes', 'Open Relay websocket bug',
     ]);
     expect(titles(screen.getByRole('list', { name: 'This week' }))).toEqual(['Open Relay on a VPS']);
     expect(screen.queryByText('Already here')).toBeNull();
-    expect(screen.queryByText('Relay offline')).toBeNull();
+    expect(screen.getByText('Relay offline')).toBeInTheDocument();
     expect(screen.getByText('from Claude Code')).toBeInTheDocument();
     expect(screen.getByText('from Antigravity')).toBeInTheDocument();
   });

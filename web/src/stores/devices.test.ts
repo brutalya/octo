@@ -71,7 +71,7 @@ describe('devices store', () => {
     useNodesStore.setState({
       nodes: [{ node_id: 'vps', name: 'vps', is_self: false, online: true, trust: 'public', agents: false }],
     });
-    useDevicesStore.setState({ lists: { vps: [thread('old') as never] } });
+    useDevicesStore.setState({ lists: { vps: [thread('old') as never] }, access: {}, accessAt: {} });
     await useDevicesStore.getState().load();
     expect(useDevicesStore.getState().lists.vps.map((t) => t.id)).toEqual(['old']);
   });
@@ -147,3 +147,63 @@ describe('access is asked rarely', () => {
   });
 });
 
+
+describe('cache across restarts', () => {
+  const me = { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null };
+  const lap = { node_id: 'lap', name: 'laptop', is_self: false, online: false, trust: 'full' as const, agents: true };
+  const stored = () => JSON.parse(localStorage.getItem('octo.devices') ?? '{}');
+
+  it('keeps lists and access of other devices across a reload, never this device', async () => {
+    console.log('[Step 1/3] pc answers with its list and access');
+    f.mockImplementation(async (url: string) => {
+      if (url === '/api/nodes/pc/access') return new Response(JSON.stringify({ agents: true, private_files: false }));
+      if (url === '/api/nodes/pc/threads') return new Response(JSON.stringify([thread('on-pc')]));
+      return new Response(JSON.stringify([{ ...thread('secret'), space: 'private' }]));
+    });
+    useNodesStore.setState({
+      nodes: [me, { node_id: 'pc', name: 'pc', is_self: false, online: true, trust: 'full', agents: true }],
+    });
+    useDevicesStore.setState({ lists: {}, access: {}, accessAt: {} });
+    await useDevicesStore.getState().load();
+    console.log('[Step 2/3] only the pc is written to storage');
+    expect(Object.keys(stored().lists)).toEqual(['pc']);
+    expect(Object.keys(stored().access)).toEqual(['pc']);
+    console.log('[Step 3/3] a fresh module (restart) starts from it');
+    vi.resetModules();
+    const fresh = (await import('./devices')).useDevicesStore.getState();
+    expect(fresh.lists.pc.map((t) => t.id)).toEqual(['on-pc']);
+    expect(fresh.access.pc).toEqual({ agents: true, private_files: false });
+  });
+
+  it('a device that is no longer in the node list is dropped from state and storage', async () => {
+    localStorage.setItem('octo.devices', JSON.stringify({ lists: { lap: [thread('old')] }, access: { lap: { agents: true, private_files: false } } }));
+    useDevicesStore.setState({ lists: { lap: [thread('old') as never] }, access: { lap: { agents: true, private_files: false } } });
+    useNodesStore.setState({ nodes: [me] });
+    await useDevicesStore.getState().load();
+    expect(useDevicesStore.getState().lists.lap).toBeUndefined();
+    expect(useDevicesStore.getState().access.lap).toBeUndefined();
+    expect(stored().lists.lap).toBeUndefined();
+  });
+
+  it('a device that answers agents:false loses its list; an offline allowed one keeps it', async () => {
+    const vps = { node_id: 'vps', name: 'vps', is_self: false, online: true, trust: 'public' as const, agents: false };
+    f.mockImplementation(async (url: string) => {
+      if (url === '/api/nodes/vps/access') return new Response(JSON.stringify({ agents: false, private_files: false }));
+      return new Response('[]');
+    });
+    useNodesStore.setState({ nodes: [me, vps, lap] });
+    useDevicesStore.setState({
+      lists: { vps: [thread('v') as never], lap: [thread('l') as never] },
+      access: { vps: { agents: true, private_files: false }, lap: { agents: true, private_files: false } },
+      accessAt: {},
+    });
+    await useDevicesStore.getState().load();
+    const s = useDevicesStore.getState();
+    expect(s.access.vps.agents).toBe(false);
+    expect(s.lists.vps).toBeUndefined();
+    expect(s.lists.lap.map((t) => t.id)).toEqual(['l']);
+    expect(s.access.lap.agents).toBe(true);
+    expect(stored().lists.vps).toBeUndefined();
+    expect(stored().lists.lap).toHaveLength(1);
+  });
+});

@@ -17,7 +17,8 @@ export function useDeviceChats() {
   const multi = nodes.length > 1;
   /** Only devices that let this one run agents are listed (this device always may). */
   const allowed = (n: NodeInfo) => n.is_self || access[n.node_id]?.agents === true;
-  // Members in the network first (server order), then this device, offline devices last.
+  // Members in the network first (server order), then this device, offline devices last. An
+  // offline device stays while its last known answer allowed agents.
   const order = [
     ...nodes.filter((n) => !n.is_self && n.online),
     ...nodes.filter((n) => n.is_self),

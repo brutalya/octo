@@ -97,13 +97,13 @@ export function AllChats({
   const q = query.trim().toLowerCase();
   const inScope = (n: NodeInfo) => scope === 'all' || scope === 'pinned' || scope === n.node_id;
   const items: Item[] = [];
-  for (const n of order.filter(reachable).filter(inScope)) {
+  for (const n of order.filter(inScope)) {
     for (const t of listOf(n.node_id)) {
       if (q && !(t.title || 'untitled').toLowerCase().includes(q)) continue;
       if (scope === 'pinned' && !pins.includes(pinKey(n.node_id, t.id))) continue;
       items.push({ type: 'chat', n, t, at: t.updated_at });
     }
-    if (scope !== 'pinned') {
+    if (scope !== 'pinned' && reachable(n)) {
       for (const { kind, label, s } of found[n.node_id] ?? []) items.push({ type: 'session', n, s, kind, label, at: s.updated_at });
     }
   }
@@ -216,7 +216,7 @@ export function AllChats({
             <button aria-pressed={scope === 'all'} onClick={() => setScope('all')} className={chip(scope === 'all')}>
               All devices
             </button>
-            {order.filter(reachable).map((n) => (
+            {order.map((n) => (
               <button
                 key={n.node_id}
                 aria-pressed={scope === n.node_id}

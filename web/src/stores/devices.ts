@@ -14,15 +14,54 @@ interface DevicesState {
   load: () => Promise<void>;
 }
 
+const CACHE = 'octo.devices';
+
+interface Cache {
+  lists: Record<string, Thread[]>;
+  access: Record<string, AccessView>;
+}
+
+/** Last known lists and access of other devices, from the previous run. */
+function readCache(): Cache {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(CACHE) ?? '{}');
+    if (v && typeof v === 'object') {
+      const { lists, access } = v as Partial<Cache>;
+      return {
+        lists: lists && typeof lists === 'object' ? lists : {},
+        access: access && typeof access === 'object' ? access : {},
+      };
+    }
+  } catch {
+    // unreadable cache: start empty
+  }
+  return { lists: {}, access: {} };
+}
+
+/** Other devices only, and only the Public threads their owners already send. */
+function writeCache(lists: Record<string, Thread[]>, access: Record<string, AccessView>, others: Set<string>) {
+  const keep = <T,>(o: Record<string, T>) => Object.fromEntries(Object.entries(o).filter(([id]) => others.has(id)));
+  const pub = Object.fromEntries(
+    Object.entries(keep(lists)).map(([id, l]) => [id, l.filter((t) => t.space === 'public')]),
+  );
+  try {
+    localStorage.setItem(CACHE, JSON.stringify({ lists: pub, access: keep(access) }));
+  } catch {
+    // storage unavailable
+  }
+}
+
 let inflight: Promise<void> | null = null;
 /** Members reachable at the previous load: one that just came online is asked right away. */
 let wasOnline = new Set<string>();
 /** Access rarely changes: asked when a member comes online, then at most this often. */
 const ACCESS_TTL = 5 * 60_000;
 
+const cached = readCache();
+
 export const useDevicesStore = create<DevicesState>((set, get) => ({
-  lists: {},
-  access: {},
+  lists: cached.lists,
+  access: cached.access,
   accessAt: {},
   load: () => {
     inflight ??= (async () => {
@@ -57,8 +96,8 @@ export const useDevicesStore = create<DevicesState>((set, get) => ({
           }
         }),
       );
-      const lists = { ...get().lists };
-      for (const g of got) if (g) lists[g[0]] = g[1];
+      const merged = { ...get().lists };
+      for (const g of got) if (g) merged[g[0]] = g[1];
       const access = { ...get().access };
       const accessAt = { ...get().accessAt };
       for (const a of asked) {
@@ -66,7 +105,20 @@ export const useDevicesStore = create<DevicesState>((set, get) => ({
         access[a[0]] = a[1];
         accessAt[a[0]] = now;
       }
-      set({ lists, access, accessAt });
+      // Gone: unpaired (no longer a member) or the device said this one may not use its agents.
+      // An unreachable device is neither: it keeps its last known list.
+      const nodes = useNodesStore.getState().nodes;
+      const known = new Set(nodes.map((n) => n.node_id));
+      const unpaired = (id: string) => nodes.length > 0 && !known.has(id);
+      const only = <T,>(o: Record<string, T>, drop: (id: string) => boolean) =>
+        Object.fromEntries(Object.entries(o).filter(([id]) => !drop(id)));
+      const lists = only(merged, (id) => unpaired(id) || access[id]?.agents === false);
+      const accessKept = only(access, unpaired);
+      const accessAtKept = only(accessAt, unpaired);
+      set({ lists, access: accessKept, accessAt: accessAtKept });
+      if (nodes.length > 0) {
+        writeCache(lists, accessKept, new Set(nodes.filter((n) => !n.is_self).map((n) => n.node_id)));
+      }
     })().finally(() => {
       inflight = null;
     });

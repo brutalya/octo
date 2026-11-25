@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Lock, MoreHorizontal, Pin, Plus, Search, Settings, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Lock, MoreHorizontal, Pin, Plus, RefreshCw, Search, Settings, X } from 'lucide-react';
 import { SettingsModal } from './SettingsModal';
 import { AllChats } from './AllChats';
 import { api } from '../api/client';
@@ -222,7 +222,7 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
         const [nodeId, id] = key.split('/');
         const n = nodes.find((x) => x.node_id === nodeId);
         const t = listOf(nodeId).find((x) => x.id === id);
-        if (!t || (multi && (!n || !allowed(n) || (!n.is_self && !n.online)))) return [];
+        if (!t || (multi && (!n || !allowed(n)))) return [];
     return [{ n, t }];
   });
 
@@ -307,12 +307,11 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
                 <section key={n.node_id} className="pt-2">
                   <button
                     aria-label={`${n.name}, ${state}`}
-                    aria-expanded={!offline && !shut}
-                    disabled={offline}
+                    aria-expanded={!shut}
                     onClick={() => collapse(n.node_id)}
-                    className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-slate-100/60 disabled:hover:bg-transparent max-md:h-11"
+                    className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-slate-100/60 max-md:h-11"
                   >
-                    {offline || shut ? (
+                    {shut ? (
                       <ChevronRight size={14} className="shrink-0 text-slate-400" />
                     ) : (
                       <ChevronDown size={14} className="shrink-0 text-slate-400" />
@@ -321,9 +320,12 @@ export function Sidebar({ onNavigate, onClose }: { onNavigate?: () => void; onCl
                       {n.name}
                     </span>
                     {!n.is_self && n.online && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />}
-                    {(n.is_self || offline) && <span className="truncate text-xs text-slate-400">{state}</span>}
+                    {offline && (
+                      <RefreshCw size={12} role="img" aria-label="reconnecting" className="shrink-0 animate-spin text-slate-400 motion-reduce:animate-none" />
+                    )}
+                    {n.is_self && <span className="truncate text-xs text-slate-400">{state}</span>}
                   </button>
-                  {!offline && !shut && (
+                  {!shut && (
                     <ul aria-label={`Chats on ${n.name}`} className="flex flex-col gap-0.5 pl-3">
                       {chats.slice(0, RECENT).map((t) => row(n, t))}
                       {chats.length > RECENT && (
