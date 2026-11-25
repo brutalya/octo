@@ -143,7 +143,7 @@ fn build(dir: &Path, row: &Row, rows: &[Row], prompts: &[Prompt]) -> SessionData
         .max()
         .unwrap_or(i64::MIN);
     if let Some(messages) = steps(dir, &row.id) {
-        return data(row, messages);
+        return data(row, messages, false);
     }
     let mut messages: Vec<SourceMessage> = match &ws {
         Some(ws) => prompts
@@ -163,10 +163,10 @@ fn build(dir: &Path, row: &Row, rows: &[Row], prompts: &[Prompt]) -> SessionData
         content: UNAVAILABLE.into(),
         created_at: row.modified,
     });
-    data(row, messages)
+    data(row, messages, true)
 }
 
-fn data(row: &Row, messages: Vec<SourceMessage>) -> SessionData {
+fn data(row: &Row, messages: Vec<SourceMessage>, lossy: bool) -> SessionData {
     let title = [row.title.as_str(), row.preview.as_str()]
         .into_iter()
         .map(short_title)
@@ -180,9 +180,16 @@ fn data(row: &Row, messages: Vec<SourceMessage>) -> SessionData {
             cwd: row.workspace.clone(),
             updated_at: row.modified,
             messages: messages.len(),
-            stamp: format!("{}:{}", row.steps, row.modified_raw),
+            // decoded history gets its own stamp so caches filled by the fallback refresh
+            stamp: format!(
+                "{}:{}{}",
+                row.steps,
+                row.modified_raw,
+                if lossy { "" } else { ":d" }
+            ),
         },
         messages,
+        lossy,
     }
 }
 

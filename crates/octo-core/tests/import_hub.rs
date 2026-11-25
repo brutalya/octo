@@ -283,3 +283,132 @@ mod runs {
         assert!(hub.list_messages(&t.id).unwrap().is_empty());
     }
 }
+
+fn varint(mut v: u64, out: &mut Vec<u8>) {
+    while v >= 0x80 {
+        out.push((v & 0x7f) as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn field_varint(n: u64, v: u64, out: &mut Vec<u8>) {
+    varint(n << 3, out);
+    varint(v, out);
+}
+
+fn field_bytes(n: u64, v: &[u8], out: &mut Vec<u8>) {
+    varint(n << 3 | 2, out);
+    varint(v.len() as u64, out);
+    out.extend_from_slice(v);
+}
+
+/// Step in the layout `agy` writes: `1` type, `5.1` timestamp, `19.2` prompt, `20.1` reply.
+fn step(kind: u64, secs: u64, field: u64, inner: u64, text: &str) -> Vec<u8> {
+    let mut ts = Vec::new();
+    field_varint(1, secs, &mut ts);
+    let mut meta = Vec::new();
+    field_bytes(1, &ts, &mut meta);
+    let mut body = Vec::new();
+    field_bytes(inner, text.as_bytes(), &mut body);
+    let mut out = Vec::new();
+    field_varint(1, kind, &mut out);
+    field_bytes(5, &meta, &mut out);
+    field_bytes(field, &body, &mut out);
+    out
+}
+
+fn write_steps(agy: &Path, id: &str, payloads: &[Vec<u8>]) {
+    std::fs::create_dir_all(agy.join("conversations")).unwrap();
+    let c = rusqlite::Connection::open(agy.join("conversations").join(format!("{id}.db"))).unwrap();
+    c.execute_batch(
+        "CREATE TABLE `steps` (`idx` integer,`step_type` integer NOT NULL DEFAULT 0,\
+         `status` integer NOT NULL DEFAULT 0,`step_payload` blob,PRIMARY KEY (`idx`));",
+    )
+    .unwrap();
+    for (i, p) in payloads.iter().enumerate() {
+        c.execute(
+            "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, 0, ?2)",
+            rusqlite::params![i as i64, p],
+        )
+        .unwrap();
+    }
+}
+
+fn texts(m: &[octo_core::storage::Message]) -> Vec<(Role, String)> {
+    m.iter().map(|m| (m.role, m.content.clone())).collect()
+}
+
+/// Real-data shape: the thread was imported while the conversation steps were not
+/// decodable (older Octo, or the db not written yet), so only `history unavailable` was
+/// cached. Once the steps can be read the cache must be replaced, not kept forever.
+#[test]
+fn imported_antigravity_thread_replaces_stale_unavailable_cache() {
+    let e = env();
+    let agy = e.root.path().join("agy");
+    let t = e.hub.import_session(ProviderKind::Antigravity, A1).unwrap();
+    assert_eq!(
+        e.hub.list_messages(&t.id).unwrap().last().unwrap().content,
+        "*history unavailable*"
+    );
+    write_steps(
+        &agy,
+        A1,
+        &[
+            step(14, 1_772_359_200, 19, 2, "alpha prompt"),
+            step(15, 1_772_359_210, 20, 1, "alpha reply"),
+        ],
+    );
+    let m = e.hub.list_messages(&t.id).unwrap();
+    assert_eq!(
+        texts(&m),
+        [
+            (Role::User, "alpha prompt".to_string()),
+            (Role::Assistant, "alpha reply".to_string())
+        ]
+    );
+    assert_eq!(e.hub.list_messages(&t.id).unwrap().len(), 2);
+}
+
+/// A cache must survive a source that still cannot be decoded.
+#[test]
+fn undecodable_antigravity_source_keeps_the_cache() {
+    let e = env();
+    let t = e.hub.import_session(ProviderKind::Antigravity, A1).unwrap();
+    assert_eq!(e.hub.list_messages(&t.id).unwrap().len(), 3);
+    write_steps(&e.root.path().join("agy"), A1, &[vec![0x0a, 0xff]]);
+    assert_eq!(e.hub.list_messages(&t.id).unwrap().len(), 3);
+}
+
+/// A thread created in Octo keeps its own messages; agy history never replaces them.
+#[test]
+fn octo_created_antigravity_thread_keeps_its_own_messages() {
+    let e = env();
+    let t = e
+        .hub
+        .create_thread_in(
+            ProviderKind::Antigravity,
+            Space::Public,
+            Approval::Confirm,
+            None,
+            None,
+        )
+        .unwrap();
+    let s = octo_core::storage::Storage::open(&e.root.path().join("data/octo.db")).unwrap();
+    s.add_message(&t.id, Role::User, "typed in octo").unwrap();
+    s.add_message(&t.id, Role::Assistant, "octo reply").unwrap();
+    s.set_external_session(&t.id, A1).unwrap();
+    write_steps(
+        &e.root.path().join("agy"),
+        A1,
+        &[step(14, 1_772_359_200, 19, 2, "something else")],
+    );
+    let m = e.hub.list_messages(&t.id).unwrap();
+    assert_eq!(
+        texts(&m),
+        [
+            (Role::User, "typed in octo".to_string()),
+            (Role::Assistant, "octo reply".to_string())
+        ]
+    );
+}

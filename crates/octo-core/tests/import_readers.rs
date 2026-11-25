@@ -322,3 +322,34 @@ fn agy_decoding_never_modifies_cli_storage() {
     antigravity::read(dir.path(), A1).unwrap();
     assert_eq!((std::fs::read(&db).unwrap(), list(dir.path())), before);
 }
+
+/// Workspace spelled differently in `history.jsonl` (file URI, trailing slash) still
+/// matches the session workspace; a conversation db decoded from steps does not depend
+/// on workspace matching at all.
+#[test]
+fn agy_history_workspace_spelling_and_mismatch() {
+    let dir = agy_dir();
+    std::fs::write(
+        dir.path().join("history.jsonl"),
+        concat!(
+            "{\"display\":\"uri spelling\",\"timestamp\":1772359200000,\"type\":null,\"workspace\":\"file:///srv/demo/\"}\n",
+            "{\"display\":\"elsewhere\",\"timestamp\":1772359300000,\"type\":null,\"workspace\":\"/not/demo\"}\n",
+        ),
+    )
+    .unwrap();
+    let d = antigravity::read(dir.path(), A1).unwrap();
+    let got: Vec<_> = d.messages.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(got, ["uri spelling", antigravity::UNAVAILABLE]);
+    assert!(d.lossy);
+    write_steps(
+        dir.path(),
+        A1,
+        &[
+            user_step(1_772_359_200, "from steps"),
+            reply_step(1_772_359_210, "ok"),
+        ],
+    );
+    let d = antigravity::read(dir.path(), A1).unwrap();
+    assert_eq!(d.messages[0].content, "from steps");
+    assert!(!d.lossy);
+}

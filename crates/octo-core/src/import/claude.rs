@@ -179,5 +179,6 @@ fn parse_file(path: &Path) -> Option<SessionData> {
             stamp: format!("{mtime}:{}", meta.len()),
         },
         messages,
+        lossy: false,
     })
 }

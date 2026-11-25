@@ -202,20 +202,23 @@ impl Hub {
         Ok(self.storage.list_messages(id)?)
     }
 
-    /// Imported Claude threads: replace the cache when the session file changed.
-    /// (Antigravity history is lossy, so its cache is never replaced.) A vanished or
-    /// unreadable source keeps the cache; a thread with a run in progress is left alone.
+    /// Imported threads: replace the cache when the session changed. An Antigravity
+    /// source that can only be read through the lossy prompts fallback never replaces
+    /// the cache. Octo-created threads keep their own messages. A vanished or unreadable
+    /// source keeps the cache; a thread with a run in progress is left alone.
     fn refresh_from_source(&self, t: &Thread) -> Result<(), CoreError> {
         let Some(ext) = t.external_session_id.as_deref() else {
             return Ok(());
         };
-        if t.origin != Origin::Imported
-            || t.provider != ProviderKind::Claude
-            || self.is_running(&t.id)
-        {
+        if t.origin != Origin::Imported || self.is_running(&t.id) {
             return Ok(());
         }
-        let Some(data) = import::claude::read(&self.config.claude_projects_dir, ext) else {
+        let data = match t.provider {
+            ProviderKind::Claude => import::claude::read(&self.config.claude_projects_dir, ext),
+            ProviderKind::Antigravity => import::antigravity::read(&self.config.agy_dir, ext),
+            _ => None,
+        };
+        let Some(data) = data.filter(|d| !d.lossy) else {
             return Ok(());
         };
         if self.storage.sync_stamp(&t.id)?.as_deref() == Some(data.session.stamp.as_str()) {
