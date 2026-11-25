@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SettingsModal } from './SettingsModal';
 
@@ -98,5 +98,88 @@ describe('SettingsModal', () => {
     expect(screen.getByRole('heading', { name: 'Models' })).toHaveAttribute('id', 'settings-models');
     // The network section's heading follows its state; the link target is always there.
     expect(await screen.findByRole('heading', { name: 'This device is not in a network' })).toHaveAttribute('id', 'settings-network');
+  });
+});
+
+describe('SettingsModal load states', () => {
+  const pending = () => new Promise<Response>(() => {});
+  const base = (url: string): Response | null =>
+    url === '/api/network' ? json({ joined: false, name: null, relay_host: null, devices: 1 }) : null;
+
+  afterEach(() => vi.useRealTimers());
+
+  it('shows a loading state while settings are pending, not a blank body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url === '/api/settings' ? pending() : base(url) ?? json({}, 404))));
+    render(<SettingsModal onClose={() => {}} />);
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading');
+  });
+
+  it('shows an error with Retry, and Retry refetches and renders the content', async () => {
+    let fail = true;
+    const g = vi.fn(async (url: string) => {
+      if (url === '/api/settings') return fail ? new Response('down', { status: 502 }) : json(settings);
+      return base(url) ?? json({}, 404);
+    });
+    vi.stubGlobal('fetch', g);
+    render(<SettingsModal onClose={() => {}} />);
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByRole('status')).toBeNull();
+    fail = false;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByLabelText('Ollama URL')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('a hung request times out into the error state', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) =>
+      url === '/api/settings'
+        ? new Promise<Response>((_, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('timed out'))))
+        : Promise.resolve(base(url) ?? json({}, 404)),
+    ));
+    render(<SettingsModal onClose={() => {}} />);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('refetches when the page becomes visible and settings are not loaded', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/settings') return ++calls === 1 ? pending() : json(settings);
+      return base(url) ?? json({}, 404);
+    }));
+    render(<SettingsModal onClose={() => {}} />);
+    await screen.findByRole('status');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(await screen.findByLabelText('Ollama URL')).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
+  it('does not refetch on visibility once loaded', async () => {
+    render(<SettingsModal onClose={() => {}} />);
+    await screen.findByLabelText('Ollama URL');
+    const before = f.mock.calls.length;
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(f.mock.calls).toHaveLength(before);
+  });
+
+  it('marks the active tab: Models first, then the one clicked, then the one scrolled to', async () => {
+    render(<SettingsModal onClose={() => {}} />);
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    const models = within(nav).getByRole('link', { name: 'Models' });
+    const network = within(nav).getByRole('link', { name: 'Network' });
+    expect(models).toHaveAttribute('aria-current', 'true');
+    expect(network).not.toHaveAttribute('aria-current');
+    await userEvent.click(network);
+    expect(network).toHaveAttribute('aria-current', 'true');
+    expect(models).not.toHaveAttribute('aria-current');
+    const body = screen.getByTestId('settings-body');
+    const top = (n: number) => () => ({ top: n }) as DOMRect;
+    body.getBoundingClientRect = top(0);
+    (document.getElementById('settings-models') as HTMLElement).getBoundingClientRect = top(-50);
+    (document.getElementById('settings-network') as HTMLElement).getBoundingClientRect = top(400);
+    fireEvent.scroll(body);
+    expect(models).toHaveAttribute('aria-current', 'true');
+    expect(network).not.toHaveAttribute('aria-current');
   });
 });
