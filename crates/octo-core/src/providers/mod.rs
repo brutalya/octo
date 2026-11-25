@@ -64,16 +64,66 @@ impl ProviderKind {
         matches!(self, ProviderKind::Ollama | ProviderKind::OpenRouter)
     }
 
-    /// Resolved through PATH/PATHEXT (finds `claude.cmd`, `agy.exe` on Windows);
-    /// falls back to the configured value if not found.
+    /// Resolved through PATH/PATHEXT (finds `claude.cmd`, `agy.exe` on Windows), then the
+    /// user bin dirs; falls back to the configured value if not found.
     fn bin(self, cfg: &Config) -> Option<PathBuf> {
-        let configured: &Path = match self {
-            ProviderKind::Claude => &cfg.claude_bin,
-            ProviderKind::Antigravity => &cfg.agy_bin,
-            _ => return None,
-        };
-        Some(which::which(configured).unwrap_or_else(|_| configured.to_path_buf()))
+        let configured = self.configured_bin(cfg)?;
+        Some(resolve_bin(configured, &user_bin_dirs()).unwrap_or_else(|| configured.to_path_buf()))
     }
+
+    fn configured_bin(self, cfg: &Config) -> Option<&Path> {
+        match self {
+            ProviderKind::Claude => Some(&cfg.claude_bin),
+            ProviderKind::Antigravity => Some(&cfg.agy_bin),
+            _ => None,
+        }
+    }
+}
+
+/// Directories where CLI installers put user binaries; a service or non-login shell
+/// often lacks them in PATH.
+fn user_bin_dirs() -> Vec<PathBuf> {
+    directories::BaseDirs::new()
+        .map(|d| vec![d.home_dir().join(".local").join("bin")])
+        .unwrap_or_default()
+}
+
+/// Finds `configured` in PATH; a bare name (no directory part) is also searched in
+/// `extra_dirs`. A path with a directory part is used as is.
+fn resolve_bin(configured: &Path, extra_dirs: &[PathBuf]) -> Option<PathBuf> {
+    if let Ok(found) = which::which(configured) {
+        return Some(found);
+    }
+    if configured.components().count() != 1 {
+        return None;
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    extra_dirs
+        .iter()
+        .find_map(|dir| which::which_in(configured, Some(dir), &cwd).ok())
+}
+
+/// Logs once per provider why its CLI was not found.
+fn warn_missing_bin(kind: ProviderKind, configured: &Path) {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static LOGGED: AtomicU8 = AtomicU8::new(0);
+    let bit = 1u8 << (kind as u8);
+    if LOGGED.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+        return;
+    }
+    let dirs: Vec<String> = user_bin_dirs()
+        .iter()
+        .map(|d| d.display().to_string())
+        .collect();
+    eprintln!(
+        "octo: {} not found in PATH or {}; install it there or pass --{}-bin <path>",
+        configured.display(),
+        dirs.join(", "),
+        match kind {
+            ProviderKind::Claude => "claude",
+            _ => "agy",
+        }
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -236,7 +286,11 @@ async fn detect_cli(
     cfg: &Config,
     registry: &ProcessRegistry,
 ) -> (bool, Option<String>) {
-    let Some(bin) = kind.bin(cfg) else {
+    let Some(configured) = kind.configured_bin(cfg) else {
+        return (false, None);
+    };
+    let Some(bin) = resolve_bin(configured, &user_bin_dirs()) else {
+        warn_missing_bin(kind, configured);
         return (false, None);
     };
     let mut cmd = Command::new(bin);
@@ -305,4 +359,54 @@ fn b64(data: &[u8]) -> String {
 /// A JSON string field as an owned `String`.
 pub(crate) fn str_of(v: &serde_json::Value) -> Option<String> {
     v.as_str().map(str::to_string)
+}
+
+#[cfg(all(test, unix))]
+mod bin_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_exe(dir: &Path, name: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, "#!/bin/sh\necho fake\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn falls_back_to_user_bin_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = fake_exe(tmp.path(), "octo-fake-cli-a");
+        let got = resolve_bin(Path::new("octo-fake-cli-a"), &[tmp.path().to_path_buf()]);
+        assert_eq!(got, Some(exe));
+    }
+
+    #[test]
+    fn finds_bare_name_in_path() {
+        let got = resolve_bin(Path::new("sh"), &[]).unwrap();
+        assert!(got.is_absolute());
+    }
+
+    #[test]
+    fn missing_everywhere_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let got = resolve_bin(Path::new("octo-fake-cli-b"), &[tmp.path().to_path_buf()]);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn explicit_path_is_used_as_is_and_not_searched_in_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let exe = fake_exe(tmp.path(), "octo-fake-cli-c");
+        assert_eq!(resolve_bin(&exe, &[]), Some(exe.clone()));
+        fake_exe(other.path(), "octo-fake-cli-c");
+        let missing = tmp.path().join("sub").join("octo-fake-cli-c");
+        assert_eq!(resolve_bin(&missing, &[other.path().to_path_buf()]), None);
+    }
+
+    #[test]
+    fn user_bin_dirs_include_local_bin() {
+        assert!(user_bin_dirs().iter().any(|d| d.ends_with(".local/bin")));
+    }
 }

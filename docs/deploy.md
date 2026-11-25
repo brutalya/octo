@@ -62,6 +62,7 @@ The relay listener (`--relay-addr`) only forwards end-to-end encrypted frames be
 
 ## Troubleshooting
 
+- Provider (Claude Code, Antigravity) missing on a node: the node looks up `claude` / `agy` in its PATH, then in `$HOME/.local/bin`. A service or non-login shell often lacks the installer's directory in PATH. The node log prints `octo: <name> not found in PATH or <dirs>` once. Install the CLI in one of those places or pass `--claude-bin <path>` / `--agy-bin <path>` (a path with a directory part is used as is).
 - 502 from NPM: NPM cannot reach the container. Check both are on the same Docker network (`docker network inspect <network>`), the forward host is the container name, and the container is healthy (`docker compose ps`, `docker compose logs`).
 - `pull access denied`: GHCR login missing or the token lacks `read:packages`.
 - Client cannot connect: the relay URL must be `wss://.../relay` (plus `?key=<secret>` for a private relay) and Websockets Support must be ON in NPM. A wrong or missing key shows as 401 in the relay's proxy log.

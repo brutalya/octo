@@ -19,7 +19,7 @@ Android: copy the APK to the phone, allow installing from unknown sources for yo
 
 - Rust (rustup): https://rustup.rs
 - Node 22+
-- Optional: Claude Code (`claude`), `agy` CLI, Ollama
+- Optional: Claude Code (`claude`), `agy` CLI, Ollama. The CLIs are found in PATH or `~/.local/bin`; otherwise pass `--claude-bin` / `--agy-bin` to `octo-server`.
 
 ## Run (dev)
 
