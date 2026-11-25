@@ -167,3 +167,158 @@ fn claude_list_sorted_newest_first_by_mtime() {
         .collect();
     assert_eq!(ids, ["new", "old"]);
 }
+
+fn varint(mut v: u64, out: &mut Vec<u8>) {
+    while v >= 0x80 {
+        out.push((v & 0x7f) as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn field_varint(n: u64, v: u64, out: &mut Vec<u8>) {
+    varint(n << 3, out);
+    varint(v, out);
+}
+
+fn field_bytes(n: u64, v: &[u8], out: &mut Vec<u8>) {
+    varint(n << 3 | 2, out);
+    varint(v.len() as u64, out);
+    out.extend_from_slice(v);
+}
+
+/// Step payload in the layout `agy` writes: `1` type, `5` metadata (`5.1` timestamp
+/// seconds+nanos, noise fields around it), plus the type specific message.
+fn step(kind: u64, secs: u64, body: Option<(u64, Vec<u8>)>) -> Vec<u8> {
+    let mut ts = Vec::new();
+    field_varint(1, secs, &mut ts);
+    field_varint(2, 123_456_789, &mut ts);
+    let mut meta = Vec::new();
+    field_bytes(1, &ts, &mut meta);
+    field_varint(3, 4, &mut meta);
+    field_bytes(12, b"00000000-0000-4000-8000-000000000000", &mut meta);
+    let mut out = Vec::new();
+    field_varint(1, kind, &mut out);
+    field_varint(4, 3, &mut out);
+    field_bytes(5, &meta, &mut out);
+    if let Some((n, b)) = body {
+        field_bytes(n, &b, &mut out);
+    }
+    out
+}
+
+fn user_step(secs: u64, text: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    field_bytes(2, text.as_bytes(), &mut b);
+    field_bytes(3, text.as_bytes(), &mut b);
+    step(14, secs, Some((19, b)))
+}
+
+fn reply_step(secs: u64, text: &str) -> Vec<u8> {
+    let mut b = Vec::new();
+    field_bytes(1, text.as_bytes(), &mut b);
+    field_varint(12, 2, &mut b);
+    step(15, secs, Some((20, b)))
+}
+
+fn tool_step(secs: u64) -> Vec<u8> {
+    step(101, secs, Some((114, b"\x0a\x03abc".to_vec())))
+}
+
+fn write_steps(dir: &Path, id: &str, payloads: &[Vec<u8>]) {
+    std::fs::create_dir_all(dir.join("conversations")).unwrap();
+    let c = rusqlite::Connection::open(dir.join("conversations").join(format!("{id}.db"))).unwrap();
+    c.execute_batch(
+        "CREATE TABLE `steps` (`idx` integer,`step_type` integer NOT NULL DEFAULT 0,\
+         `status` integer NOT NULL DEFAULT 0,`step_payload` blob,PRIMARY KEY (`idx`));",
+    )
+    .unwrap();
+    for (i, p) in payloads.iter().enumerate() {
+        c.execute(
+            "INSERT INTO steps (idx, step_type, step_payload) VALUES (?1, 0, ?2)",
+            rusqlite::params![i as i64, p],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn agy_messages_are_decoded_from_conversation_steps() {
+    let dir = agy_dir();
+    write_steps(
+        dir.path(),
+        A1,
+        &[
+            user_step(1_772_359_200, "first question"),
+            reply_step(1_772_359_210, "first answer"),
+            tool_step(1_772_359_215),
+            user_step(1_772_359_300, "second question"),
+            reply_step(1_772_359_310, "let me look"),
+            tool_step(1_772_359_320),
+            reply_step(1_772_359_330, "second answer"),
+        ],
+    );
+    let d = antigravity::read(dir.path(), A1).unwrap();
+    let got: Vec<_> = d
+        .messages
+        .iter()
+        .map(|m| (m.role, m.content.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (Role::User, "first question"),
+            (Role::Assistant, "first answer"),
+            (Role::User, "second question"),
+            (Role::Assistant, "let me look\n\nsecond answer"),
+        ]
+    );
+    assert_eq!(d.messages[0].created_at, 1_772_359_200_123);
+    assert_eq!(d.session.messages, 4);
+}
+
+#[test]
+fn agy_undecodable_steps_fall_back_to_history() {
+    let dir = agy_dir();
+    // truncated varint, and a payload with no readable messages
+    write_steps(dir.path(), A1, &[vec![0x0a, 0xff, 0xff], vec![0x08, 0x0e]]);
+    let d = antigravity::read(dir.path(), A1).unwrap();
+    assert_eq!(d.messages.len(), 3);
+    assert_eq!(d.messages[2].content, antigravity::UNAVAILABLE);
+    // a conversation db that is not sqlite
+    std::fs::write(
+        dir.path().join("conversations").join(format!("{A2}.db")),
+        b"junk",
+    )
+    .unwrap();
+    let d2 = antigravity::read(dir.path(), A2).unwrap();
+    assert_eq!(
+        d2.messages.last().unwrap().content,
+        antigravity::UNAVAILABLE
+    );
+}
+
+#[test]
+fn agy_decoding_never_modifies_cli_storage() {
+    let dir = agy_dir();
+    write_steps(
+        dir.path(),
+        A1,
+        &[
+            user_step(1_772_359_200, "q"),
+            reply_step(1_772_359_210, "a"),
+        ],
+    );
+    let list = |d: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(d.join("conversations"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        v.sort();
+        v
+    };
+    let db = dir.path().join("conversations").join(format!("{A1}.db"));
+    let before = (std::fs::read(&db).unwrap(), list(dir.path()));
+    antigravity::read(dir.path(), A1).unwrap();
+    assert_eq!((std::fs::read(&db).unwrap(), list(dir.path())), before);
+}
