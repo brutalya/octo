@@ -24,7 +24,7 @@ Goal: sessions started in a terminal (Antigravity, Claude Code) appear in Octo a
 | POST | /import/:kind | `{external_id}` -> Thread (idempotent: returns existing thread if already imported) |
 
 ## Web
-- New thread dialog: with a CLI provider chosen, `Continue a <provider> session` opens a searchable session list (title, cwd short, relative time). Click = import + open.
+- New chat dialog: with a CLI provider chosen, `Continue a <provider> session` opens a searchable session list (title, cwd short, relative time). Click = import + open. Sessions started outside Octo and not imported yet are also listed in All chats in the sidebar.
 - Imported threads look like any other thread. No badges.
 
 ## Deviations
@@ -34,7 +34,7 @@ Goal: sessions started in a terminal (Antigravity, Claude Code) appear in Octo a
 - `cwd` is a normal field of `POST /threads`; CLI threads default to `<data>/public`. A run fails fast (400, nothing stored) if the working directory does not exist.
 - Config: `claude_projects_dir` and `agy_dir` default to `<home>/.claude/projects` and `<home>/.gemini/antigravity-cli` (home via the platform home dir, so `%USERPROFILE%` on Windows); server flags `--claude-projects-dir`, `--agy-dir`.
 - Session ids from the API are validated (`[A-Za-z0-9_-]`) before any file lookup.
-- Web: in the New thread dialog, with a CLI provider chosen, `Continue a <provider> session` opens the search list (server-side `q`, debounced).
+- Web: in the New chat dialog, with a CLI provider chosen, `Continue a <provider> session` opens the search list (server-side `q`, debounced).
 - CLI agents are not sandboxed: in `auto` approval they can read and write the whole user account, whatever the working directory. Octo only refuses a thread `cwd` that is, or is inside, the data directory (canonicalized), except the public space dir, so the CLI does not start next to private blobs, keys or the database.
 - After a terminal event the CLI process gets 2 s to exit, then it is cancelled. Stderr kept for error messages is capped at 64 KB. Claude stream events from sub-agents (`parent_tool_use_id` set) are not shown as reply text.
 
