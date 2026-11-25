@@ -73,10 +73,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   const load = useCallback(() => {
     const id = ++inflight.current;
-    setError(null);
     api.settings().then((s) => {
       if (id !== inflight.current) return;
       loaded.current = true;
+      setError(null);
       setSettings(s);
       setUrl(s.ollama_url);
     }).catch((e: unknown) => {
@@ -84,14 +84,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
     });
   }, []);
 
+  const retry = useCallback(() => {
+    setError(null);
+    load();
+  }, [load]);
+
   useEffect(() => {
     load();
     const onVisible = () => {
-      if (document.visibilityState !== 'hidden' && !loaded.current) load();
+      if (document.visibilityState !== 'hidden' && !loaded.current) retry();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [load]);
+  }, [load, retry]);
 
   const onScroll = (e: UIEvent<HTMLDivElement>) => {
     const top = e.currentTarget.getBoundingClientRect().top;
@@ -197,7 +202,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
               <div className="flex items-center gap-3">
                 <span className="text-sm text-red-500">{error}</span>
                 <button
-                  onClick={load}
+                  onClick={retry}
                   className="h-9 shrink-0 rounded-lg border border-slate-300 px-3.5 text-sm text-slate-700 hover:bg-slate-100"
                 >
                   Retry

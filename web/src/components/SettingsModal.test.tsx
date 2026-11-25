@@ -176,8 +176,8 @@ describe('SettingsModal load states', () => {
     const body = screen.getByTestId('settings-body');
     const top = (n: number) => () => ({ top: n }) as DOMRect;
     body.getBoundingClientRect = top(0);
-    document.getElementById('settings-models')!.getBoundingClientRect = top(-50);
-    document.getElementById('settings-network')!.getBoundingClientRect = top(400);
+    (document.getElementById('settings-models') as HTMLElement).getBoundingClientRect = top(-50);
+    (document.getElementById('settings-network') as HTMLElement).getBoundingClientRect = top(400);
     fireEvent.scroll(body);
     expect(models).toHaveAttribute('aria-current', 'true');
     expect(network).not.toHaveAttribute('aria-current');
