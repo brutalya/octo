@@ -1,4 +1,4 @@
-import { useCallback, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { Check, ChevronDown, ChevronRight, Cloud, File as FileIcon, Folder, HardDrive, Lock, Minus, MoreHorizontal } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { useClickOutside } from '../lib/useClickOutside';
@@ -102,8 +102,8 @@ export function FileTree({
     setMoving(null);
   };
   const [editing, setEditing] = useState<Editing | null>(null);
-  const [uploadDir, setUploadDir] = useState('');
-  const inputId = useId();
+  const uploadDir = useRef('');
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const closeMenu = useCallback(() => {
@@ -301,10 +301,17 @@ export function FileTree({
           >
             New folder
           </button>
-          {/* A label opens the file chooser itself, as part of the same click. */}
-          <label role="menuitem" htmlFor={inputId} className={`${item} cursor-pointer`} onClick={act(() => setUploadDir(e.path))}>
+          <button
+            role="menuitem"
+            className={item}
+            onClick={act(() => {
+              // The chooser must open synchronously inside the tap; closing the menu first would be too late.
+              uploadDir.current = e.path;
+              fileInput.current?.click();
+            })}
+          >
             Upload here
-          </label>
+          </button>
           {missing.length > 0 && (
             <button role="menuitem" className={item} onClick={act(() => void st.getHere(space, missing))}>
               Get all on {device}
@@ -375,7 +382,7 @@ export function FileTree({
   return (
     <>
       <input
-        id={inputId}
+        ref={fileInput}
         type="file"
         multiple
         aria-label="Upload to folder"
@@ -383,7 +390,7 @@ export function FileTree({
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = '';
-          if (files.length) void useFilesStore.getState().upload(space, uploadDir, files);
+          if (files.length) void useFilesStore.getState().upload(space, uploadDir.current, files);
         }}
       />
       <div
