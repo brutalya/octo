@@ -200,10 +200,40 @@ describe('Sidebar in a network', () => {
     expect(screen.getByRole('list', { name: 'Chats on pc' })).toBeInTheDocument();
   });
 
-  it('an offline device shows no chats', () => {
+  it('an offline but allowed device keeps its last chats, expanded, with a reconnecting marker', () => {
+    console.log('[Step 1/2] laptop is offline, its last answer allowed agents');
     render(<Sidebar />);
+    console.log('[Step 2/2] its chats stay listed, the marker sits in its header only');
+    const list = screen.getByRole('list', { name: 'Chats on laptop' });
+    expect(within(list).getByText('Hidden')).toBeInTheDocument();
+    const header = screen.getByRole('button', { name: 'laptop, offline' });
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(within(header).getByLabelText('reconnecting')).toBeInTheDocument();
+    expect(within(screen.getByRole('button', { name: 'linux, online' })).queryByLabelText('reconnecting')).toBeNull();
+  });
+
+  it('pinned chats of an offline allowed device stay; they go when access is denied', () => {
+    usePinsStore.setState({ pins: ['lap/x1'] });
+    const { unmount } = render(<Sidebar />);
+    expect(within(screen.getByRole('list', { name: 'Pinned' })).getByText('Hidden')).toBeInTheDocument();
+    unmount();
+    useDevicesStore.setState((s) => ({ access: { ...s.access, lap: { agents: false, private_files: false } } }));
+    render(<Sidebar />);
+    expect(screen.queryByRole('list', { name: 'Pinned' })).toBeNull();
     expect(screen.queryByText('Hidden')).toBeNull();
-    expect(screen.queryByRole('list', { name: 'Chats on laptop' })).toBeNull();
+  });
+
+  it('a device that never answered since start is listed from the cached access and lists', () => {
+    useDevicesStore.setState({
+      lists: { lin: [t('l1', 'Server backups', 500)] },
+      access: { lin: { agents: true, private_files: false } },
+    });
+    useNodesStore.setState({
+      nodes: [node('me', 'phone', true), node('pc', 'pc'), node('lin', 'linux', false, false)],
+    });
+    render(<Sidebar />);
+    expect(screen.getByText('Server backups')).toBeInTheDocument();
+    expect(screen.getByLabelText('reconnecting')).toBeInTheDocument();
   });
 
   it('opening a chat on another device switches to that device first', async () => {
