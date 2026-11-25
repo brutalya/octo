@@ -5,12 +5,17 @@ export interface Holder {
   id: string | null;
   name: string;
   entries: FileEntry[];
+  /** Set while these entries are the last known ones, not confirmed by the device this session. */
+  stale?: Reach;
 }
+
+/** Whether a device answers: `connecting` = trying (or a retry is due), `offline` = retries used up. */
+export type Reach = 'online' | 'connecting' | 'offline';
 
 /** A path of the shared tree: `here` = on the open device; `on` = other devices that have it. */
 export interface SharedEntry extends FileEntry {
   here: boolean;
-  on: { id: string | null; name: string }[];
+  on: { id: string | null; name: string; stale?: Reach }[];
 }
 
 /** One tree of every device's files, seen from the open device (`here`). */
@@ -20,8 +25,8 @@ export function mergeDevices(here: Holder, others: Holder[]): SharedEntry[] {
   for (const h of others) {
     for (const e of h.entries) {
       const cur = out.get(e.path);
-      if (!cur) out.set(e.path, { ...e, here: false, on: [{ id: h.id, name: h.name }] });
-      else if (cur.kind === e.kind) cur.on.push({ id: h.id, name: h.name });
+      if (!cur) out.set(e.path, { ...e, here: false, on: [{ id: h.id, name: h.name, stale: h.stale }] });
+      else if (cur.kind === e.kind) cur.on.push({ id: h.id, name: h.name, stale: h.stale });
     }
   }
   return [...out.values()];

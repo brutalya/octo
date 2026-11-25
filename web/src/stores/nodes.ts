@@ -54,12 +54,14 @@ export const useNodesStore = create<NodesState>((set, get) => ({
         if (s && nodes.some((n) => n.node_id === s && !n.is_self)) {
           selectedId = s;
           setNodeBase(s);
+          useFilesStore.getState().reset();
         }
       } else if (!nodes.some((n) => n.node_id === selectedId && !n.is_self)) {
         set({ nodes });
         get().select(null);
         return;
       }
+      useFilesStore.getState().prune(nodes.map((n) => n.node_id));
       set({ nodes, selectedId });
     })().finally(() => {
       inflight = null;
@@ -75,7 +77,7 @@ export const useNodesStore = create<NodesState>((set, get) => ({
     useChatStore.getState().reset();
     useThreadsStore.setState({ threads: [], activeId: null, error: null });
     useFilesStore.getState().closePreview();
-    useFilesStore.setState({ entries: { private: [], public: [] }, others: { private: [], public: [] }, error: null });
+    useFilesStore.getState().reset();
     // Picked files are paths on the device that was open.
     useAttachStore.getState().clear();
     void useThreadsStore.getState().load();

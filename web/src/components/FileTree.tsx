@@ -1,5 +1,5 @@
 import { useCallback, useId, useRef, useState, type KeyboardEvent } from 'react';
-import { Check, ChevronDown, ChevronRight, Cloud, File as FileIcon, Folder, HardDrive, Lock, Minus, MoreHorizontal } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Cloud, CloudOff, File as FileIcon, Folder, HardDrive, Loader2, Lock, Minus, MoreHorizontal } from 'lucide-react';
 import { useFilesStore } from '../stores/files';
 import { useClickOutside } from '../lib/useClickOutside';
 import { buildTree, type TreeNode } from '../lib/tree';
@@ -93,6 +93,8 @@ export function FileTree({
 }) {
   const entries = useFilesStore((s) => s.entries[space]);
   const others = useFilesStore((s) => s.others?.[space] ?? EMPTY);
+  // The open device has not answered yet: what is shown is its last known list.
+  const hereStale = useFilesStore((s) => (s.links?.open?.state ?? 'online') !== 'online');
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
   const [menu, setMenuRaw] = useState<Menu | null>(null);
   /** The entry whose new folder the open menu asks for. */
@@ -150,13 +152,31 @@ export function FileTree({
     setMenu({ x: r.left, y: r.bottom, entry });
   };
 
-  const elsewhere = (e: SharedEntry) =>
-    !e.here && (
-      <span className="flex shrink-0 items-center gap-1 text-xs text-slate-400" title={`Only on ${e.on.map((h) => h.name).join(', ')}`}>
-        <Cloud size={13} role="img" aria-label="Only on other devices" />
-        <span className="max-w-24 truncate">{e.on.map((h) => h.name).join(', ')}</span>
+  /** Only holders that have not answered this session: their entries are last known, not confirmed. */
+  const cachedOnly = (e: SharedEntry) => (e.here ? hereStale : e.on.every((h) => h.stale));
+  /** Changing an entry must reach every device that has it. */
+  const unsettled = (e: SharedEntry) => (e.here && hereStale) || e.on.some((h) => h.stale);
+  /** A copy can be fetched from a device that answered (and put on the open one). */
+  const fetchable = (e: SharedEntry) => !hereStale && e.on.some((h) => !h.stale);
+  const attachable = (e: SharedEntry) => (e.here ? !hereStale : fetchable(e));
+
+  const elsewhere = (e: SharedEntry) => {
+    if (e.here) return null;
+    const names = e.on.map((h) => h.name).join(', ');
+    const offline = cachedOnly(e) && e.on.every((h) => h.stale === 'offline');
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-xs text-slate-400" title={`Only on ${names}`}>
+        {!cachedOnly(e) ? (
+          <Cloud size={13} role="img" aria-label="Only on other devices" />
+        ) : offline ? (
+          <CloudOff size={13} role="img" aria-label="Offline" />
+        ) : (
+          <Loader2 size={13} role="img" aria-label="Connecting" className="animate-spin" />
+        )}
+        <span className="max-w-24 truncate">{names}</span>
       </span>
     );
+  };
 
   const actions = (entry: SharedEntry, name: string) => (
     <button
@@ -191,8 +211,8 @@ export function FileTree({
           }}
           style={{ paddingLeft: depth * 14 + 4 }}
           className={`group flex items-center gap-1.5 rounded py-0.5 pr-1 text-sm hover:bg-slate-100 max-md:min-h-11 ${
-            entry.here ? 'text-slate-600' : 'text-slate-400'
-          } ${!isDir && selected?.has(entry.path) ? 'bg-indigo-50' : ''}`}
+            entry.here && !hereStale ? 'text-slate-600' : 'text-slate-400'
+          } ${cachedOnly(entry) ? 'opacity-60' : ''} ${!isDir && selected?.has(entry.path) ? 'bg-indigo-50' : ''}`}
         >
           {onSelect && inside.length > 0 && (
             <Pick label={`Select ${n.name}`} state={pickState(inside)} onChange={(on) => onSelect(inside, on)} />
@@ -209,7 +229,7 @@ export function FileTree({
               aria-expanded={isDir ? open : undefined}
               onClick={(e) => {
                 if (isDir) toggle(entry.path);
-                else if (entry.here) void useFilesStore.getState().open(space, entry.path);
+                else if (entry.here && !hereStale) void useFilesStore.getState().open(space, entry.path);
                 else openMenu(e.currentTarget, entry); // not here: what can be done with it
               }}
               className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-left"
@@ -236,7 +256,7 @@ export function FileTree({
     );
   };
 
-  const item = 'flex w-full items-center gap-2 px-3 py-1.5 max-md:py-3 text-left text-sm text-slate-700 hover:bg-slate-100';
+  const item = 'flex w-full items-center gap-2 px-3 py-1.5 max-md:py-3 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-40';
   const act = (f: () => void) => () => {
     f();
     setMenu(null);
@@ -279,7 +299,7 @@ export function FileTree({
     const st = useFilesStore.getState();
     if (moving) return moveBody(moving);
     const moveItem = (
-      <button role="menuitem" className={item} onClick={() => setMoving(e)}>
+      <button role="menuitem" className={item} disabled={unsettled(e)} onClick={() => setMoving(e)}>
         Move to folder
       </button>
     );
@@ -294,6 +314,7 @@ export function FileTree({
           <button
             role="menuitem"
             className={item}
+            disabled={hereStale}
             onClick={act(() => {
               setExpanded((p) => new Set(p).add(e.path));
               setEditing({ kind: 'mkdir', dir: e.path });
@@ -304,6 +325,7 @@ export function FileTree({
           <button
             role="menuitem"
             className={item}
+            disabled={hereStale}
             onClick={act(() => {
               // The chooser must open synchronously inside the tap; closing the menu first would be too late.
               setUploadDir(e.path);
@@ -313,7 +335,7 @@ export function FileTree({
             Upload here
           </button>
           {missing.length > 0 && (
-            <button role="menuitem" className={item} onClick={act(() => void st.getHere(space, missing))}>
+            <button role="menuitem" className={item} disabled={hereStale || !missing.some(fetchable)} onClick={act(() => void st.getHere(space, missing))}>
               Get all on {device}
             </button>
           )}
@@ -332,11 +354,11 @@ export function FileTree({
           )}
           {!isRoot && (
             <>
-              <button role="menuitem" className={item} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
+              <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
                 Rename
               </button>
               {moveItem}
-              <button role="menuitem" className={`${item} text-red-500`} onClick={act(() => void st.removeEverywhere(space, e))}>
+              <button role="menuitem" className={`${item} text-red-500`} disabled={unsettled(e)} onClick={act(() => void st.removeEverywhere(space, e))}>
                 {e.on.length ? 'Delete on all devices' : 'Delete'}
               </button>
             </>
@@ -352,25 +374,25 @@ export function FileTree({
           {fmtSize(e.size)} · {where}
         </div>
         {!e.here && (
-          <button role="menuitem" className={item} onClick={act(() => void st.getHere(space, [e]))}>
+          <button role="menuitem" className={item} disabled={!fetchable(e)} onClick={act(() => void st.getHere(space, [e]))}>
             Get on {device}
           </button>
         )}
         {onAttach && (
-          <button role="menuitem" className={item} onClick={act(() => onAttach(e))}>
+          <button role="menuitem" className={item} disabled={!attachable(e)} onClick={act(() => onAttach(e))}>
             Attach to chat
           </button>
         )}
-        <button role="menuitem" className={item} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
+        <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
           Rename
         </button>
         {moveItem}
         {space === 'public' && (
-          <button role="menuitem" className={item} onClick={act(() => void st.moveToPrivate(e))}>
+          <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => void st.moveToPrivate(e))}>
             Move to Private
           </button>
         )}
-        <button role="menuitem" className={`${item} text-red-500`} onClick={act(() => void st.removeEverywhere(space, e))}>
+        <button role="menuitem" className={`${item} text-red-500`} disabled={unsettled(e)} onClick={act(() => void st.removeEverywhere(space, e))}>
           {e.on.length ? 'Delete on all devices' : 'Delete'}
         </button>
       </>
@@ -407,6 +429,7 @@ export function FileTree({
           <span className="font-semibold text-slate-800">{label}</span>
           <span className="flex min-w-0 flex-1 gap-1 truncate text-xs text-slate-400">
             <span className="truncate">on {device}</span>
+            {hereStale && <Loader2 size={12} role="img" aria-label="Connecting" className="shrink-0 animate-spin" />}
             {autoSync && <span className="shrink-0">·</span>}
             {autoSync && <span className="shrink-0">{autoSync.on ? 'Auto-sync on' : 'Auto-sync off'}</span>}
           </span>

@@ -10,7 +10,11 @@ const json = (v: unknown) =>
   new Response(JSON.stringify(v), { status: 200, headers: { 'content-type': 'application/json' } });
 const call = (f: ReturnType<typeof vi.fn>, i = 0) => f.mock.calls[i] as unknown as [string, RequestInit];
 
-beforeEach(() => useFilesStore.setState({ entries: { private: [], public: [] }, preview: null }));
+beforeEach(() => {
+  localStorage.clear();
+  useFilesStore.getState().reset();
+  useFilesStore.setState({ preview: null });
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe('files store', () => {
@@ -153,8 +157,8 @@ describe('files store', () => {
       console.log('[Step 3/3] both keep their last lists; the offline one is not even asked');
       expect(f.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['/api/nodes/pc/files/public']);
       expect(useFilesStore.getState().others.public).toEqual([
-        { ...pc, entries },
-        { ...lin, entries: linFiles },
+        { ...pc, entries, stale: 'connecting' },
+        { ...lin, entries: linFiles, stale: 'offline' },
       ]);
     });
 
@@ -234,6 +238,139 @@ describe('files store', () => {
       await useFilesStore.getState().moveToPrivate({ path: 'a.md', kind: 'file', size: 3, modified: 1, here: true, on: [] });
       expect(f.mock.calls.some((c) => ((c as unknown[])[1] as RequestInit | undefined)?.method === 'DELETE')).toBe(false);
       expect(useFilesStore.getState().error).toBe('too large');
+    });
+  });
+
+  describe('connecting and the cache', () => {
+    const CACHE = 'octo.files.cache';
+    const pc = { id: 'pc', name: 'pc' };
+    const lin = { id: 'lin', name: 'linux' };
+    const pcFiles: FileEntry[] = [
+      { path: 'design', kind: 'dir', size: 0, modified: 1 },
+      { path: 'design/a.png', kind: 'file', size: 9, modified: 1 },
+      { path: 'old.txt', kind: 'file', size: 1, modified: 1 },
+    ];
+    const down = () => new Response('{"error":"node unreachable"}', { status: 502 });
+    const state = () => useFilesStore.getState();
+
+    it('a node that has not answered yet is connecting, not an error', async () => {
+      console.log('[Step 1/2] linux does not answer');
+      vi.stubGlobal('fetch', vi.fn(async () => down()));
+      await state().loadOthers('public', [lin]);
+      console.log('[Step 2/2] state says connecting, no error text');
+      expect(state().links.lin).toEqual({ name: 'linux', state: 'connecting' });
+      expect(state().error).toBeNull();
+    });
+
+    it('after repeated misses the device is offline; one answer brings it back', async () => {
+      let up = false;
+      vi.stubGlobal('fetch', vi.fn(async () => (up ? json(pcFiles) : down())));
+      for (let i = 0; i < 3; i++) await state().loadOthers('public', [pc]);
+      expect(state().links.pc.state).toBe('offline');
+      up = true;
+      await state().loadOthers('public', [pc]);
+      expect(state().links.pc.state).toBe('online');
+      expect(state().others.public).toEqual([{ ...pc, entries: pcFiles }]);
+    });
+
+    it('the open node: unreachable load is connecting; error from a failed load clears after a good one', async () => {
+      const { setNodeBase } = await import('../api/client');
+      setNodeBase('lin');
+      state().reset();
+      vi.stubGlobal('fetch', vi.fn(async () => down()));
+      await state().load('public');
+      expect(state().error).toBeNull();
+      expect(state().links.open.state).toBe('connecting');
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"disk failure"}', { status: 500 })));
+      await state().load('public');
+      expect(state().error).toBe('disk failure');
+      vi.stubGlobal('fetch', vi.fn(async () => json(entries)));
+      await state().load('public');
+      expect(state().error).toBeNull();
+      expect(state().links.open.state).toBe('online');
+      setNodeBase(null);
+    });
+
+    it('an action that hits an unreachable device never shows the raw message', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => down()));
+      await state().removeEverywhere('public', {
+        path: 'r.pdf', kind: 'file', size: 1, modified: 1, here: false, on: [{ id: 'lin', name: 'linux' }],
+      });
+      expect(state().error).not.toMatch(/node unreachable/);
+      expect(state().error).toBe('Device unreachable');
+    });
+
+    it('fresh entries are cached; a re-created store shows them stale before any answer', async () => {
+      console.log('[Step 1/3] pc answers once');
+      vi.stubGlobal('fetch', vi.fn(async () => json(pcFiles)));
+      await state().loadOthers('public', [pc]);
+      expect(JSON.parse(localStorage.getItem(CACHE) ?? '{}')).toEqual({ pc: pcFiles });
+      console.log('[Step 2/3] app restarts: new store, pc never answers');
+      vi.resetModules();
+      const fresh = (await import('./files')).useFilesStore;
+      vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+      void fresh.getState().loadOthers('public', [pc]);
+      console.log('[Step 3/3] last known entries are on screen, marked connecting');
+      expect(fresh.getState().others.public).toEqual([{ ...pc, entries: pcFiles, stale: 'connecting' }]);
+      expect(fresh.getState().links.pc.state).toBe('connecting');
+    });
+
+    it('a refresh replaces the cached entries, deletions included', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => json(pcFiles)));
+      await state().loadOthers('public', [pc]);
+      const left = pcFiles.slice(0, 2);
+      vi.stubGlobal('fetch', vi.fn(async () => json(left)));
+      await state().loadOthers('public', [pc]);
+      expect(state().others.public).toEqual([{ ...pc, entries: left }]);
+      expect(JSON.parse(localStorage.getItem(CACHE) ?? '{}')).toEqual({ pc: left });
+    });
+
+    it('a failed refresh keeps the cached entries and does not overwrite the cache', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => json(pcFiles)));
+      await state().loadOthers('public', [pc]);
+      vi.stubGlobal('fetch', vi.fn(async () => down()));
+      await state().loadOthers('public', [pc]);
+      expect(state().others.public[0]).toEqual({ ...pc, entries: pcFiles, stale: 'connecting' });
+      expect(JSON.parse(localStorage.getItem(CACHE) ?? '{}')).toEqual({ pc: pcFiles });
+    });
+
+    it('a device that is no longer in the node list loses its entries and cache', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => json(pcFiles)));
+      await state().loadOthers('public', [pc, lin]);
+      expect(Object.keys(JSON.parse(localStorage.getItem(CACHE) ?? '{}')).sort()).toEqual(['lin', 'pc']);
+      await state().loadOthers('public', [pc]);
+      expect(state().others.public.map((h) => h.id)).toEqual(['pc']);
+      expect(Object.keys(JSON.parse(localStorage.getItem(CACHE) ?? '{}'))).toEqual(['pc']);
+      expect(state().links.lin).toBeUndefined();
+      state().prune(['me']);
+      expect(localStorage.getItem(CACHE)).toBe('{}');
+    });
+
+    it('Private is never written to storage', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => json(pcFiles)));
+      await state().loadOthers('private', [pc]);
+      expect(state().others.private[0].entries).toEqual(pcFiles);
+      expect(localStorage.getItem(CACHE)).toBeNull();
+      const { setNodeBase } = await import('../api/client');
+      setNodeBase('lin');
+      await state().load('private');
+      setNodeBase(null);
+      expect(localStorage.length).toBe(0);
+    });
+
+    it('getHere takes the file from a device that answered, skipping a cached-only holder', async () => {
+      const f = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/api/nodes/pc/files/public/content?path=old.txt') return new Response('x');
+        if (init?.method === 'POST') return json([]);
+        return json([]);
+      });
+      vi.stubGlobal('fetch', f);
+      const got = await state().getHere('public', [
+        { path: 'old.txt', kind: 'file', size: 1, modified: 1, here: false, on: [{ ...lin, stale: 'offline' }, pc] },
+      ]);
+      expect(got).toBe(1);
+      expect(f.mock.calls.map((c) => c[0])).toContain('/api/nodes/pc/files/public/content?path=old.txt');
+      expect(f.mock.calls.some((c) => String(c[0]).includes('/nodes/lin/'))).toBe(false);
     });
   });
 });

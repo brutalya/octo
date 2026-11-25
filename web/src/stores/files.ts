@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import { api, nodeGeneration } from '../api/client';
+import { api, ApiError, currentNodeId, nodeGeneration } from '../api/client';
 import { errMsg } from '../lib/format';
 import { uniqueName } from '../lib/files';
-import type { Holder, SharedEntry } from '../lib/shared';
+import { putCache, pruneCache, readCache } from '../lib/filesCache';
+import type { Holder, Reach, SharedEntry } from '../lib/shared';
 import type { FileEntry, Space } from '../api/types';
 
 const PREVIEW_MAX = 200_000;
@@ -17,10 +18,29 @@ interface Preview {
 
 const IMAGE_RE = /\.(png|jpe?g|webp|gif)$/i;
 
+/** Misses in a row (each one a retry) before a device counts as offline instead of connecting. */
+const RETRIES = 3;
+
+const UNREACHABLE = 'Device unreachable';
+const unreachable = (e: unknown) =>
+  (e instanceof ApiError && e.status === 502) || /node unreachable/i.test(errMsg(e));
+
+/** How a device is doing; `open` is the device whose files are `entries`. Others are keyed by node id. */
+export interface DeviceLink {
+  name: string;
+  state: Reach;
+}
+
 interface FilesState {
   entries: Record<Space, FileEntry[]>;
   preview: Preview | null;
+  /** A failed action or load; a device that merely does not answer shows in `links`, never here. */
   error: string | null;
+  links: Record<string, DeviceLink>;
+  /** Back to the cached view of a newly opened device. */
+  reset: () => void;
+  /** Drops cached entries of every device not in `keep` (unpaired or gone). */
+  prune: (keep: string[]) => void;
   load: (space: Space) => Promise<void>;
   /** Returns the entries the server stored (fewer than `files` if some failed). */
   upload: (space: Space, dir: string, files: File[]) => Promise<FileEntry[]>;
@@ -45,8 +65,25 @@ const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.last
 const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 
 export const useFilesStore = create<FilesState>((set, get) => {
+  const misses = new Map<string, number>();
+  /** The last load failed for a real reason (not just no answer); a later good load clears it. */
+  let loadFailed = false;
+
+  const setLink = (key: string, name: string, state: Reach) =>
+    set((s) => ({ links: { ...s.links, [key]: { name, state } } }));
+  /** Counts a miss for `key`; returns the resulting state. */
+  const miss = (key: string): Reach => {
+    const n = (misses.get(key) ?? 0) + 1;
+    misses.set(key, n);
+    return n >= RETRIES ? 'offline' : 'connecting';
+  };
+
   const fail = (gen: number, e: unknown) => {
-    if (gen === nodeGeneration()) set({ error: errMsg(e) });
+    if (gen !== nodeGeneration()) return;
+    if (unreachable(e)) {
+      if (currentNodeId()) setLink('open', '', miss('open'));
+      else set({ error: UNREACHABLE });
+    } else set({ error: errMsg(e) });
   };
 
   /** Runs `f`; failures land in `error` unless the node changed meanwhile. */
@@ -64,8 +101,18 @@ export const useFilesStore = create<FilesState>((set, get) => {
     const gen = nodeGeneration();
     try {
       const list = await api.files(space);
-      if (gen === nodeGeneration()) set((s) => ({ entries: { ...s.entries, [space]: list } }));
+      if (gen !== nodeGeneration()) return;
+      set((s) => ({ entries: { ...s.entries, [space]: list } }));
+      const id = currentNodeId();
+      if (id) {
+        misses.delete('open');
+        setLink('open', '', 'online');
+        if (space === 'public') putCache(id, list);
+      }
+      if (loadFailed) set({ error: null });
+      loadFailed = false;
     } catch (e) {
+      loadFailed = gen === nodeGeneration() && !unreachable(e);
       fail(gen, e);
     }
   };
@@ -97,6 +144,19 @@ export const useFilesStore = create<FilesState>((set, get) => {
     entries: { private: [], public: [] },
     preview: null,
     error: null,
+    links: {},
+    reset: () => {
+      misses.clear();
+      loadFailed = false;
+      const id = currentNodeId();
+      set({
+        entries: { private: [], public: id ? (readCache()[id] ?? []) : [] },
+        others: { private: [], public: [] },
+        links: id ? { open: { name: '', state: 'connecting' } } : {},
+        error: null,
+      });
+    },
+    prune: pruneCache,
     load,
     upload: async (space, dir, files) => {
       const stored: FileEntry[] = [];
@@ -141,33 +201,72 @@ export const useFilesStore = create<FilesState>((set, get) => {
     others: { private: [], public: [] },
     loadOthers: async (space, devices) => {
       const gen = nodeGeneration();
+      const key = (d: { id: string | null }) => d.id ?? 'self';
+      // Only Public is ever cached; Private lives in memory for the session.
+      const cache = space === 'public' ? readCache() : {};
+      // Right away: what is known (shown or cached) while the devices are asked.
+      set((s) => {
+        const before = new Map(s.others[space].map((h) => [h.id, h]));
+        const next = devices
+          .map((d): Holder | null => {
+            const kept = before.get(d.id);
+            const cached = d.id ? cache[d.id] : undefined;
+            return kept ?? (cached ? { id: d.id, name: d.name, entries: cached, stale: 'connecting' } : null);
+          })
+          .filter((h): h is Holder => h !== null);
+        const links = { ...s.links };
+        for (const d of devices) links[key(d)] ??= { name: d.name, state: d.online === false ? 'offline' : 'connecting' };
+        return { others: { ...s.others, [space]: next }, links };
+      });
       const got = await Promise.all(
         devices.map(async (d) => {
-          if (d.online === false) return null;
+          if (d.online === false) return undefined; // not asked
           try {
-            return { id: d.id, name: d.name, entries: await api.filesOn(d.id, space) };
+            return await api.filesOn(d.id, space);
           } catch {
             return null; // no answer this time
           }
         }),
       );
       if (gen !== nodeGeneration()) return;
-      // A device that did not answer (or is offline for a moment) keeps its last list, so the
-      // tree does not flicker; one that is no longer listed drops out.
+      const fresh: Record<string, FileEntry[]> = {};
       set((s) => {
         const before = new Map(s.others[space].map((h) => [h.id, h]));
-        const next = devices
-          .map((d, i) => got[i] ?? before.get(d.id) ?? null)
-          .filter((h): h is Holder => h !== null);
-        return { others: { ...s.others, [space]: next } };
+        const links: Record<string, DeviceLink> = s.links.open ? { open: s.links.open } : {};
+        const next: Holder[] = [];
+        devices.forEach((d, i) => {
+          const entries = got[i];
+          let state: Reach;
+          if (entries) {
+            misses.delete(key(d));
+            state = 'online';
+            next.push({ id: d.id, name: d.name, entries });
+            if (d.id) fresh[d.id] = entries;
+          } else {
+            state = entries === undefined ? 'offline' : miss(key(d));
+            // A device that did not answer keeps its last list, so the tree does not flicker.
+            const prev = before.get(d.id);
+            if (prev) next.push({ ...prev, name: d.name, stale: state as 'connecting' | 'offline' });
+          }
+          links[key(d)] = { name: d.name, state };
+        });
+        for (const k of [...misses.keys()]) if (k !== 'open' && !devices.some((d) => key(d) === k)) misses.delete(k);
+        return { others: { ...s.others, [space]: next }, links };
       });
+      if (space === 'public') {
+        const cur = currentNodeId();
+        const keep = [...devices.flatMap((d) => (d.id ? [d.id] : [])), ...(cur ? [cur] : [])];
+        pruneCache(keep);
+        for (const [id, entries] of Object.entries(fresh)) putCache(id, entries);
+      }
     },
     getHere: async (space, items) => {
       let done = 0;
       await run(async () => {
         try {
           for (const e of items) {
-            const from = e.on[0];
+            // A holder that has not answered yet cannot serve the file.
+            const from = e.on.find((h) => !h.stale);
             if (e.here || e.kind !== 'file' || !from) continue;
             const blob = await api.fileBlobOn(from.id, space, e.path);
             await api.upload(space, parentOf(e.path), new File([await blob.arrayBuffer()], nameOf(e.path)));
@@ -198,7 +297,7 @@ export const useFilesStore = create<FilesState>((set, get) => {
       await load(space);
     },
     moveToPrivate: async (e) => {
-      const from = e.here ? null : e.on[0];
+      const from = e.here ? null : e.on.find((h) => !h.stale);
       if (e.kind !== 'file' || (!e.here && !from)) return;
       let moved = false;
       await run(async () => {

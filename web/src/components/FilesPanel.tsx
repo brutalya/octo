@@ -12,6 +12,20 @@ import type { Space } from '../api/types';
 /** Most files one message can carry (the server's limit). */
 const MAX_ATTACH = 10;
 
+const REFRESH_MS = 20_000;
+const RETRY_MS = 3_000;
+
+/** Loads the open device and (Public only) the other devices. `force` asks even those marked offline. */
+async function pull(space: Space, force: boolean) {
+  const st = useFilesStore.getState();
+  const { nodes: all, selectedId: open } = useNodesStore.getState();
+  const others = all
+    .filter((n) => (open ? n.node_id !== open : !n.is_self))
+    .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name, online: force || n.is_self || n.online }));
+  // An empty node list means it is not loaded yet: nothing may be dropped from the cache for that.
+  await Promise.all([st.load(space), space === 'public' && all.length > 0 ? st.loadOthers('public', others) : undefined]);
+}
+
 const TABS: { space: Space; label: string }[] = [
   { space: 'private', label: 'Private' },
   { space: 'public', label: 'Public' },
@@ -21,6 +35,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   const threadSpace = useThreadsStore((s) => s.threads.find((t) => t.id === s.activeId)?.space ?? null);
   const preview = useFilesStore((s) => s.preview);
   const error = useFilesStore((s) => s.error);
+  const links = useFilesStore((s) => s.links);
   const [collapsed, setCollapsed] = useState(false);
   const [choice, setChoice] = useState<{ forThread: Space | null; space: Space } | null>(null);
   const [newRoot, setNewRoot] = useState(false);
@@ -73,25 +88,27 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   };
 
   useEffect(() => {
-    if (shown) void useFilesStore.getState().load(space);
-  }, [space, shown]);
-  useEffect(() => {
     if (!shown) return;
-    const refresh = () => {
-      const { nodes: all, selectedId: open } = useNodesStore.getState();
-      const others = all
-        .filter((n) => (open ? n.node_id !== open : !n.is_self))
-        .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name, online: n.is_self || n.online }));
-      void useFilesStore.getState().loadOthers('public', space === 'public' ? others : []);
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Files change on other devices (and arrive by sync): the open panel follows every 20 s,
+    // and a device that has not answered is tried again every few seconds.
+    const tick = async () => {
+      await pull(space, false);
+      if (!live) return;
+      const waiting = Object.values(useFilesStore.getState().links ?? {}).some((l) => l.state === 'connecting');
+      timer = setTimeout(() => void tick(), waiting ? RETRY_MS : REFRESH_MS);
     };
-    refresh();
-    // Files change on other devices (and arrive by sync): the open panel follows every 20 s.
-    const t = setInterval(() => {
-      void useFilesStore.getState().load(space);
-      refresh();
-    }, 20_000);
-    return () => clearInterval(t);
+    void tick();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   }, [space, shown, othersKey]);
+
+  const offline = Object.entries(links ?? {})
+    .filter(([, l]) => l.state === 'offline')
+    .map(([k, l]) => (k === 'open' ? device : l.name));
 
   const select = (paths: string[], on: boolean) =>
     setPicked(() => {
@@ -235,6 +252,16 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
         />
       </div>
       {error && <div className="px-3 py-1 text-xs text-red-500">{error}</div>}
+      {offline.length > 0 && (
+        <div className="flex items-center gap-2 px-3 py-1 text-xs text-slate-500">
+          <span className="min-w-0 flex-1 truncate">
+            {offline.join(', ')} {offline.length === 1 ? 'is' : 'are'} offline
+          </span>
+          <button onClick={() => void pull(space, true)} className="rounded px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 max-md:py-2">
+            Retry
+          </button>
+        </div>
+      )}
       {selected.size > 0 && (
         <div className="flex items-center gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-sm text-slate-700">

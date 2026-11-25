@@ -265,5 +265,68 @@ describe('FileTree', () => {
     await userEvent.click(sw);
     expect(toggle).toHaveBeenCalled();
   });
+
+  describe('devices that have not answered', () => {
+    const remote = (stale?: 'connecting' | 'offline') => ({
+      id: 'lin',
+      name: 'linux',
+      stale,
+      entries: [{ path: 'design/b.png', kind: 'file' as const, size: 4, modified: 1 }],
+    });
+    const showRemote = (stale?: 'connecting' | 'offline') =>
+      useFilesStore.setState({ others: { private: [], public: [remote(stale)] } });
+
+    it('its cached files are dimmed with a connecting marker', async () => {
+      showRemote('connecting');
+      render(<FileTree space="public" />);
+      await userEvent.click(screen.getByText('design'));
+      expect(screen.getByRole('img', { name: 'Connecting' })).toBeInTheDocument();
+      expect(screen.getByText('b.png').closest('div')).toHaveClass('opacity-60');
+      expect(screen.queryByText(/unreachable/)).toBeNull();
+    });
+
+    it('a confirmed device shows the plain cloud marker', async () => {
+      showRemote(undefined);
+      render(<FileTree space="public" />);
+      await userEvent.click(screen.getByText('design'));
+      expect(screen.getByRole('img', { name: 'Only on other devices' })).toBeInTheDocument();
+      expect(screen.queryByRole('img', { name: 'Connecting' })).toBeNull();
+    });
+
+    it('get here and delete are disabled until it answers', async () => {
+      showRemote('connecting');
+      render(<FileTree space="public" />);
+      await userEvent.click(screen.getByText('design'));
+      await userEvent.click(screen.getByText('b.png'));
+      expect(screen.getByRole('menuitem', { name: /Get on/ })).toBeDisabled();
+      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
+      expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeDisabled();
+      await userEvent.click(screen.getByRole('menuitem', { name: /Get on/ }));
+      expect(getHere).not.toHaveBeenCalled();
+    });
+
+    it('a file also on a live device can still be fetched; a delete would miss the stale copy', async () => {
+      useFilesStore.setState({
+        others: {
+          private: [],
+          public: [remote('offline'), { id: 'pc', name: 'pc', entries: remote().entries }],
+        },
+      });
+      render(<FileTree space="public" />);
+      await userEvent.click(screen.getByText('design'));
+      await userEvent.click(screen.getByText('b.png'));
+      expect(screen.getByRole('menuitem', { name: /Get on/ })).toBeEnabled();
+      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
+    });
+
+    it('when the open device itself is connecting, its files are dimmed and cannot be changed', async () => {
+      useFilesStore.setState({ links: { open: { name: '', state: 'connecting' } } });
+      render(<FileTree space="public" device="linux" />);
+      await userEvent.click(screen.getByText('top.txt'));
+      expect(open).not.toHaveBeenCalled();
+      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
+      expect(screen.getByRole('img', { name: 'Connecting' })).toBeInTheDocument();
+    });
+  });
 });
 
