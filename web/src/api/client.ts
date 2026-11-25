@@ -7,14 +7,19 @@ import type {
 const LOCAL = '/api';
 let base = LOCAL;
 let generation = 0;
+let current: string | null = null;
 
 /** Re-target data calls to a remote node; null = this node. */
 export function setNodeBase(nodeId: string | null): void {
   const next = baseOf(nodeId);
   if (next === base) return;
   base = next;
+  current = nodeId;
   generation++;
 }
+
+/** The remote node the data calls go to (null = this node). */
+export const currentNodeId = (): string | null => current;
 
 /** Bumps on every node switch; loads drop results whose captured value is stale. */
 export const nodeGeneration = (): number => generation;

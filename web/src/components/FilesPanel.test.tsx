@@ -167,5 +167,41 @@ describe('FilesPanel', () => {
     expect(JSON.parse(patch[1].body as string)).toEqual({ public_sync: true });
     vi.unstubAllGlobals();
   });
+
+  describe('connecting', () => {
+    const loadOthers = vi.fn(async () => {});
+    beforeEach(() => {
+      useNodesStore.setState({
+        nodes: [
+          { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+          { node_id: 'lin', name: 'linux', is_self: false, online: true, trust: 'full', agents: true },
+        ],
+        selectedId: null,
+      });
+      useFilesStore.setState({ loadOthers, error: null });
+    });
+
+    it('shows no error while a device is connecting', () => {
+      useFilesStore.setState({ links: { lin: { name: 'linux', state: 'connecting' } } });
+      render(<FilesPanel />);
+      expect(screen.queryByText(/offline|unreachable/)).toBeNull();
+    });
+
+    it('names an offline device and retries on request, asking even a device marked offline', async () => {
+      useFilesStore.setState({ links: { lin: { name: 'linux', state: 'offline' } } });
+      render(<FilesPanel />);
+      expect(screen.getByText('linux is offline')).toBeInTheDocument();
+      loadOthers.mockClear();
+      await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(loadOthers).toHaveBeenCalledWith('public', [{ id: 'lin', name: 'linux', online: true }]);
+    });
+
+    it('the line is gone once the device answers', () => {
+      useFilesStore.setState({ links: { lin: { name: 'linux', state: 'offline' } } });
+      render(<FilesPanel />);
+      act(() => useFilesStore.setState({ links: { lin: { name: 'linux', state: 'online' } } }));
+      expect(screen.queryByText(/offline/)).toBeNull();
+    });
+  });
 });
 
