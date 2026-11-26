@@ -293,40 +293,72 @@ describe('FileTree', () => {
       expect(screen.queryByRole('img', { name: 'Connecting' })).toBeNull();
     });
 
-    it('get here and delete are disabled until it answers', async () => {
+    it('using a file that only a connecting device has says so instead of acting', async () => {
       showRemote('connecting');
       render(<FileTree space="public" />);
       await userEvent.click(screen.getByText('design'));
       await userEvent.click(screen.getByText('b.png'));
-      expect(screen.getByRole('menuitem', { name: /Get on/ })).toBeDisabled();
-      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
-      expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeDisabled();
-      await userEvent.click(screen.getByRole('menuitem', { name: /Get on/ }));
+      expect(open).not.toHaveBeenCalled();
+      expect(screen.getByRole('status')).toHaveTextContent('Connecting to linux');
+      expect(screen.queryByRole('menu')).toBeNull();
+    });
+
+    it('a file only on an offline device names it when clicked', async () => {
+      console.log('[Step 1/2] linux was indexed before and is offline now');
+      showRemote('offline');
+      render(<FileTree space="public" device="pc" />);
+      await userEvent.click(screen.getByText('design'));
+      expect(screen.getByRole('img', { name: 'Offline' })).toBeInTheDocument();
+      console.log('[Step 2/2] clicking the row explains why nothing opens');
+      await userEvent.click(screen.getByText('b.png'));
+      expect(screen.getByRole('status')).toHaveTextContent('linux is offline');
       expect(getHere).not.toHaveBeenCalled();
     });
 
-    it('a file also on a live device can still be fetched; a delete would miss the stale copy', async () => {
+    it('the context menu of such a file answers each action with the same message', async () => {
+      showRemote('offline');
+      render(<FileTree space="public" device="pc" />);
+      await userEvent.click(screen.getByText('design'));
+      for (const name of ['Rename', 'Delete', 'Move to folder']) {
+        fireEvent.contextMenu(screen.getByText('b.png'));
+        const item = screen.getByRole('menuitem', { name: new RegExp(name) });
+        expect(item).toBeEnabled();
+        await userEvent.click(item);
+        expect(screen.getByRole('status')).toHaveTextContent('linux is offline');
+      }
+      expect(removeEverywhere).not.toHaveBeenCalled();
+    });
+
+    it('a file also on a live device can still be fetched; a delete would miss the offline copy', async () => {
       useFilesStore.setState({
         others: {
           private: [],
           public: [remote('offline'), { id: 'pc', name: 'pc', entries: remote().entries }],
         },
       });
-      render(<FileTree space="public" />);
+      render(<FileTree space="public" device="me" />);
       await userEvent.click(screen.getByText('design'));
       await userEvent.click(screen.getByText('b.png'));
-      expect(screen.getByRole('menuitem', { name: /Get on/ })).toBeEnabled();
-      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
+      await userEvent.click(screen.getByRole('menuitem', { name: /Get on/ }));
+      expect(getHere).toHaveBeenCalled();
+      fireEvent.contextMenu(screen.getByText('b.png'));
+      await userEvent.click(screen.getByRole('menuitem', { name: /Delete/ }));
+      expect(removeEverywhere).not.toHaveBeenCalled();
+      expect(screen.getByRole('status')).toHaveTextContent('linux is offline');
+    });
+  });
+
+  describe('header', () => {
+    it('is just the space name, with no device and no spinner', () => {
+      render(<FileTree space="public" device="pc" />);
+      expect(screen.getByRole('button', { name: 'Public' })).toBeInTheDocument();
+      expect(screen.queryByText(/on pc/)).toBeNull();
+      expect(screen.queryByRole('img', { name: 'Connecting' })).toBeNull();
     });
 
-    it('when the open device itself is connecting, its files are dimmed and cannot be changed', async () => {
-      useFilesStore.setState({ links: { open: { name: '', state: 'connecting' } } });
-      render(<FileTree space="public" device="linux" />);
-      await userEvent.click(screen.getByText('top.txt'));
-      expect(open).not.toHaveBeenCalled();
-      expect(screen.getByRole('menuitem', { name: /Delete/ })).toBeDisabled();
-      expect(screen.getByRole('img', { name: 'Connecting' })).toBeInTheDocument();
+    it('shows the auto-sync state beside it', () => {
+      render(<FileTree space="public" device="pc" autoSync={{ on: true, toggle: vi.fn() }} />);
+      expect(screen.getByText('Auto-sync on').closest('button')).toHaveTextContent(/^Public/);
     });
   });
 });
-

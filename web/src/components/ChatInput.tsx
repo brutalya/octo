@@ -1,5 +1,6 @@
 import { useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react';
 import { ArrowUp, Folder, Paperclip, Square, X } from 'lucide-react';
+import { api, currentNodeId } from '../api/client';
 import { useFilesStore } from '../stores/files';
 import { DRAG_TYPE } from './FileTree';
 import { useAttachStore } from '../stores/attach';
@@ -35,8 +36,11 @@ export function ChatInput({ space, title, streaming, disabled, placeholder, onSe
     if (!space || !files.length) return;
     const store = useFilesStore.getState();
     const dir = attachDir(title);
+    // The chat's own device holds the attachments: this device's list, or the other one's.
+    const node = currentNodeId();
+    const existing = node ? await api.filesOn(node, space).catch(() => []) : (store.entries[space] ?? []);
     const taken = new Set(
-      (store.entries[space] ?? []).filter((e) => e.path.startsWith(dir + '/')).map((e) => e.path.slice(dir.length + 1)),
+      existing.filter((e) => e.path.startsWith(dir + '/')).map((e) => e.path.slice(dir.length + 1)),
     );
     const named = files.map((f) => {
       const name = uniqueName(f.name, taken);
@@ -47,7 +51,7 @@ export function ChatInput({ space, title, streaming, disabled, placeholder, onSe
     setUploadError(null);
     setUploading((cur) => [...cur, ...names]);
     try {
-      const stored = await store.upload(space, dir, named);
+      const stored = await store.upload(space, dir, named, node);
       for (const e of stored) if (e.kind === 'file') add({ space, path: e.path });
       const failed = names.filter((n) => !stored.some((e) => e.path === `${dir}/${n}`));
       if (failed.length) setUploadError(`${failed.join(', ')}: ${useFilesStore.getState().error ?? 'upload failed'}`);

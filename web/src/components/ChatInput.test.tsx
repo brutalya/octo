@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChatInput } from './ChatInput';
+import { setNodeBase } from '../api/client';
 import { useFilesStore } from '../stores/files';
 import { useAttachStore } from '../stores/attach';
 import { attachDir } from '../lib/files';
@@ -170,6 +171,19 @@ describe('ChatInput restore', () => {
     expect(onSend).toHaveBeenCalledWith('look', [{ space: 'public', path: `${dir}/photo.png` }]);
   });
 
+  it('a chat on another device uploads its attachments there, not to this device', async () => {
+    setNodeBase('lin');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+    const upload = vi.fn(async () => []);
+    useFilesStore.setState({ entries: { private: [], public: [] }, upload });
+    render(<ChatInput space="public" streaming={false} onSend={vi.fn()} onStop={() => {}} />);
+    const file = new File(['x'], 'a.txt');
+    fireEvent.drop(screen.getByTestId('chat-input'), { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } });
+    await vi.waitFor(() => expect(upload).toHaveBeenCalledWith('public', expect.any(String), [file], 'lin'));
+    setNodeBase(null);
+    vi.unstubAllGlobals();
+  });
+
   it('files dropped from the computer are uploaded and attached', async () => {
     const upload = vi.fn(async (_s: string, _d: string, fs: File[]) =>
       fs.map((f) => ({ path: f.name, kind: 'file' as const, size: f.size, modified: 1 })),
@@ -179,7 +193,7 @@ describe('ChatInput restore', () => {
     const file = new File(['%PDF'], 'labs.pdf', { type: 'application/pdf' });
     fireEvent.drop(screen.getByTestId('chat-input'), { dataTransfer: { files: [file], types: ['Files'], getData: () => '' } });
     expect(await screen.findByText('labs.pdf')).toBeInTheDocument();
-    expect(upload).toHaveBeenCalledWith('public', expect.stringMatching(/^Attachments\/\d{4}-\d{2}-\d{2}$/), [file]);
+    expect(upload).toHaveBeenCalledWith('public', expect.stringMatching(/^Attachments\/\d{4}-\d{2}-\d{2}$/), [file], null);
   });
 
   it('a pasted screenshot is uploaded under a fresh name and attached', async () => {
