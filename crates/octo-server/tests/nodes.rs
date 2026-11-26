@@ -412,6 +412,33 @@ async fn non_member_and_unknown_nodes_rejected() {
     assert_eq!(peer["online"], false);
 }
 
+#[tokio::test]
+async fn nodes_list_never_waits_for_a_peer_that_does_not_answer() {
+    let (a, b, _id_b) = paired(None, None).await;
+    let id_a = a.id().await;
+    // c knows a, a does not know c: every probe c sends to a hangs until a timeout.
+    let seed = std::fs::read_to_string(b.dir.path().join("membership.json")).unwrap();
+    let url = relay_of(&a).await;
+    let c = start(&url, "gamma", None, Some(&seed)).await;
+    eprintln!("[Step 1/3] list while the peer never answers");
+    let t = std::time::Instant::now();
+    let (_, list) = c.json("GET", "/api/nodes", None).await;
+    let took = t.elapsed();
+    eprintln!("[Step 2/3] answered in {took:?}");
+    assert!(
+        took < Duration::from_millis(400),
+        "list blocked on pings: {took:?}"
+    );
+    eprintln!("[Step 3/3] unknown peers are listed, offline");
+    let peer = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["node_id"] == id_a.as_str())
+        .expect("peer listed");
+    assert_eq!(peer["online"], false);
+}
+
 async fn relay_of(n: &N) -> String {
     let (_, s) = n.json("GET", "/api/settings", None).await;
     s["relay_url"].as_str().unwrap().to_string()

@@ -1,7 +1,31 @@
 import { create } from 'zustand';
-import { api, nodeGeneration } from '../api/client';
+import { api, currentNodeId, nodeGeneration, NODE_KEY } from '../api/client';
 import { errMsg } from '../lib/format';
 import type { Approval, ProviderKind, ProviderStatus, Space, Thread } from '../api/types';
+
+const CACHE = 'octo.threads';
+
+/**
+ * The last list of this device, so a reload shows it at once. Public threads only: the UI can be
+ * opened from another machine, and Private titles must not be stored there.
+ */
+function readCache(): Thread[] {
+  try {
+    if (localStorage.getItem(NODE_KEY)) return []; // another device opens first
+    const v: unknown = JSON.parse(localStorage.getItem(CACHE) ?? '[]');
+    return Array.isArray(v) ? (v as Thread[]).filter((t) => t && t.space === 'public' && typeof t.id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCache(threads: Thread[]): void {
+  try {
+    localStorage.setItem(CACHE, JSON.stringify(threads.filter((t) => t.space === 'public')));
+  } catch {
+    // storage unavailable
+  }
+}
 
 interface ThreadsState {
   threads: Thread[];
@@ -45,10 +69,16 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
     }
   };
 
+  /** Remembers this device's list; another device's list is not it. */
+  const save = () => {
+    if (currentNodeId() === null) writeCache(get().threads);
+  };
+
+  const cached = readCache();
   return {
-    threads: [],
+    threads: cached,
     providers: [],
-    activeId: null,
+    activeId: cached[0]?.id ?? null,
     error: null,
     menuOpen: false,
     openMenu: (open) => set({ menuOpen: open }),
@@ -60,6 +90,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
         const { activeId } = get();
         const keep = activeId !== null && threads.some((t) => t.id === activeId);
         set({ threads, activeId: keep ? activeId : (threads[0]?.id ?? null), error: null });
+        save();
       }),
     loadProviders: () =>
       run(async (live) => {
@@ -69,7 +100,9 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
     create: (provider, space, approval, model) =>
       once(async (live) => {
         const t = await api.createThread(provider, space, approval, model);
-        if (live()) set({ threads: [t, ...get().threads], activeId: t.id, error: null });
+        if (!live()) return;
+        set({ threads: [t, ...get().threads], activeId: t.id, error: null });
+        save();
       }),
     importSession: (kind, externalId) =>
       once(async (live) => {
@@ -78,11 +111,14 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
         const rest = get().threads.filter((x) => x.id !== t.id);
         const known = rest.length !== get().threads.length;
         set({ threads: known ? get().threads.map((x) => (x.id === t.id ? t : x)) : [t, ...rest], activeId: t.id, error: null });
+        save();
       }),
     setApproval: (id, approval) =>
       run(async (live) => {
         const t = await api.setApproval(id, approval);
-        if (live()) set({ threads: get().threads.map((x) => (x.id === id ? t : x)), error: null });
+        if (!live()) return;
+        set({ threads: get().threads.map((x) => (x.id === id ? t : x)), error: null });
+        save();
       }),
     remove: (id) =>
       run(async (live) => {
@@ -91,6 +127,7 @@ export const useThreadsStore = create<ThreadsState>((set, get) => {
         const { threads, activeId } = get();
         const rest = threads.filter((t) => t.id !== id);
         set({ threads: rest, activeId: activeId === id ? (rest[0]?.id ?? null) : activeId, error: null });
+        save();
       }),
     select: (id) => set({ activeId: id }),
   };

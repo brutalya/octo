@@ -18,6 +18,9 @@ export function setNodeBase(nodeId: string | null): void {
   generation++;
 }
 
+/** localStorage key of the selected remote device. */
+export const NODE_KEY = 'octo.node';
+
 /** The remote node the data calls go to (null = this node). */
 export const currentNodeId = (): string | null => current;
 

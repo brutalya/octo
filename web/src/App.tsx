@@ -11,6 +11,7 @@ import { useThreadsStore } from './stores/threads';
 import { useChatStore } from './stores/chat';
 import { useNodesStore } from './stores/nodes';
 import { useDevicesStore } from './stores/devices';
+import { NODE_KEY } from './api/client';
 import { useWakeOnResume } from './lib/wake';
 
 export function App() {
@@ -29,7 +30,21 @@ export function App() {
   const closeDrawer = () => setDrawer(false);
 
   useEffect(() => {
+    // This device's chats do not wait for the node list (unless another device opens first).
+    let remoteFirst = false;
+    try {
+      remoteFirst = localStorage.getItem(NODE_KEY) !== null;
+    } catch {
+      // storage unavailable
+    }
+    if (!remoteFirst) {
+      void useThreadsStore.getState().load();
+      void useThreadsStore.getState().loadProviders();
+    }
     void useNodesStore.getState().load().finally(() => {
+      // A stored remote device was restored: its data replaces the local list loaded above.
+      if (useNodesStore.getState().selectedId === null) return;
+      useThreadsStore.setState({ threads: [], activeId: null, error: null });
       void useThreadsStore.getState().load();
       void useThreadsStore.getState().loadProviders();
     });

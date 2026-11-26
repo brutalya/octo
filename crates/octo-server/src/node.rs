@@ -148,6 +148,8 @@ struct Shared {
     sync: Mutex<HashMap<NodeId, SyncSlot>>,
     /// Last ping result per peer: (online, misses in a row).
     pings: Mutex<HashMap<NodeId, (bool, u32)>>,
+    /// Peers a member ping is running for (at most one per peer).
+    pinging: Mutex<std::collections::HashSet<NodeId>>,
     /// Peers a Public auto-sync pull is running from (at most one per peer).
     public_pulls: Mutex<std::collections::HashSet<NodeId>>,
     /// Every task spawned on behalf of the node (sync runs, streams, peer tasks, body pumps);
@@ -313,6 +315,7 @@ impl Node {
             sync: Mutex::new(HashMap::new()),
             public_pulls: Mutex::new(std::collections::HashSet::new()),
             pings: Mutex::new(HashMap::new()),
+            pinging: Mutex::new(std::collections::HashSet::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
             link: Mutex::new(None),
         });
@@ -349,7 +352,7 @@ impl Node {
         self.sh.key.node_id()
     }
 
-    /// Self plus members; online = reachable right now (session + ping).
+    /// Self plus members; online = last ping result (unknown = offline), never waits for a ping.
     pub async fn list(&self) -> Vec<NodeInfo> {
         let m = self.sh.membership();
         let mut out = vec![NodeInfo {
@@ -360,18 +363,21 @@ impl Node {
             trust: None,
             agents: None,
         }];
-        let probes = m.members().iter().map(|mem| {
-            let sh = self.sh.clone();
-            let id = mem.node_id;
-            tokio::spawn(async move { ping(&sh, id).await })
-        });
-        let handles: Vec<_> = probes.collect();
-        for (mem, h) in m.members().iter().zip(handles) {
+        // Answers from the last ping result (unknown = offline) and probes in the background:
+        // the next call sees the outcome. A silent peer never delays the list.
+        let known = self
+            .sh
+            .pings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for mem in m.members() {
+            start_ping(&self.sh, mem.node_id);
             out.push(NodeInfo {
                 node_id: mem.node_id.to_string(),
                 name: mem.name.clone(),
                 is_self: false,
-                online: h.await.unwrap_or(false),
+                online: known.get(&mem.node_id).is_some_and(|p| p.0),
                 trust: Some(match mem.trust {
                     Trust::Full => TrustLevel::Full,
                     Trust::Public => TrustLevel::Public,
@@ -862,6 +868,26 @@ fn full_members(m: &Membership) -> Vec<NodeId> {
         .filter(|x| x.trust == Trust::Full)
         .map(|x| x.node_id)
         .collect()
+}
+
+/// Starts a background ping unless one is already running for `peer`.
+fn start_ping(sh: &Arc<Shared>, peer: NodeId) {
+    if !claim(&sh.pinging, peer) {
+        return;
+    }
+    let sh2 = sh.clone();
+    sh.spawn(async move {
+        ping(&sh2, peer).await;
+        sh2.pinging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&peer);
+    });
+}
+
+/// True when `peer` was not yet in the set (the caller now owns the slot).
+fn claim(set: &Mutex<std::collections::HashSet<NodeId>>, peer: NodeId) -> bool {
+    set.lock().unwrap_or_else(|e| e.into_inner()).insert(peer)
 }
 
 async fn ping(sh: &Arc<Shared>, peer: NodeId) -> bool {
@@ -2022,6 +2048,17 @@ mod tests {
             ping_verdict(Some((false, 5)), true),
             (true, false, (true, 0))
         );
+    }
+
+    #[test]
+    fn a_peer_is_pinged_by_one_task_at_a_time() {
+        let set = Mutex::new(std::collections::HashSet::new());
+        let peer = id();
+        assert!(claim(&set, peer));
+        assert!(!claim(&set, peer), "second ping must not stack");
+        assert!(claim(&set, id()), "another peer is independent");
+        set.lock().unwrap().clear();
+        assert!(claim(&set, peer));
     }
 
     #[test]

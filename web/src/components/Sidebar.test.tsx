@@ -236,6 +236,27 @@ describe('Sidebar in a network', () => {
     expect(screen.getByLabelText('reconnecting')).toBeInTheDocument();
   });
 
+  it('an offline device with unknown access is listed with the marker, gone on agents:false', () => {
+    useDevicesStore.setState({ lists: {}, access: {} });
+    useNodesStore.setState({
+      nodes: [node('me', 'phone', true), node('pc', 'pc'), node('lin', 'linux', false, false)],
+    });
+    const { unmount } = render(<Sidebar />);
+    const header = screen.getByRole('button', { name: 'linux, offline' });
+    expect(within(header).getByLabelText('reconnecting')).toBeInTheDocument();
+    unmount();
+    useDevicesStore.setState({ access: { lin: { agents: false, private_files: false } } });
+    render(<Sidebar />);
+    expect(screen.queryByRole('button', { name: 'linux, offline' })).toBeNull();
+  });
+
+  it('an online device is listed only once it answered that agents are allowed', () => {
+    useDevicesStore.setState({ lists: {}, access: {} });
+    useNodesStore.setState({ nodes: [node('me', 'phone', true), node('pc', 'pc'), node('lin', 'linux')] });
+    render(<Sidebar />);
+    expect(screen.queryByRole('button', { name: 'linux, online' })).toBeNull();
+  });
+
   it('opening a chat on another device switches to that device first', async () => {
     const select = vi.fn();
     useNodesStore.setState({ select });
