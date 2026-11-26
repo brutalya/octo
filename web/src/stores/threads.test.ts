@@ -110,3 +110,51 @@ describe('threads store keeps a thread open', () => {
     expect(useThreadsStore.getState().activeId).toBeNull();
   });
 });
+
+describe('threads cache', () => {
+  const priv: Thread = { ...thread, id: 'p1', title: 'Secret plan', space: 'private' };
+  beforeEach(() => localStorage.clear());
+
+  it('keeps the Public threads of this device, never Private ones', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json([thread, priv])));
+    await useThreadsStore.getState().load();
+    const raw = localStorage.getItem('octo.threads') ?? '';
+    expect(JSON.parse(raw).map((x: Thread) => x.id)).toEqual(['t1']);
+    expect(raw).not.toContain('Secret plan');
+  });
+
+  it('a list of another device is not cached as this device', async () => {
+    const { setNodeBase } = await import('../api/client');
+    setNodeBase('remote');
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => json([thread])));
+      await useThreadsStore.getState().load();
+      expect(localStorage.getItem('octo.threads')).toBeNull();
+    } finally {
+      setNodeBase(null);
+    }
+  });
+
+  it('a new store starts from the cached list and its newest thread', async () => {
+    localStorage.setItem('octo.threads', JSON.stringify([thread]));
+    vi.resetModules();
+    const fresh = await import('./threads');
+    expect(fresh.useThreadsStore.getState().threads.map((x) => x.id)).toEqual(['t1']);
+    expect(fresh.useThreadsStore.getState().activeId).toBe('t1');
+  });
+
+  it('ignores the cache while another device is the stored selection', async () => {
+    localStorage.setItem('octo.threads', JSON.stringify([thread]));
+    localStorage.setItem('octo.node', 'remote');
+    vi.resetModules();
+    const fresh = await import('./threads');
+    expect(fresh.useThreadsStore.getState().threads).toEqual([]);
+  });
+
+  it('a broken cache is ignored', async () => {
+    localStorage.setItem('octo.threads', '{oops');
+    vi.resetModules();
+    const fresh = await import('./threads');
+    expect(fresh.useThreadsStore.getState().threads).toEqual([]);
+  });
+});

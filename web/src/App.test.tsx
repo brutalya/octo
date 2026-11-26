@@ -208,3 +208,32 @@ describe('App thread switch', () => {
     expect(document.querySelectorAll('textarea')).toHaveLength(1);
   });
 });
+
+describe('App loading', () => {
+  it('this device threads and providers load while the nodes request is still pending', () => {
+    console.log('[Step 1/2] nodes never answers');
+    const threadsLoad = vi.fn().mockResolvedValue(undefined);
+    const providersLoad = vi.fn().mockResolvedValue(undefined);
+    useNodesStore.setState({ load: vi.fn(() => new Promise<void>(() => {})), selectedId: null } as never);
+    useThreadsStore.setState({ load: threadsLoad, loadProviders: providersLoad } as never);
+    render(<App />);
+    console.log('[Step 2/2] chats and providers were asked for anyway');
+    expect(threadsLoad).toHaveBeenCalled();
+    expect(providersLoad).toHaveBeenCalled();
+  });
+
+  it('a restored remote device replaces the early local list with its own', async () => {
+    const threadsLoad = vi.fn().mockResolvedValue(undefined);
+    useThreadsStore.setState({ load: threadsLoad, loadProviders: vi.fn().mockResolvedValue(undefined) } as never);
+    useNodesStore.setState({
+      load: vi.fn(async () => {
+        useNodesStore.setState({ selectedId: 'remote' });
+      }),
+      selectedId: null,
+    } as never);
+    render(<App />);
+    await act(async () => {});
+    expect(threadsLoad.mock.calls.length).toBe(2);
+    expect(useThreadsStore.getState().threads).toEqual([]);
+  });
+});

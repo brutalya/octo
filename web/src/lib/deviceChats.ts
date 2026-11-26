@@ -15,8 +15,16 @@ export function useDeviceChats() {
   const selfId = self?.node_id ?? 'self';
   const openId = selectedId ?? selfId;
   const multi = nodes.length > 1;
-  /** Only devices that let this one run agents are listed (this device always may). */
-  const allowed = (n: NodeInfo) => n.is_self || access[n.node_id]?.agents === true;
+  /**
+   * Devices that let this one run agents are listed (this device always may). A device that has
+   * not answered yet stays listed while it is offline (reconnecting); it goes when it answers
+   * `agents: false` or is unpaired.
+   */
+  const allowed = (n: NodeInfo) => {
+    if (n.is_self) return true;
+    const a = access[n.node_id];
+    return a ? a.agents : !n.online;
+  };
   // Members in the network first (server order), then this device, offline devices last. An
   // offline device stays while its last known answer allowed agents.
   const order = [

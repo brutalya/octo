@@ -1,16 +1,14 @@
 import { create } from 'zustand';
-import { api, nodeGeneration, setNodeBase } from '../api/client';
+import { api, nodeGeneration, NODE_KEY, setNodeBase } from '../api/client';
 import { useThreadsStore } from './threads';
 import { useFilesStore } from './files';
 import { useAttachStore } from './attach';
 import { useChatStore } from './chat';
 import type { NodeInfo } from '../api/types';
 
-const KEY = 'octo.node';
-
 function stored(): string | null {
   try {
-    return localStorage.getItem(KEY);
+    return localStorage.getItem(NODE_KEY);
   } catch {
     return null;
   }
@@ -18,8 +16,8 @@ function stored(): string | null {
 
 function store(id: string | null): void {
   try {
-    if (id) localStorage.setItem(KEY, id);
-    else localStorage.removeItem(KEY);
+    if (id) localStorage.setItem(NODE_KEY, id);
+    else localStorage.removeItem(NODE_KEY);
   } catch {
     // storage unavailable
   }
