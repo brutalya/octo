@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, Cloud, CloudOff, File as FileIcon, Fo
 import { useFilesStore } from '../stores/files';
 import { useClickOutside } from '../lib/useClickOutside';
 import { buildTree, type TreeNode } from '../lib/tree';
-import { mergeDevices, missingUnder, type SharedEntry } from '../lib/shared';
+import { mergeDevices, missingUnder, type Reach, type SharedEntry } from '../lib/shared';
 import type { FileEntry, Space } from '../api/types';
 
 export const DRAG_TYPE = 'application/x-octo-file';
@@ -65,12 +65,13 @@ const fmtSize = (n: number) =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
 
 /**
- * One tree of the space across devices, seen from the open device (`device`): files that are
+ * One tree of the space across devices, seen from this device (`device`): files that are
  * only elsewhere are dimmed with the devices that have them.
  */
 export function FileTree({
   space,
   device = 'this device',
+  chatNode = null,
   selected,
   onSelect,
   onAttach,
@@ -79,22 +80,22 @@ export function FileTree({
   onNewRootDone,
 }: {
   space: Space;
-  /** Name of the open device (where "here" is). */
+  /** Name of this device (where "here" is). */
   device?: string;
+  /** The device the open chat runs on (null = this one): only files it can read are attachable. */
+  chatNode?: string | null;
   /** Picked file paths; with `onSelect` the rows get checkboxes. */
   selected?: Set<string>;
   onSelect?: (paths: string[], on: boolean) => void;
   /** Offered in a file's menu when a chat can take it. */
   onAttach?: (e: SharedEntry) => void;
-  /** This device's Public auto-sync, when the open device is this one. */
+  /** This device's Public auto-sync. */
   autoSync?: { on: boolean; toggle: () => void };
   newRoot?: boolean;
   onNewRootDone?: () => void;
 }) {
   const entries = useFilesStore((s) => s.entries[space]);
   const others = useFilesStore((s) => s.others?.[space] ?? EMPTY);
-  // The open device has not answered yet: what is shown is its last known list.
-  const hereStale = useFilesStore((s) => (s.links?.open?.state ?? 'online') !== 'online');
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
   const [menu, setMenuRaw] = useState<Menu | null>(null);
   /** The entry whose new folder the open menu asks for. */
@@ -102,9 +103,12 @@ export function FileTree({
   const setMenu = (m: Menu | null) => {
     setMenuRaw(m);
     setMoving(null);
+    setNotice(null);
   };
   const [editing, setEditing] = useState<Editing | null>(null);
   const [uploadDir, setUploadDir] = useState('');
+  /** Why the last action did nothing (a holder does not answer). */
+  const [notice, setNotice] = useState<string | null>(null);
   const inputId = useId();
 
   const menuRef = useRef<HTMLDivElement>(null);
@@ -153,12 +157,29 @@ export function FileTree({
   };
 
   /** Only holders that have not answered this session: their entries are last known, not confirmed. */
-  const cachedOnly = (e: SharedEntry) => (e.here ? hereStale : e.on.every((h) => h.stale));
-  /** Changing an entry must reach every device that has it. */
-  const unsettled = (e: SharedEntry) => (e.here && hereStale) || e.on.some((h) => h.stale);
-  /** A copy can be fetched from a device that answered (and put on the open one). */
-  const fetchable = (e: SharedEntry) => !hereStale && e.on.some((h) => !h.stale);
-  const attachable = (e: SharedEntry) => (e.here ? !hereStale : fetchable(e));
+  const cachedOnly = (e: SharedEntry) => !e.here && e.on.every((h) => h.stale);
+  /** Holders that do not answer: a change must reach every device that has the entry. */
+  const silent = (e: SharedEntry) => e.on.filter((h) => h.stale);
+  /** A copy can be fetched from a device that answered. */
+  const fetchable = (e: SharedEntry) => e.on.some((h) => !h.stale);
+  /** Devices that stand in the way: a message naming them, or null when nothing does. */
+  const blocker = (hs: { name: string; stale?: Reach }[]): string | null => {
+    if (hs.length === 0) return null;
+    const off = hs.filter((h) => h.stale === 'offline').map((h) => h.name);
+    return off.length > 0 ? `${off.join(', ')} ${off.length === 1 ? 'is' : 'are'} offline` : `Connecting to ${hs.map((h) => h.name).join(', ')}`;
+  };
+  /** Runs `f` unless a device in `hs` is in the way; then says which. */
+  const unless = (hs: { name: string; stale?: Reach }[], f: () => void) => () => {
+    const why = blocker(hs);
+    if (!why) return f();
+    closeMenu();
+    setNotice(why);
+  };
+  /** The open chat can read the file where it runs. */
+  const onChat = (e: SharedEntry) => (chatNode === null ? e.here : e.on.some((h) => h.id === chatNode));
+  /** What stands in the way of attaching: this device's chat needs the file here (fetched if need be), another's needs that device. */
+  const attachBlock = (e: SharedEntry) =>
+    chatNode === null ? (e.here || fetchable(e) ? [] : e.on) : e.on.filter((h) => h.id === chatNode && h.stale);
 
   const elsewhere = (e: SharedEntry) => {
     if (e.here) return null;
@@ -203,7 +224,7 @@ export function FileTree({
       <li key={entry.path}>
         {/* The name is the button; the checkbox and actions sit beside it, never inside. */}
         <div
-          draggable={!isDir && entry.here}
+          draggable={!isDir && onChat(entry)}
           onDragStart={(e) => e.dataTransfer.setData(DRAG_TYPE, JSON.stringify({ space, path: entry.path }))}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -211,7 +232,7 @@ export function FileTree({
           }}
           style={{ paddingLeft: depth * 14 + 4 }}
           className={`group flex items-center gap-1.5 rounded py-0.5 pr-1 text-sm hover:bg-slate-100 max-md:min-h-11 ${
-            entry.here && !hereStale ? 'text-slate-600' : 'text-slate-400'
+            entry.here ? 'text-slate-600' : 'text-slate-400'
           } ${cachedOnly(entry) ? 'opacity-60' : ''} ${!isDir && selected?.has(entry.path) ? 'bg-indigo-50' : ''}`}
         >
           {onSelect && inside.length > 0 && (
@@ -228,8 +249,10 @@ export function FileTree({
             <button
               aria-expanded={isDir ? open : undefined}
               onClick={(e) => {
+                setNotice(null);
                 if (isDir) toggle(entry.path);
-                else if (entry.here && !hereStale) void useFilesStore.getState().open(space, entry.path);
+                else if (entry.here) void useFilesStore.getState().open(space, entry.path);
+                else if (!fetchable(entry)) setNotice(blocker(entry.on)); // only offline devices have it
                 else openMenu(e.currentTarget, entry); // not here: what can be done with it
               }}
               className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-left"
@@ -256,7 +279,7 @@ export function FileTree({
     );
   };
 
-  const item = 'flex w-full items-center gap-2 px-3 py-1.5 max-md:py-3 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:pointer-events-none disabled:opacity-40';
+  const item = 'flex w-full items-center gap-2 px-3 py-1.5 max-md:py-3 text-left text-sm text-slate-700 hover:bg-slate-100';
   const act = (f: () => void) => () => {
     f();
     setMenu(null);
@@ -299,7 +322,7 @@ export function FileTree({
     const st = useFilesStore.getState();
     if (moving) return moveBody(moving);
     const moveItem = (
-      <button role="menuitem" className={item} disabled={unsettled(e)} onClick={() => setMoving(e)}>
+      <button role="menuitem" className={item} onClick={unless(silent(e), () => setMoving(e))}>
         Move to folder
       </button>
     );
@@ -314,7 +337,6 @@ export function FileTree({
           <button
             role="menuitem"
             className={item}
-            disabled={hereStale}
             onClick={act(() => {
               setExpanded((p) => new Set(p).add(e.path));
               setEditing({ kind: 'mkdir', dir: e.path });
@@ -325,7 +347,6 @@ export function FileTree({
           <button
             role="menuitem"
             className={item}
-            disabled={hereStale}
             onClick={act(() => {
               // The chooser must open synchronously inside the tap; closing the menu first would be too late.
               setUploadDir(e.path);
@@ -335,7 +356,11 @@ export function FileTree({
             Upload here
           </button>
           {missing.length > 0 && (
-            <button role="menuitem" className={item} disabled={hereStale || !missing.some(fetchable)} onClick={act(() => void st.getHere(space, missing))}>
+            <button
+              role="menuitem"
+              className={item}
+              onClick={unless(missing.some(fetchable) ? [] : missing.flatMap((m) => m.on), act(() => void st.getHere(space, missing)))}
+            >
               Get all on {device}
             </button>
           )}
@@ -354,11 +379,11 @@ export function FileTree({
           )}
           {!isRoot && (
             <>
-              <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
+              <button role="menuitem" className={item} onClick={unless(silent(e), act(() => setEditing({ kind: 'rename', path: e.path })))}>
                 Rename
               </button>
               {moveItem}
-              <button role="menuitem" className={`${item} text-red-500`} disabled={unsettled(e)} onClick={act(() => void st.removeEverywhere(space, e))}>
+              <button role="menuitem" className={`${item} text-red-500`} onClick={unless(silent(e), act(() => void st.removeEverywhere(space, e)))}>
                 {e.on.length ? 'Delete on all devices' : 'Delete'}
               </button>
             </>
@@ -374,25 +399,25 @@ export function FileTree({
           {fmtSize(e.size)} · {where}
         </div>
         {!e.here && (
-          <button role="menuitem" className={item} disabled={!fetchable(e)} onClick={act(() => void st.getHere(space, [e]))}>
+          <button role="menuitem" className={item} onClick={unless(fetchable(e) ? [] : e.on, act(() => void st.getHere(space, [e])))}>
             Get on {device}
           </button>
         )}
-        {onAttach && (
-          <button role="menuitem" className={item} disabled={!attachable(e)} onClick={act(() => onAttach(e))}>
+        {onAttach && (chatNode === null || onChat(e)) && (
+          <button role="menuitem" className={item} onClick={unless(attachBlock(e), act(() => onAttach(e)))}>
             Attach to chat
           </button>
         )}
-        <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => setEditing({ kind: 'rename', path: e.path }))}>
+        <button role="menuitem" className={item} onClick={unless(silent(e), act(() => setEditing({ kind: 'rename', path: e.path })))}>
           Rename
         </button>
         {moveItem}
         {space === 'public' && (
-          <button role="menuitem" className={item} disabled={unsettled(e)} onClick={act(() => void st.moveToPrivate(e))}>
+          <button role="menuitem" className={item} onClick={unless(silent(e), act(() => void st.moveToPrivate(e)))}>
             Move to Private
           </button>
         )}
-        <button role="menuitem" className={`${item} text-red-500`} disabled={unsettled(e)} onClick={act(() => void st.removeEverywhere(space, e))}>
+        <button role="menuitem" className={`${item} text-red-500`} onClick={unless(silent(e), act(() => void st.removeEverywhere(space, e)))}>
           {e.on.length ? 'Delete on all devices' : 'Delete'}
         </button>
       </>
@@ -427,15 +452,15 @@ export function FileTree({
           {rootOpen ? <ChevronDown size={14} className="shrink-0 text-slate-400" /> : <ChevronRight size={14} className="shrink-0 text-slate-400" />}
           {space === 'private' ? <Lock size={14} className="shrink-0 text-violet-400" /> : <HardDrive size={14} className="shrink-0 text-slate-500" />}
           <span className="font-semibold text-slate-800">{label}</span>
-          <span className="flex min-w-0 flex-1 gap-1 truncate text-xs text-slate-400">
-            <span className="truncate">on {device}</span>
-            {hereStale && <Loader2 size={12} role="img" aria-label="Connecting" className="shrink-0 animate-spin" />}
-            {autoSync && <span className="shrink-0">·</span>}
-            {autoSync && <span className="shrink-0">{autoSync.on ? 'Auto-sync on' : 'Auto-sync off'}</span>}
-          </span>
+          {autoSync && <span className="min-w-0 flex-1 truncate text-xs text-slate-400">{autoSync.on ? 'Auto-sync on' : 'Auto-sync off'}</span>}
         </button>
         {actions(root, label)}
       </div>
+      {notice && (
+        <p role="status" className="px-1 py-1 text-xs text-slate-500">
+          {notice}
+        </p>
+      )}
       {rootOpen && (
         <ul>
           {newRoot && (

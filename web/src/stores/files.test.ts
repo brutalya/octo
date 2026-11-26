@@ -12,8 +12,13 @@ const call = (f: ReturnType<typeof vi.fn>, i = 0) => f.mock.calls[i] as unknown 
 
 beforeEach(() => {
   localStorage.clear();
-  useFilesStore.getState().reset();
-  useFilesStore.setState({ preview: null });
+  useFilesStore.setState({
+    entries: { private: [], public: [] },
+    others: { private: [], public: [] },
+    links: {},
+    error: null,
+    preview: null,
+  });
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -273,22 +278,41 @@ describe('files store', () => {
       expect(state().others.public).toEqual([{ ...pc, entries: pcFiles }]);
     });
 
-    it('the open node: unreachable load is connecting; error from a failed load clears after a good one', async () => {
-      const { setNodeBase } = await import('../api/client');
-      setNodeBase('lin');
-      state().reset();
-      vi.stubGlobal('fetch', vi.fn(async () => down()));
-      await state().load('public');
-      expect(state().error).toBeNull();
-      expect(state().links.open.state).toBe('connecting');
+    it('a failed load shows its error; a good load clears it', async () => {
       vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"disk failure"}', { status: 500 })));
       await state().load('public');
       expect(state().error).toBe('disk failure');
       vi.stubGlobal('fetch', vi.fn(async () => json(entries)));
       await state().load('public');
       expect(state().error).toBeNull();
-      expect(state().links.open.state).toBe('online');
+    });
+
+    it('this device\'s files are loaded and changed here whichever device is open for chats', async () => {
+      console.log('[Step 1/3] pc is open for chats');
+      const { setNodeBase } = await import('../api/client');
+      setNodeBase('lin');
+      const f = vi.fn(async (_url: string, init?: RequestInit) => (init?.method ? json([]) : json(entries)));
+      vi.stubGlobal('fetch', f);
+      console.log('[Step 2/3] list, preview, upload, mkdir, rename, delete');
+      await state().load('public');
+      await state().load('private');
+      await state().upload('public', '', [new File(['x'], 'a')]);
+      await state().mkdir('public', 'd');
+      await state().rename('public', 'a', 'b');
+      await state().remove('public', 'b');
       setNodeBase(null);
+      console.log('[Step 3/3] nothing went through the open device, nothing cached for it');
+      expect(f.mock.calls.map((c) => c[0] as string).filter((u) => u.includes('/nodes/'))).toEqual([]);
+      expect(state().entries.public).toEqual(entries);
+      expect(localStorage.length).toBe(0);
+    });
+
+    it('an upload meant for a chat goes to the chat device and leaves the local list alone', async () => {
+      const f = vi.fn(async () => json([{ path: 'x/a', kind: 'file', size: 1, modified: 1 }]));
+      vi.stubGlobal('fetch', f);
+      const got = await state().upload('public', 'x', [new File(['x'], 'a')], 'lin');
+      expect(got).toHaveLength(1);
+      expect(f.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['/api/nodes/lin/files/public?path=x']);
     });
 
     it('an action that hits an unreachable device never shows the raw message', async () => {
@@ -351,10 +375,7 @@ describe('files store', () => {
       await state().loadOthers('private', [pc]);
       expect(state().others.private[0].entries).toEqual(pcFiles);
       expect(localStorage.getItem(CACHE)).toBeNull();
-      const { setNodeBase } = await import('../api/client');
-      setNodeBase('lin');
       await state().load('private');
-      setNodeBase(null);
       expect(localStorage.length).toBe(0);
     });
 

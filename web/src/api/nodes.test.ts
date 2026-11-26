@@ -23,7 +23,6 @@ describe('api base', () => {
     await api.providers();
     await api.models('ollama');
     await api.importSessions('claude', 'q');
-    await api.files('public');
     await api.createThread('claude', 'public', 'confirm');
     expect(urls()).toEqual([
       '/api/nodes/abc/threads',
@@ -31,7 +30,6 @@ describe('api base', () => {
       '/api/nodes/abc/providers',
       '/api/nodes/abc/providers/ollama/models',
       '/api/nodes/abc/import/claude/sessions?q=q',
-      '/api/nodes/abc/files/public',
       '/api/nodes/abc/threads',
     ]);
   });

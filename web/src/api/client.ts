@@ -171,31 +171,22 @@ export const api = {
   pairingReject: async (): Promise<void> => {
     await request('/pairing/reject', { method: 'POST' }, true);
   },
-  files: async (space: Space): Promise<FileEntry[]> => (await request(`/files/${space}`)).json(),
-  fileText: async (space: Space, path: string): Promise<string> =>
-    (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).text(),
-  fileBlob: async (space: Space, path: string): Promise<Blob> =>
-    (await request(`/files/${space}/content?path=${encodeURIComponent(path)}`)).blob(),
-  /** Returns the stored entries (their paths are what attachments refer to). */
-  upload: async (space: Space, dir: string, file: File): Promise<FileEntry[]> => {
-    const form = new FormData();
-    form.append('file', file, file.name);
-    return (await request(`/files/${space}?path=${encodeURIComponent(dir)}`, { method: 'POST', body: form })).json();
-  },
-  mkdir: async (space: Space, path: string): Promise<void> => {
-    await request(`/files/${space}/dir?path=${encodeURIComponent(path)}`, { method: 'POST' });
-  },
-  renameFile: async (space: Space, path: string, newPath: string): Promise<void> => {
-    await request(`/files/${space}?path=${encodeURIComponent(path)}`, jsonInit('PATCH', { new_path: newPath }));
-  },
-  deleteFile: async (space: Space, path: string): Promise<void> => {
-    await request(`/files/${space}?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
-  },
-  // The same file calls on a given device (null = this one), for the shared file tree.
+  // File calls name the device: this one (null) for the Files panel, the chat's device for attachments.
   filesOn: async (nodeId: string | null, space: Space): Promise<FileEntry[]> =>
     (await requestAt(baseOf(nodeId), `/files/${space}`)).json(),
+  fileTextOn: async (nodeId: string | null, space: Space, path: string): Promise<string> =>
+    (await requestAt(baseOf(nodeId), `/files/${space}/content?path=${encodeURIComponent(path)}`)).text(),
   fileBlobOn: async (nodeId: string | null, space: Space, path: string): Promise<Blob> =>
     (await requestAt(baseOf(nodeId), `/files/${space}/content?path=${encodeURIComponent(path)}`)).blob(),
+  /** Returns the stored entries (their paths are what attachments refer to). */
+  uploadOn: async (nodeId: string | null, space: Space, dir: string, file: File): Promise<FileEntry[]> => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return (await requestAt(baseOf(nodeId), `/files/${space}?path=${encodeURIComponent(dir)}`, { method: 'POST', body: form })).json();
+  },
+  mkdirOn: async (nodeId: string | null, space: Space, path: string): Promise<void> => {
+    await requestAt(baseOf(nodeId), `/files/${space}/dir?path=${encodeURIComponent(path)}`, { method: 'POST' });
+  },
   renameFileOn: async (nodeId: string | null, space: Space, path: string, newPath: string): Promise<void> => {
     await requestAt(baseOf(nodeId), `/files/${space}?path=${encodeURIComponent(path)}`, jsonInit('PATCH', { new_path: newPath }));
   },

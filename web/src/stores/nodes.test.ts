@@ -31,16 +31,18 @@ describe('nodes store', () => {
     expect(f.mock.calls.at(-1)?.[0]).toBe('/api/threads');
   });
 
-  it('switching node revokes the image preview object URL', async () => {
+  it('switching node leaves the Files panel alone: its files are this device\'s', async () => {
+    await useNodesStore.getState().load();
     const revoke = vi.fn();
     vi.stubGlobal('URL', Object.assign(URL, { revokeObjectURL: revoke }));
-    await useNodesStore.getState().load();
     useFilesStore.setState({
-      preview: { space: 'private', path: 'a.png', imageUrl: 'blob:x' } as never,
+      entries: { private: [], public: [{ path: 'a.png', kind: 'file', size: 1, modified: 1 }] },
+      preview: { space: 'private', path: 'a.png', text: '', imageUrl: 'blob:x' },
     });
     useNodesStore.getState().select('vps');
-    expect(revoke).toHaveBeenCalledWith('blob:x');
-    expect(useFilesStore.getState().preview).toBeNull();
+    expect(revoke).not.toHaveBeenCalled();
+    expect(useFilesStore.getState().preview?.path).toBe('a.png');
+    expect(useFilesStore.getState().entries.public).toHaveLength(1);
   });
 
   it('restores stored selection once the node is known', async () => {
@@ -79,19 +81,6 @@ describe('nodes store', () => {
     release(new Response(JSON.stringify([{ id: 'stale' }]), { status: 200 }));
     await p;
     expect(useThreadsStore.getState().threads).toEqual([]);
-  });
-
-  it('drops a stale file preview after a node switch', async () => {
-    await useNodesStore.getState().load();
-    let release: (r: Response) => void = () => {};
-    f.mockImplementation(async (url: string) =>
-      url.includes('/content') ? new Promise<Response>((r) => (release = r)) : new Response('[]', { status: 200 }),
-    );
-    const p = useFilesStore.getState().open('public', 'a.md');
-    useNodesStore.getState().select('vps');
-    release(new Response('old', { status: 200 }));
-    await p;
-    expect(useFilesStore.getState().preview).toBeNull();
   });
 
   it('switching nodes clears chat state', async () => {

@@ -15,13 +15,11 @@ const MAX_ATTACH = 10;
 const REFRESH_MS = 20_000;
 const RETRY_MS = 3_000;
 
-/** Loads the open device and (Public only) the other devices. `force` asks even those marked offline. */
+/** Loads this device's files and (Public only) the other devices'. `force` asks even those marked offline. */
 async function pull(space: Space, force: boolean) {
   const st = useFilesStore.getState();
-  const { nodes: all, selectedId: open } = useNodesStore.getState();
-  const others = all
-    .filter((n) => (open ? n.node_id !== open : !n.is_self))
-    .map((n) => ({ id: n.is_self ? null : n.node_id, name: n.name, online: force || n.is_self || n.online }));
+  const all = useNodesStore.getState().nodes;
+  const others = all.filter((n) => !n.is_self).map((n) => ({ id: n.node_id, name: n.name, online: force || n.online }));
   // An empty node list means it is not loaded yet: nothing may be dropped from the cache for that.
   await Promise.all([st.load(space), space === 'public' && all.length > 0 ? st.loadOthers('public', others) : undefined]);
 }
@@ -50,21 +48,20 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
   const space: Space = choice && choice.forThread === threadSpace ? choice.space : (threadSpace ?? 'public');
   const selected = picked.space === space ? picked.paths : new Set<string>();
 
-  const openNode = nodes.find((n) => (selectedId ? n.node_id === selectedId : n.is_self));
-  const device = openNode?.name ?? 'this device';
+  // Files are this device's, whichever device is open for chats; "here" is this device.
+  const device = nodes.find((n) => n.is_self)?.name ?? 'this device';
   // The other devices whose public files join the tree (private files already sync on their own).
   // Every member counts, online or not: one that drops out for a moment keeps its files on
   // screen (it is just not asked), so the tree does not flicker with the online status.
   const othersKey = nodes
-    .filter((n) => n !== openNode)
+    .filter((n) => !n.is_self)
     .map((n) => n.node_id)
     .join(',');
   const shown = sheet || !collapsed;
-  // Auto-sync is this device's own setting: offered while this device is the open one.
+  // Auto-sync is this device's own setting.
   const [publicSync, setPublicSync] = useState<boolean | null>(null);
-  const local = !selectedId;
   useEffect(() => {
-    if (!shown || !local) return;
+    if (!shown) return;
     let live = true;
     api.settings().then(
       (v) => live && setPublicSync(v.public_sync),
@@ -73,7 +70,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
     return () => {
       live = false;
     };
-  }, [shown, local]);
+  }, [shown]);
   const toggleSync = () => {
     const next = !publicSync;
     setPublicSync(next);
@@ -108,7 +105,7 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
 
   const offline = Object.entries(links ?? {})
     .filter(([, l]) => l.state === 'offline')
-    .map(([k, l]) => (k === 'open' ? device : l.name));
+    .map(([, l]) => l.name);
 
   const select = (paths: string[], on: boolean) =>
     setPicked(() => {
@@ -120,15 +117,23 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
       return { space, paths: next };
     });
 
-  const canAttach = threadSpace === space;
-  /** Brings files that are only elsewhere here first: the chat's agent reads them here. */
+  // A chat reads attachments on its own device (`selectedId`; null = this one). Private files
+  // are this device's and never go to another device's chat.
+  const canAttach = threadSpace === space && (space === 'public' || !selectedId);
+  /** On this device's chat, files that are only elsewhere come here first; another device's chat takes what that device has. */
   const attach = async (items: SharedEntry[]) => {
     setBusy(true);
     try {
-      const missing = items.filter((e) => !e.here);
-      if (missing.length) await useFilesStore.getState().getHere(space, missing);
-      const here = new Set(useFilesStore.getState().entries[space].map((e) => e.path));
-      useAttachStore.getState().add(items.filter((e) => here.has(e.path)).map((e) => ({ space, path: e.path })));
+      let ready: SharedEntry[];
+      if (selectedId) {
+        ready = items.filter((e) => e.on.some((h) => h.id === selectedId));
+      } else {
+        const missing = items.filter((e) => !e.here);
+        if (missing.length) await useFilesStore.getState().getHere(space, missing);
+        const here = new Set(useFilesStore.getState().entries[space].map((e) => e.path));
+        ready = items.filter((e) => here.has(e.path));
+      }
+      useAttachStore.getState().add(ready.map((e) => ({ space, path: e.path })));
       setPicked({ space, paths: new Set() });
       if (sheet) onClose?.();
     } finally {
@@ -246,7 +251,8 @@ export function FilesPanel({ sheet = false, onClose }: { sheet?: boolean; onClos
           selected={selected}
           onSelect={select}
           onAttach={canAttach ? (e) => void attach([e]) : undefined}
-          autoSync={local && space === 'public' && publicSync !== null ? { on: publicSync, toggle: toggleSync } : undefined}
+          chatNode={selectedId}
+          autoSync={space === 'public' && publicSync !== null ? { on: publicSync, toggle: toggleSync } : undefined}
           newRoot={newRoot}
           onNewRootDone={() => setNewRoot(false)}
         />

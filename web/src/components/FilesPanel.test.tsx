@@ -104,17 +104,18 @@ describe('FilesPanel', () => {
       });
     });
 
-    it('passes every other device with whether it is online (an offline one keeps its last list)', () => {
+    it('passes every other device (never this one, whichever is open for chats) with whether it is online (an offline one keeps its last list)', () => {
       useFilesStore.setState({ loadOthers });
       render(<FilesPanel />);
       expect(loadOthers).toHaveBeenCalledWith('public', [
-        { id: null, name: 'phone', online: true },
+        { id: 'pc', name: 'pc', online: true },
         { id: 'off', name: 'laptop', online: false },
       ]);
     });
 
     it('picked files go to the chat; ones only elsewhere are brought here first', async () => {
-      console.log('[Step 1/3] pc is open; b.md is only on the phone');
+      console.log('[Step 1/3] this device runs the chat; b.md is only on pc');
+      useNodesStore.setState({ selectedId: null });
       const getHere = vi.fn(async () => {
         useFilesStore.setState({ entries: { private: [], public: [f('a.md'), f('b.md')] } });
         return 1;
@@ -123,20 +124,45 @@ describe('FilesPanel', () => {
         loadOthers,
         getHere,
         entries: { private: [], public: [f('a.md')] },
-        others: { private: [], public: [{ id: null, name: 'phone', entries: [f('b.md')] }] },
+        others: { private: [], public: [{ id: 'pc', name: 'pc', entries: [f('b.md')] }] },
       });
       render(<FilesPanel />);
       console.log('[Step 2/3] pick both and attach');
       await userEvent.click(screen.getByRole('checkbox', { name: 'Select all in Public' }));
       expect(screen.getByText('2 selected')).toBeInTheDocument();
       await userEvent.click(screen.getByRole('button', { name: 'Attach to chat' }));
-      console.log('[Step 3/3] b.md was copied to pc, both are attached, the bar is gone');
+      console.log('[Step 3/3] b.md was copied here, both are attached, the bar is gone');
       expect(getHere).toHaveBeenCalledWith('public', [expect.objectContaining({ path: 'b.md', here: false })]);
       expect(useAttachStore.getState().fromFiles).toEqual([
         { space: 'public', path: 'a.md' },
         { space: 'public', path: 'b.md' },
       ]);
       expect(screen.queryByText(/selected/)).toBeNull();
+    });
+
+    it('a chat on another device only takes files that device has, nothing is copied', async () => {
+      console.log('[Step 1/2] the chat runs on pc; a.md is on this phone only, b.md is on pc');
+      const getHere = vi.fn(async () => 0);
+      useFilesStore.setState({
+        loadOthers,
+        getHere,
+        entries: { private: [], public: [f('a.md')] },
+        others: { private: [], public: [{ id: 'pc', name: 'pc', entries: [f('b.md')] }] },
+      });
+      render(<FilesPanel />);
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Select all in Public' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Attach to chat' }));
+      console.log('[Step 2/2] only b.md is attached');
+      expect(getHere).not.toHaveBeenCalled();
+      expect(useAttachStore.getState().fromFiles).toEqual([{ space: 'public', path: 'b.md' }]);
+    });
+
+    it('Private files of this device cannot go to a chat on another device', async () => {
+      useThreadsStore.setState({ activeId: 'b' });
+      useFilesStore.setState({ loadOthers, entries: { private: [f('s.md')], public: [] } });
+      render(<FilesPanel />);
+      await userEvent.click(screen.getByRole('checkbox', { name: 'Select s.md' }));
+      expect(screen.queryByRole('button', { name: 'Attach to chat' })).toBeNull();
     });
 
     it('files of the other space cannot go to this chat', async () => {
@@ -150,8 +176,14 @@ describe('FilesPanel', () => {
   });
 
   it('this device offers its Public auto-sync switch', async () => {
-    console.log('[Step 1/2] this device is open; its setting says off');
-    useNodesStore.setState({ nodes: [], selectedId: null });
+    console.log('[Step 1/2] pc is open for chats; this device setting says off');
+    useNodesStore.setState({
+      nodes: [
+        { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+        { node_id: 'pc', name: 'pc', is_self: false, online: true, trust: 'full', agents: true },
+      ],
+      selectedId: 'pc',
+    });
     const f = vi.fn(async (_url: string, init?: RequestInit) =>
       new Response(JSON.stringify({ public_sync: init?.method === 'PATCH' })),
     );
@@ -166,6 +198,44 @@ describe('FilesPanel', () => {
     expect(patch[0]).toBe('/api/settings');
     expect(JSON.parse(patch[1].body as string)).toEqual({ public_sync: true });
     vi.unstubAllGlobals();
+  });
+
+  describe('Public is one space', () => {
+    const f = (path: string): FileEntry => ({ path, kind: 'file', size: 1, modified: 1 });
+    const nodes = [
+      { node_id: 'me', name: 'phone', is_self: true, online: true, trust: null, agents: null },
+      { node_id: 'pc', name: 'pc', is_self: false, online: false, trust: 'full' as const, agents: true },
+    ];
+
+    it.each([null, 'pc'])('shows the same tree and header whichever device is open (%s)', (open) => {
+      console.log('[Step 1/2] pc is offline but was indexed; open device = ' + open);
+      useNodesStore.setState({ nodes, selectedId: open });
+      useFilesStore.setState({
+        loadOthers: vi.fn(async () => {}),
+        entries: { private: [], public: [f('here.md')] },
+        others: { private: [], public: [{ id: 'pc', name: 'pc', entries: [f('pc.md')], stale: 'offline' }] },
+        links: { pc: { name: 'pc', state: 'offline' } },
+      });
+      render(<FilesPanel />);
+      console.log('[Step 2/2] header is Public only, both files are listed, no spinner');
+      expect(screen.getByRole('button', { name: 'Public' })).toBeInTheDocument();
+      expect(screen.queryByText(/on phone|on pc/)).toBeNull();
+      expect(screen.queryByRole('img', { name: 'Connecting' })).toBeNull();
+      expect(screen.getByText('here.md')).toBeInTheDocument();
+      expect(screen.getByText('pc.md')).toBeInTheDocument();
+    });
+
+    it('clicking a file of the offline device says it is offline', async () => {
+      useNodesStore.setState({ nodes, selectedId: 'pc' });
+      useFilesStore.setState({
+        loadOthers: vi.fn(async () => {}),
+        entries: { private: [], public: [] },
+        others: { private: [], public: [{ id: 'pc', name: 'pc', entries: [f('pc.md')], stale: 'offline' }] },
+      });
+      render(<FilesPanel />);
+      await userEvent.click(screen.getByText('pc.md'));
+      expect(screen.getByRole('status')).toHaveTextContent('pc is offline');
+    });
   });
 
   describe('connecting', () => {
